@@ -226,6 +226,7 @@ import io.trino.operator.scalar.timestamptz.TimestampWithTimeZoneToTimestampCast
 import io.trino.operator.scalar.timestamptz.TimestampWithTimeZoneToTimestampWithTimeZoneCast;
 import io.trino.operator.scalar.timestamptz.TimestampWithTimeZoneToVarcharCast;
 import io.trino.operator.scalar.timestamptz.VarcharToTimestampWithTimeZoneCast;
+import io.trino.operator.scalar.timestamptz.WorkDayAdd;
 import io.trino.operator.scalar.timetz.CurrentTime;
 import io.trino.operator.scalar.timetz.TimeWithTimeZoneOperators;
 import io.trino.operator.scalar.timetz.TimeWithTimeZoneToTimeCast;
@@ -630,7 +631,8 @@ public final class SystemFunctionBundle
                 .scalar(ExtractDayOfWeek.class)
                 .scalar(ExtractWeekOfYear.class)
                 .scalar(ExtractYearOfWeek.class)
-                .scalar(LastDayOfMonth.class);
+                .scalar(LastDayOfMonth.class)
+                .scalar(WorkDayAdd.class);
 
         // timestamp with timezone operators and functions
         builder
