@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - workday-add
   pull_request:
     paths-ignore:
       - 'docs/**'

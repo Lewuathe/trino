@@ -40,7 +40,9 @@ public class TestWorkDayAdd
     @BeforeAll
     public void init()
     {
+        System.out.println("111111");
         assertions = new QueryAssertions();
+        System.out.println("222222");
     }
 
     @AfterAll
@@ -53,6 +55,8 @@ public class TestWorkDayAdd
     @Test
     public void testWorkdayAdd()
     {
+        System.out.println("AAAAAAAAA");
+        assertions = new QueryAssertions();
         assertThat(assertions.function("workday_add", "TIMESTAMP '2020-05-01 12:34:56 Asia/Tokyo'", "3", "ARRAY[DATE '2020-5-02', DATE '2020-05-03']"))
                 .isEqualTo(timestampWithTimeZone(0, 2020, 6, 1, 12, 34, 56, 0, getTimeZoneKey("Asia/Tokyo")));
     }
