@@ -13,10 +13,7 @@
  */
 package io.trino.spi.block;
 
-import io.airlift.slice.Slice;
-import io.airlift.slice.Slices;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -31,8 +28,8 @@ import static io.trino.spi.block.BlockUtil.compactArray;
 import static io.trino.spi.block.BlockUtil.copyIsNullAndAppendNull;
 import static io.trino.spi.block.BlockUtil.ensureCapacity;
 
-public class ShortArrayBlock
-        implements Block
+public final class ShortArrayBlock
+        implements ValueBlock
 {
     private static final int INSTANCE_SIZE = instanceSize(ShortArrayBlock.class);
     public static final int SIZE_IN_BYTES_PER_POSITION = Short.BYTES + Byte.BYTES;
@@ -126,13 +123,9 @@ public class ShortArrayBlock
         return positionCount;
     }
 
-    @Override
-    public short getShort(int position, int offset)
+    public short getShort(int position)
     {
         checkReadablePosition(this, position);
-        if (offset != 0) {
-            throw new IllegalArgumentException("offset must be zero");
-        }
         return values[position + arrayOffset];
     }
 
@@ -150,7 +143,7 @@ public class ShortArrayBlock
     }
 
     @Override
-    public Block getSingleValueBlock(int position)
+    public ShortArrayBlock getSingleValueBlock(int position)
     {
         checkReadablePosition(this, position);
         return new ShortArrayBlock(
@@ -161,7 +154,7 @@ public class ShortArrayBlock
     }
 
     @Override
-    public Block copyPositions(int[] positions, int offset, int length)
+    public ShortArrayBlock copyPositions(int[] positions, int offset, int length)
     {
         checkArrayRange(positions, offset, length);
 
@@ -182,7 +175,7 @@ public class ShortArrayBlock
     }
 
     @Override
-    public Block getRegion(int positionOffset, int length)
+    public ShortArrayBlock getRegion(int positionOffset, int length)
     {
         checkValidRegion(getPositionCount(), positionOffset, length);
 
@@ -190,7 +183,7 @@ public class ShortArrayBlock
     }
 
     @Override
-    public Block copyRegion(int positionOffset, int length)
+    public ShortArrayBlock copyRegion(int positionOffset, int length)
     {
         checkValidRegion(getPositionCount(), positionOffset, length);
 
@@ -211,7 +204,7 @@ public class ShortArrayBlock
     }
 
     @Override
-    public Block copyWithAppendedNull()
+    public ShortArrayBlock copyWithAppendedNull()
     {
         boolean[] newValueIsNull = copyIsNullAndAppendNull(valueIsNull, arrayOffset, positionCount);
         short[] newValues = ensureCapacity(values, arrayOffset + positionCount + 1);
@@ -219,16 +212,35 @@ public class ShortArrayBlock
     }
 
     @Override
-    public String toString()
+    public ShortArrayBlock getUnderlyingValueBlock()
     {
-        StringBuilder sb = new StringBuilder("ShortArrayBlock{");
-        sb.append("positionCount=").append(getPositionCount());
-        sb.append('}');
-        return sb.toString();
+        return this;
     }
 
-    Slice getValuesSlice()
+    @Override
+    public String toString()
     {
-        return Slices.wrappedShortArray(values, arrayOffset, positionCount);
+        return "ShortArrayBlock{positionCount=" + getPositionCount() + '}';
+    }
+
+    @Override
+    public Optional<ByteArrayBlock> getNulls()
+    {
+        return BlockUtil.getNulls(valueIsNull, arrayOffset, positionCount);
+    }
+
+    int getRawValuesOffset()
+    {
+        return arrayOffset;
+    }
+
+    short[] getRawValues()
+    {
+        return values;
+    }
+
+    boolean[] getRawValueIsNull()
+    {
+        return valueIsNull;
     }
 }

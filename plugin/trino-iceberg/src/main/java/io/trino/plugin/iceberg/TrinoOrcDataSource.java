@@ -19,7 +19,7 @@ import io.trino.filesystem.TrinoInputFile;
 import io.trino.orc.AbstractOrcDataSource;
 import io.trino.orc.OrcDataSourceId;
 import io.trino.orc.OrcReaderOptions;
-import io.trino.plugin.hive.FileFormatDataSourceStats;
+import io.trino.plugin.base.metrics.FileFormatDataSourceStats;
 
 import java.io.IOException;
 
@@ -34,7 +34,7 @@ public class TrinoOrcDataSource
     public TrinoOrcDataSource(TrinoInputFile file, OrcReaderOptions options, FileFormatDataSourceStats stats)
             throws IOException
     {
-        super(new OrcDataSourceId(file.location()), file.length(), options);
+        super(new OrcDataSourceId(file.location().toString()), file.length(), options);
         this.stats = requireNonNull(stats, "stats is null");
         this.input = file.newInput();
     }

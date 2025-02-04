@@ -58,7 +58,13 @@ public class JdbcPageSink
     private final LongWriteFunction pageSinkIdWriteFunction;
     private final boolean includePageSinkIdColumn;
 
-    public JdbcPageSink(ConnectorSession session, JdbcOutputTableHandle handle, JdbcClient jdbcClient, ConnectorPageSinkId pageSinkId, RemoteQueryModifier remoteQueryModifier)
+    public JdbcPageSink(
+            ConnectorSession session,
+            JdbcOutputTableHandle handle,
+            JdbcClient jdbcClient,
+            ConnectorPageSinkId pageSinkId,
+            RemoteQueryModifier remoteQueryModifier,
+            SinkSqlProvider sinkSqlProvider)
     {
         try {
             connection = jdbcClient.getConnection(session, handle);
@@ -111,10 +117,10 @@ public class JdbcPageSink
                     .collect(toImmutableList());
         }
 
-        String insertSql = jdbcClient.buildInsertSql(handle, columnWriters);
+        String sinkSql = sinkSqlProvider.getSinkSql(jdbcClient, handle, columnWriters);
         try {
-            insertSql = remoteQueryModifier.apply(session, insertSql);
-            statement = connection.prepareStatement(insertSql);
+            sinkSql = remoteQueryModifier.apply(session, sinkSql);
+            statement = connection.prepareStatement(sinkSql);
         }
         catch (TrinoException e) {
             throw closeAllSuppress(e, connection);
@@ -215,7 +221,9 @@ public class JdbcPageSink
             throw new TrinoException(JDBC_ERROR, "Failed to insert data: " + firstNonNull(e.getMessage(), e), e);
         }
         // pass the successful page sink id
-        return completedFuture(ImmutableList.of(Slices.wrappedLongArray(pageSinkId.getId())));
+        Slice value = Slices.allocate(Long.BYTES);
+        value.setLong(0, pageSinkId.getId());
+        return completedFuture(ImmutableList.of(value));
     }
 
     @SuppressWarnings("unused")

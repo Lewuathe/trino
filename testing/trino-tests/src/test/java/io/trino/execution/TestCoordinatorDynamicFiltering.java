@@ -17,11 +17,12 @@ import com.google.common.collect.ImmutableMap;
 import io.trino.operator.RetryPolicy;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.parallel.Execution;
 
 import static io.trino.operator.RetryPolicy.NONE;
+import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
 
-@Test(singleThreaded = true)
+@Execution(SAME_THREAD)
 public class TestCoordinatorDynamicFiltering
         extends AbstractTestCoordinatorDynamicFiltering
 {
@@ -33,8 +34,9 @@ public class TestCoordinatorDynamicFiltering
                 .setExtraProperties(ImmutableMap.of(
                         "retry-policy", getRetryPolicy().name(),
                         // keep limits lower to test edge cases
+                        "enable-large-dynamic-filters", "false",
                         "dynamic-filtering.small-partitioned.max-distinct-values-per-driver", "10",
-                        "dynamic-filtering.small-broadcast.max-distinct-values-per-driver", "10"))
+                        "dynamic-filtering.small.max-distinct-values-per-driver", "10"))
                 .build();
     }
 

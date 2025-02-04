@@ -17,9 +17,8 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.trino.plugin.jdbc.JdbcOutputTableHandle;
 import io.trino.plugin.jdbc.JdbcTypeHandle;
+import io.trino.plugin.jdbc.RemoteTableName;
 import io.trino.spi.type.Type;
-
-import javax.annotation.Nullable;
 
 import java.util.List;
 import java.util.Optional;
@@ -33,14 +32,13 @@ public class IgniteOutputTableHandle
 
     @JsonCreator
     public IgniteOutputTableHandle(
-            @Nullable @JsonProperty("schemaName") String schemaName,
-            @JsonProperty("tableName") String tableName,
+            @JsonProperty("remoteTableName") RemoteTableName remoteTableName,
             @JsonProperty("columnNames") List<String> columnNames,
             @JsonProperty("columnTypes") List<Type> columnTypes,
             @JsonProperty("jdbcColumnTypes") Optional<List<JdbcTypeHandle>> jdbcColumnTypes,
             @JsonProperty("dummyIdColumn") Optional<String> dummyIdColumn)
     {
-        super("", schemaName, tableName, columnNames, columnTypes, jdbcColumnTypes, Optional.empty(), Optional.empty());
+        super(remoteTableName, columnNames, columnTypes, jdbcColumnTypes, Optional.empty(), Optional.empty());
         this.dummyIdColumn = requireNonNull(dummyIdColumn, "dummyIdColumn is null");
     }
 

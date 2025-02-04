@@ -13,72 +13,25 @@
  */
 package io.trino.plugin.deltalake.transactionlog;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
+import static io.airlift.slice.SizeOf.SIZE_OF_LONG;
+import static io.airlift.slice.SizeOf.estimatedSizeOf;
+import static io.airlift.slice.SizeOf.instanceSize;
+import static java.util.Objects.requireNonNull;
 
-import java.util.Objects;
-
-import static java.lang.String.format;
-
-public class TransactionEntry
+public record TransactionEntry(String appId, long version, long lastUpdated)
 {
-    private final String appId;
-    private final long version;
-    private final long lastUpdated;
+    private static final int INSTANCE_SIZE = instanceSize(TransactionEntry.class);
 
-    @JsonCreator
-    public TransactionEntry(
-            @JsonProperty("appId") String appId,
-            @JsonProperty("version") long version,
-            @JsonProperty("lastUpdated") long lastUpdated)
+    public TransactionEntry
     {
-        this.appId = appId;
-        this.version = version;
-        this.lastUpdated = lastUpdated;
+        requireNonNull(appId, "appId is null");
     }
 
-    @JsonProperty
-    public String getAppId()
+    public long getRetainedSizeInBytes()
     {
-        return appId;
-    }
-
-    @JsonProperty
-    public long getVersion()
-    {
-        return version;
-    }
-
-    @JsonProperty
-    public long getLastUpdated()
-    {
-        return lastUpdated;
-    }
-
-    @Override
-    public boolean equals(Object o)
-    {
-        if (this == o) {
-            return true;
-        }
-        if (o == null || getClass() != o.getClass()) {
-            return false;
-        }
-        TransactionEntry that = (TransactionEntry) o;
-        return version == that.version &&
-                lastUpdated == that.lastUpdated &&
-                Objects.equals(appId, that.appId);
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return Objects.hash(appId, version, lastUpdated);
-    }
-
-    @Override
-    public String toString()
-    {
-        return format("TransactionEntry{appId=%s, version=%d, lastUpdated=%d}", appId, version, lastUpdated);
+        return INSTANCE_SIZE
+                + estimatedSizeOf(appId)
+                + SIZE_OF_LONG
+                + SIZE_OF_LONG;
     }
 }

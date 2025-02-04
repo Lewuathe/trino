@@ -20,8 +20,8 @@ import com.google.common.primitives.Ints;
 import io.airlift.slice.DynamicSliceOutput;
 import io.airlift.slice.Slice;
 import io.trino.metadata.InternalFunctionBundle;
+import io.trino.spi.block.ArrayBlockBuilder;
 import io.trino.spi.block.Block;
-import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.function.LiteralParameters;
 import io.trino.spi.function.ScalarFunction;
 import io.trino.spi.function.SqlType;
@@ -30,25 +30,26 @@ import io.trino.spi.type.BooleanType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.StandardTypes;
 import io.trino.sql.query.QueryAssertions;
-import io.trino.testing.LocalQueryRunner;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.Collections;
 
 import static io.trino.block.BlockSerdeUtil.writeBlock;
-import static io.trino.operator.aggregation.TypedSet.MAX_FUNCTION_MEMORY;
+import static io.trino.operator.scalar.BlockSet.MAX_FUNCTION_MEMORY;
 import static io.trino.spi.StandardErrorCode.AMBIGUOUS_FUNCTION_CALL;
 import static io.trino.spi.StandardErrorCode.EXCEEDED_FUNCTION_MEMORY_LIMIT;
 import static io.trino.spi.StandardErrorCode.FUNCTION_NOT_FOUND;
 import static io.trino.spi.StandardErrorCode.INVALID_CAST_ARGUMENT;
 import static io.trino.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
+import static io.trino.spi.StandardErrorCode.OPERATOR_NOT_FOUND;
 import static io.trino.spi.StandardErrorCode.TYPE_MISMATCH;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 import static io.trino.spi.function.OperatorType.INDETERMINATE;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DecimalType.createDecimalType;
@@ -79,9 +80,10 @@ import static java.util.Collections.emptyList;
 import static java.util.Collections.singletonList;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
-import static org.testng.Assert.assertEquals;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestArrayOperators
 {
     private QueryAssertions assertions;
@@ -117,16 +119,19 @@ public class TestArrayOperators
         ArrayType arrayType = new ArrayType(BIGINT);
         Block actualBlock = arrayBlockOf(arrayType, arrayBlockOf(BIGINT, 1L, 2L), arrayBlockOf(BIGINT, 3L));
         DynamicSliceOutput actualSliceOutput = new DynamicSliceOutput(100);
-        writeBlock(((LocalQueryRunner) assertions.getQueryRunner()).getPlannerContext().getBlockEncodingSerde(), actualSliceOutput, actualBlock);
+        writeBlock(assertions.getQueryRunner().getPlannerContext().getBlockEncodingSerde(), actualSliceOutput, actualBlock);
 
-        BlockBuilder expectedBlockBuilder = arrayType.createBlockBuilder(null, 3);
-        arrayType.writeObject(expectedBlockBuilder, BIGINT.createBlockBuilder(null, 2).writeLong(1).writeLong(2).build());
-        arrayType.writeObject(expectedBlockBuilder, BIGINT.createBlockBuilder(null, 1).writeLong(3).build());
+        ArrayBlockBuilder expectedBlockBuilder = arrayType.createBlockBuilder(null, 3);
+        expectedBlockBuilder.buildEntry(elementBuilder -> {
+            BIGINT.writeLong(elementBuilder, 1);
+            BIGINT.writeLong(elementBuilder, 2);
+        });
+        expectedBlockBuilder.buildEntry(elementBuilder -> BIGINT.writeLong(elementBuilder, 3));
         Block expectedBlock = expectedBlockBuilder.build();
         DynamicSliceOutput expectedSliceOutput = new DynamicSliceOutput(100);
-        writeBlock(((LocalQueryRunner) assertions.getQueryRunner()).getPlannerContext().getBlockEncodingSerde(), expectedSliceOutput, expectedBlock);
+        writeBlock(assertions.getQueryRunner().getPlannerContext().getBlockEncodingSerde(), expectedSliceOutput, expectedBlock);
 
-        assertEquals(actualSliceOutput.slice(), expectedSliceOutput.slice());
+        assertThat(actualSliceOutput.slice()).isEqualTo(expectedSliceOutput.slice());
     }
 
     @Test
@@ -260,11 +265,8 @@ public class TestArrayOperators
     public void testArraySize()
     {
         int size = toIntExact(MAX_FUNCTION_MEMORY.toBytes() + 1);
-        assertTrinoExceptionThrownBy(() -> assertions.expression("array_distinct(ARRAY['" +
-                                                                 "x".repeat(size) + "', '" +
-                                                                 "y".repeat(size) + "', '" +
-                                                                 "z".repeat(size) +
-                                                                 "'])").evaluate())
+        assertTrinoExceptionThrownBy(
+                () -> assertions.expression("array_distinct(ARRAY[lpad('', %1$s , 'x'), lpad('', %1$s , 'y'), lpad('', %1$s , 'z')])".formatted(size)).evaluate())
                 .hasErrorCode(EXCEEDED_FUNCTION_MEMORY_LIMIT);
     }
 
@@ -318,9 +320,7 @@ public class TestArrayOperators
         assertThat(assertions.expression("CAST(a AS JSON)")
                 .binding("a", "ARRAY[3.14E0, 1e-323, 1e308, nan(), infinity(), -infinity(), null]"))
                 .hasType(JSON)
-                .isEqualTo(Runtime.version().feature() >= 19
-                        ? "[3.14,9.9E-324,1.0E308,\"NaN\",\"Infinity\",\"-Infinity\",null]"
-                        : "[3.14,1.0E-323,1.0E308,\"NaN\",\"Infinity\",\"-Infinity\",null]");
+                .isEqualTo("[3.14,9.9E-324,1.0E308,\"NaN\",\"Infinity\",\"-Infinity\",null]");
 
         assertThat(assertions.expression("CAST(a AS JSON)")
                 .binding("a", "ARRAY[DECIMAL '3.14', null]"))
@@ -478,7 +478,9 @@ public class TestArrayOperators
                 .isEqualTo(asList(asList(1L, 2L), asList(3L, null), emptyList(), asList(null, null), null));
 
         assertThat(assertions.expression("CAST(a AS ARRAY(MAP(VARCHAR, BIGINT)))")
-                .binding("a", """
+                .binding(
+                        "a",
+                        """
                         JSON '[
                             {"a": 1, "b": 2},
                             {"none": null, "three": 3},
@@ -496,7 +498,9 @@ public class TestArrayOperators
                         null));
 
         assertThat(assertions.expression("CAST(a AS ARRAY(ROW(k1 BIGINT, k2 VARCHAR)))")
-                .binding("a", """
+                .binding(
+                        "a",
+                        """
                         JSON '[
                             [1, "two"],
                             [3, null],
@@ -948,7 +952,7 @@ public class TestArrayOperators
                 .binding("a", "ARRAY[ARRAY[1]]")
                 .binding("b", "ARRAY[ARRAY['x']]")
                 .evaluate())
-                .hasMessage("line 1:10: Unexpected parameters (array(array(integer)), array(array(varchar(1)))) for function concat. Expected: concat(char(x), char(y)), concat(array(E), E) E, concat(E, array(E)) E, concat(array(E)) E, concat(varchar), concat(varbinary)");
+                .hasMessage("line 1:10: Unexpected parameters (array(array(integer)), array(array(varchar(1)))) for function concat. Expected: concat(E, array(E)) E, concat(array(E)) E, concat(array(E), E) E, concat(char(x), char(y)), concat(varbinary), concat(varchar)");
     }
 
     @Test
@@ -1057,7 +1061,7 @@ public class TestArrayOperators
                 .binding("a", "ARRAY[ARRAY[1]]")
                 .binding("b", "ARRAY['x']")
                 .evaluate())
-                .hasMessage("line 1:10: Unexpected parameters (array(array(integer)), array(varchar(1))) for function concat. Expected: concat(char(x), char(y)), concat(array(E), E) E, concat(E, array(E)) E, concat(array(E)) E, concat(varchar), concat(varbinary)");
+                .hasMessage("line 1:10: Unexpected parameters (array(array(integer)), array(varchar(1))) for function concat. Expected: concat(E, array(E)) E, concat(array(E)) E, concat(array(E), E) E, concat(char(x), char(y)), concat(varbinary), concat(varchar)");
     }
 
     @Test
@@ -1150,10 +1154,10 @@ public class TestArrayOperators
         assertThat(assertions.function("contains", "array[TIMESTAMP '2020-05-10 12:34:56.123456789', TIMESTAMP '1111-05-10 12:34:56.123456789']", "TIMESTAMP '1111-05-10 12:34:56.123456789'"))
                 .isEqualTo(true);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("contains", "array[ARRAY[1.1, 2.2], ARRAY[3.3, 4.3]]", "ARRAY[1.1, null]").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("contains", "array[ARRAY[1.1, 2.2], ARRAY[3.3, 4.3]]", "ARRAY[1.1, null]")::evaluate)
                 .hasErrorCode(NOT_SUPPORTED);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("contains", "array[ARRAY[1.1, null], ARRAY[3.3, 4.3]]", "ARRAY[1.1, null]").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("contains", "array[ARRAY[1.1, null], ARRAY[3.3, 4.3]]", "ARRAY[1.1, null]")::evaluate)
                 .hasErrorCode(NOT_SUPPORTED);
     }
 
@@ -1275,14 +1279,14 @@ public class TestArrayOperators
                 .hasType(VARCHAR)
                 .isEqualTo("1.0E0x2.1E0x3.3E0");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("array_join", "ARRAY[ARRAY[1], ARRAY[2]]", "'-'").evaluate())
-                .hasErrorCode(FUNCTION_NOT_FOUND);
+        assertTrinoExceptionThrownBy(assertions.function("array_join", "ARRAY[ARRAY[1], ARRAY[2]]", "'-'")::evaluate)
+                .hasErrorCode(OPERATOR_NOT_FOUND);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("array_join", "ARRAY[MAP(ARRAY[1], ARRAY[2])]", "'-'").evaluate())
-                .hasErrorCode(FUNCTION_NOT_FOUND);
+        assertTrinoExceptionThrownBy(assertions.function("array_join", "ARRAY[MAP(ARRAY[1], ARRAY[2])]", "'-'")::evaluate)
+                .hasErrorCode(OPERATOR_NOT_FOUND);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("array_join", "ARRAY[CAST(row(1, 2) AS row(col0 bigint, col1 bigint))]", "'-'").evaluate())
-                .hasErrorCode(FUNCTION_NOT_FOUND);
+        assertTrinoExceptionThrownBy(assertions.function("array_join", "ARRAY[CAST(row(1, 2) AS row(col0 bigint, col1 bigint))]", "'-'")::evaluate)
+                .hasErrorCode(OPERATOR_NOT_FOUND);
     }
 
     @Test
@@ -1828,10 +1832,10 @@ public class TestArrayOperators
         assertThat(assertions.function("array_position", "ARRAY[TIMESTAMP '2020-05-10 12:34:56.123456789', TIMESTAMP '1111-05-10 12:34:56.123456789']", "TIMESTAMP '1111-05-10 12:34:56.123456789'"))
                 .isEqualTo(2L);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("array_position", "ARRAY[ARRAY[null]]", "ARRAY[1]").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("array_position", "ARRAY[ARRAY[null]]", "ARRAY[1]")::evaluate)
                 .hasErrorCode(NOT_SUPPORTED);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("array_position", "ARRAY[ARRAY[null]]", "ARRAY[null]").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("array_position", "ARRAY[ARRAY[null]]", "ARRAY[null]")::evaluate)
                 .hasErrorCode(NOT_SUPPORTED);
     }
 
@@ -1992,10 +1996,10 @@ public class TestArrayOperators
     @Test
     public void testElementAt()
     {
-        assertTrinoExceptionThrownBy(() -> assertions.function("element_at", "ARRAY[]", "0").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("element_at", "ARRAY[]", "0")::evaluate)
                 .hasMessage("SQL array indices start at 1");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("element_at", "ARRAY[1, 2, 3]", "0").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("element_at", "ARRAY[1, 2, 3]", "0")::evaluate)
                 .hasMessage("SQL array indices start at 1");
 
         assertThat(assertions.function("element_at", "ARRAY[]", "1"))
@@ -2175,107 +2179,136 @@ public class TestArrayOperators
                 .isEqualTo(ImmutableList.of(ImmutableList.of(1), ImmutableList.of(2)));
 
         // with lambda function
-        assertThat(assertions.expression("array_sort(a, (x, y) -> CASE " +
-                                         "WHEN x IS NULL THEN -1 " +
-                                         "WHEN y IS NULL THEN 1 " +
-                                         "WHEN x < y THEN 1 " +
-                                         "WHEN x = y THEN 0 " +
-                                         "ELSE -1 END)")
+        assertThat(assertions.expression(
+                        """
+                        array_sort(a, (x, y) -> CASE WHEN x IS NULL THEN -1
+                        WHEN y IS NULL THEN 1
+                        WHEN x < y THEN 1
+                        WHEN x = y THEN 0
+                        ELSE -1 END)
+                        """)
                 .binding("a", "ARRAY[2, 3, 2, null, null, 4, 1]"))
                 .hasType(new ArrayType(INTEGER))
                 .isEqualTo(asList(null, null, 4, 3, 2, 2, 1));
 
-        assertThat(assertions.expression("array_sort(a, (x, y) -> CASE " +
-                                         "WHEN x IS NULL THEN 1 " +
-                                         "WHEN y IS NULL THEN -1 " +
-                                         "WHEN x < y THEN 1 " +
-                                         "WHEN x = y THEN 0 " +
-                                         "ELSE -1 END)")
+        assertThat(assertions.expression(
+                        """
+                        array_sort(a, (x, y) -> CASE
+                        WHEN x IS NULL THEN 1
+                        WHEN y IS NULL THEN -1
+                        WHEN x < y THEN 1
+                        WHEN x = y THEN 0
+                        ELSE -1 END)
+                        """)
                 .binding("a", "ARRAY[2, 3, 2, null, null, 4, 1]"))
                 .hasType(new ArrayType(INTEGER))
                 .isEqualTo(asList(4, 3, 2, 2, 1, null, null));
 
-        assertThat(assertions.expression("array_sort(a, (x, y) -> CASE " +
-                                         "WHEN x IS NULL THEN -1 " +
-                                         "WHEN y IS NULL THEN 1 " +
-                                         "WHEN x < y THEN 1 " +
-                                         "WHEN x = y THEN 0 " +
-                                         "ELSE -1 END)")
+        assertThat(assertions.expression(
+                        """
+                        array_sort(a, (x, y) -> CASE
+                        WHEN x IS NULL THEN -1
+                        WHEN y IS NULL THEN 1
+                        WHEN x < y THEN 1
+                        WHEN x = y THEN 0
+                        ELSE -1 END)
+                        """)
                 .binding("a", "ARRAY[2, null, BIGINT '3', 4, null, 1]"))
                 .hasType(new ArrayType(BIGINT))
                 .isEqualTo(asList(null, null, 4L, 3L, 2L, 1L));
 
-        assertThat(assertions.expression("array_sort(a, (x, y) -> CASE " +
-                                         "WHEN x IS NULL THEN -1 " +
-                                         "WHEN y IS NULL THEN 1 " +
-                                         "WHEN x < y THEN 1 " +
-                                         "WHEN x = y THEN 0 " +
-                                         "ELSE -1 END)")
+        assertThat(assertions.expression(
+                        """
+                        array_sort(a, (x, y) -> CASE
+                        WHEN x IS NULL THEN -1
+                        WHEN y IS NULL THEN 1
+                        WHEN x < y THEN 1
+                        WHEN x = y THEN 0
+                        ELSE -1 END)
+                        """)
                 .binding("a", "ARRAY['bc', null, 'ab', 'dc', null]"))
                 .hasType(new ArrayType(createVarcharType(2)))
                 .isEqualTo(asList(null, null, "dc", "bc", "ab"));
 
-        assertThat(assertions.expression("array_sort(a, (x, y) -> CASE " +
-                                         "WHEN x IS NULL THEN -1 " +
-                                         "WHEN y IS NULL THEN 1 " +
-                                         "WHEN length(x) < length(y) THEN 1 " +
-                                         "WHEN length(x) = length(y) THEN 0 " +
-                                         "ELSE -1 END)")
+        assertThat(assertions.expression(
+                        """
+                        array_sort(a, (x, y) -> CASE
+                        WHEN x IS NULL THEN -1
+                        WHEN y IS NULL THEN 1
+                        WHEN length(x) < length(y) THEN 1
+                        WHEN length(x) = length(y) THEN 0
+                        ELSE -1 END)
+                        """)
                 .binding("a", "ARRAY['a', null, 'abcd', null, 'abc', 'zx']"))
                 .hasType(new ArrayType(createVarcharType(4)))
                 .isEqualTo(asList(null, null, "abcd", "abc", "zx", "a"));
 
-        assertThat(assertions.expression("array_sort(a, (x, y) -> CASE " +
-                                         "WHEN x IS NULL THEN -1 " +
-                                         "WHEN y IS NULL THEN 1 " +
-                                         "WHEN x = y THEN 0 " +
-                                         "WHEN x THEN -1 " +
-                                         "ELSE 1 END)")
+        assertThat(assertions.expression(
+                        """
+                        array_sort(a, (x, y) -> CASE
+                        WHEN x IS NULL THEN -1
+                        WHEN y IS NULL THEN 1
+                        WHEN x = y THEN 0
+                        WHEN x THEN -1
+                        ELSE 1 END)
+                        """)
                 .binding("a", "ARRAY[TRUE, null, FALSE, TRUE, null, FALSE, TRUE]"))
                 .hasType(new ArrayType(BOOLEAN))
                 .isEqualTo(asList(null, null, true, true, true, false, false));
 
-        assertThat(assertions.expression("array_sort(a, (x, y) -> CASE " +
-                                         "WHEN x IS NULL THEN -1 " +
-                                         "WHEN y IS NULL THEN 1 " +
-                                         "WHEN x < y THEN 1 " +
-                                         "WHEN x = y THEN 0 " +
-                                         "ELSE -1 END)")
+        assertThat(assertions.expression(
+                        """
+                        array_sort(a, (x, y) -> CASE
+                        WHEN x IS NULL THEN -1
+                        WHEN y IS NULL THEN 1
+                        WHEN x < y THEN 1
+                        WHEN x = y THEN 0
+                        ELSE -1 END)
+                        """)
                 .binding("a", "ARRAY[22.1E0, null, null, 11.1E0, 1.1E0, 44.1E0]"))
                 .hasType(new ArrayType(DOUBLE))
                 .isEqualTo(asList(null, null, 44.1, 22.1, 11.1, 1.1));
 
-        assertThat(assertions.expression("array_sort(a, (x, y) -> CASE " +
-                                         "WHEN x IS NULL THEN -1 " +
-                                         "WHEN y IS NULL THEN 1 " +
-                                         "WHEN date_diff('millisecond', y, x) < 0 THEN 1 " +
-                                         "WHEN date_diff('millisecond', y, x) = 0 THEN 0 " +
-                                         "ELSE -1 END)")
+        assertThat(assertions.expression(
+                        """
+                        array_sort(a, (x, y) -> CASE
+                        WHEN x IS NULL THEN -1
+                        WHEN y IS NULL THEN 1
+                        WHEN date_diff('millisecond', y, x) < 0 THEN 1
+                        WHEN date_diff('millisecond', y, x) = 0 THEN 0
+                        ELSE -1 END)
+                        """)
                 .binding("a", "ARRAY[TIMESTAMP '1973-07-08 22:00:01', NULL, TIMESTAMP '1970-01-01 00:00:01', NULL, TIMESTAMP '1989-02-06 12:00:00']"))
                 .matches("ARRAY[null, null, TIMESTAMP '1989-02-06 12:00:00', TIMESTAMP '1973-07-08 22:00:01', TIMESTAMP '1970-01-01 00:00:01']");
 
-        assertThat(assertions.expression("array_sort(a, (x, y) -> CASE " +
-                                         "WHEN x IS NULL THEN -1 " +
-                                         "WHEN y IS NULL THEN 1 " +
-                                         "WHEN cardinality(x) < cardinality(y) THEN 1 " +
-                                         "WHEN cardinality(x) = cardinality(y) THEN 0 " +
-                                         "ELSE -1 END)")
+        assertThat(assertions.expression(
+                        """
+                        array_sort(a, (x, y) -> CASE
+                        WHEN x IS NULL THEN -1
+                        WHEN y IS NULL THEN 1
+                        WHEN cardinality(x) < cardinality(y) THEN 1
+                        WHEN cardinality(x) = cardinality(y) THEN 0
+                        ELSE -1 END)
+                        """)
                 .binding("a", "ARRAY[ARRAY[2, 3, 1], null, ARRAY[4, null, 2, 1, 4], ARRAY[1, 2], null]"))
                 .hasType(new ArrayType(new ArrayType(INTEGER)))
                 .isEqualTo(asList(null, null, asList(4, null, 2, 1, 4), asList(2, 3, 1), asList(1, 2)));
 
-        assertThat(assertions.expression("array_sort(a, (x, y) -> CASE " +
-                                         "WHEN x IS NULL THEN -1 " +
-                                         "WHEN y IS NULL THEN 1 " +
-                                         "WHEN x < y THEN 1 " +
-                                         "WHEN x = y THEN 0 " +
-                                         "ELSE -1 END)")
+        assertThat(assertions.expression(
+                        """
+                        array_sort(a, (x, y) -> CASE
+                        WHEN x IS NULL THEN -1
+                        WHEN y IS NULL THEN 1
+                        WHEN x < y THEN 1
+                        WHEN x = y THEN 0
+                        ELSE -1 END)
+                        """)
                 .binding("a", "ARRAY[2.3, null, 2.1, null, 2.2]"))
                 .matches("ARRAY[null, null, 2.3, 2.2, 2.1]");
 
         assertThat(assertions.expression("array_sort(a, (x, y) -> CASE " +
-                                         "WHEN month(x) > month(y) THEN 1 " +
-                                         "ELSE -1 END)")
+                        "WHEN month(x) > month(y) THEN 1 " +
+                        "ELSE -1 END)")
                 .binding("a", "ARRAY[TIMESTAMP '1111-06-10 12:34:56.123456789', TIMESTAMP '2020-05-10 12:34:56.123456789']"))
                 .matches("ARRAY[TIMESTAMP '2020-05-10 12:34:56.123456789', TIMESTAMP '1111-06-10 12:34:56.123456789']");
 
@@ -2289,7 +2322,7 @@ public class TestArrayOperators
                 .isEqualTo(asList(-1, 0, 1, null, null));
 
         // invalid functions
-        assertTrinoExceptionThrownBy(() -> assertions.function("array_sort", "ARRAY[color('red'), color('blue')]").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("array_sort", "ARRAY[color('red'), color('blue')]")::evaluate)
                 .hasErrorCode(FUNCTION_NOT_FOUND);
 
         assertTrinoExceptionThrownBy(() -> assertions.expression("array_sort(a, (x, y) -> y - x)")
@@ -2515,10 +2548,10 @@ public class TestArrayOperators
         assertThat(assertions.function("slice", "ARRAY[2.330, 1.900, 2.330]", "1", "2"))
                 .matches("ARRAY[2.330, 1.900]");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("slice", "ARRAY[1, 2, 3, 4]", "1", "-1").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("slice", "ARRAY[1, 2, 3, 4]", "1", "-1")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("slice", "ARRAY[1, 2, 3, 4]", "0", "1").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("slice", "ARRAY[1, 2, 3, 4]", "0", "1")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
     }
 
@@ -2867,7 +2900,7 @@ public class TestArrayOperators
                 .isEqualTo(ImmutableList.of(asList(123, 456), asList(123, 789)));
 
         assertThat(assertions.function("array_intersect", "ARRAY[ARRAY[123, 456], ARRAY[123, 789]]", "ARRAY[ARRAY[123, 456], ARRAY[123, 456], ARRAY[123, 789]]"))
-                .hasType(new ArrayType(new ArrayType((INTEGER))))
+                .hasType(new ArrayType(new ArrayType(INTEGER)))
                 .isEqualTo(ImmutableList.of(asList(123, 456), asList(123, 789)));
 
         assertThat(assertions.function("array_intersect", "ARRAY[(123, 'abc'), (123, 'cde')]", "ARRAY[(123, 'abc'), (123, 'cde')]"))
@@ -3868,67 +3901,67 @@ public class TestArrayOperators
     }
 
     @Test
-    public void testDistinctFrom()
+    public void testIdentical()
     {
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "CAST(NULL AS ARRAY(UNKNOWN))", "CAST(NULL AS ARRAY(UNKNOWN))"))
+        assertThat(assertions.operator(IDENTICAL, "CAST(NULL AS ARRAY(UNKNOWN))", "CAST(NULL AS ARRAY(UNKNOWN))"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[NULL]", "ARRAY[NULL]"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "NULL", "ARRAY[1, 2]"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[NULL]", "ARRAY[NULL]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[1, 2]", "NULL"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "NULL", "ARRAY[1, 2]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[1, 2]", "ARRAY[1, 2]"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[1, 2]", "NULL"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[1, 2]", "ARRAY[1, 2]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[1, 2, 3]", "ARRAY[1, 2]"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[1, 2, 3]", "ARRAY[1, 2]"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[1, 2]", "ARRAY[1, NULL]"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[1, 2]", "ARRAY[1, 3]"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[1, NULL]", "ARRAY[1, NULL]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[1, 2]", "ARRAY[1, NULL]"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[1, NULL]", "ARRAY[1, NULL]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[1, 2]", "ARRAY[1, 3]"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[1, 2, NULL]", "ARRAY[1, 2]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[1, NULL]", "ARRAY[1, NULL]"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[TRUE, FALSE]", "ARRAY[TRUE, FALSE]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[1, NULL]", "ARRAY[1, NULL]"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[1, 2, NULL]", "ARRAY[1, 2]"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[TRUE, NULL]", "ARRAY[TRUE, FALSE]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[TRUE, FALSE]", "ARRAY[TRUE, FALSE]"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[FALSE, NULL]", "ARRAY[NULL, FALSE]"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY['puppies', 'kittens']", "ARRAY['puppies', 'kittens']"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[TRUE, NULL]", "ARRAY[TRUE, FALSE]"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY['puppies', NULL]", "ARRAY['puppies', 'kittens']"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY['puppies', NULL]", "ARRAY[NULL, 'kittens']"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[ARRAY['puppies'], ARRAY['kittens']]", "ARRAY[ARRAY['puppies'], ARRAY['kittens']]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[FALSE, NULL]", "ARRAY[NULL, FALSE]"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[ARRAY['puppies'], NULL]", "ARRAY[ARRAY['puppies'], ARRAY['kittens']]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY['puppies', 'kittens']", "ARRAY['puppies', 'kittens']"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[ARRAY['puppies'], NULL]", "ARRAY[NULL, ARRAY['kittens']]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY['puppies', NULL]", "ARRAY['puppies', 'kittens']"))
+                .isEqualTo(false);
+
+        assertThat(assertions.operator(IDENTICAL, "ARRAY['puppies', NULL]", "ARRAY[NULL, 'kittens']"))
+                .isEqualTo(false);
+
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[ARRAY['puppies'], ARRAY['kittens']]", "ARRAY[ARRAY['puppies'], ARRAY['kittens']]"))
                 .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[ARRAY['puppies'], NULL]", "ARRAY[ARRAY['puppies'], ARRAY['kittens']]"))
+                .isEqualTo(false);
+
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[ARRAY['puppies'], NULL]", "ARRAY[NULL, ARRAY['kittens']]"))
+                .isEqualTo(false);
     }
 
     @Test
@@ -4064,13 +4097,13 @@ public class TestArrayOperators
                         decimal("9876543210.9876543210", createDecimalType(22, 10)),
                         decimal("123123123456.6549876543", createDecimalType(22, 10))));
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("array_remove", "ARRAY[ARRAY[CAST(null AS BIGINT)]]", "ARRAY[CAST(1 AS BIGINT)]").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("array_remove", "ARRAY[ARRAY[CAST(null AS BIGINT)]]", "ARRAY[CAST(1 AS BIGINT)]")::evaluate)
                 .hasErrorCode(NOT_SUPPORTED);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("array_remove", "ARRAY[ARRAY[CAST(null AS BIGINT)]]", "ARRAY[CAST(null AS BIGINT)]").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("array_remove", "ARRAY[ARRAY[CAST(null AS BIGINT)]]", "ARRAY[CAST(null AS BIGINT)]")::evaluate)
                 .hasErrorCode(NOT_SUPPORTED);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("array_remove", "ARRAY[ARRAY[CAST(1 AS BIGINT)]]", "ARRAY[CAST(null AS BIGINT)]").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("array_remove", "ARRAY[ARRAY[CAST(1 AS BIGINT)]]", "ARRAY[CAST(null AS BIGINT)]")::evaluate)
                 .hasErrorCode(NOT_SUPPORTED);
     }
 
@@ -4082,7 +4115,15 @@ public class TestArrayOperators
                 .hasType(new ArrayType(INTEGER))
                 .isEqualTo(ImmutableList.of(1, 1, 1, 1, 1));
 
+        assertThat(assertions.function("repeat", "1", "BIGINT '5'"))
+                .hasType(new ArrayType(INTEGER))
+                .isEqualTo(ImmutableList.of(1, 1, 1, 1, 1));
+
         assertThat(assertions.function("repeat", "'varchar'", "3"))
+                .hasType(new ArrayType(createVarcharType(7)))
+                .isEqualTo(ImmutableList.of("varchar", "varchar", "varchar"));
+
+        assertThat(assertions.function("repeat", "'varchar'", "BIGINT '3'"))
                 .hasType(new ArrayType(createVarcharType(7)))
                 .isEqualTo(ImmutableList.of("varchar", "varchar", "varchar"));
 
@@ -4090,13 +4131,29 @@ public class TestArrayOperators
                 .hasType(new ArrayType(BOOLEAN))
                 .isEqualTo(ImmutableList.of(true));
 
+        assertThat(assertions.function("repeat", "true", "BIGINT '1'"))
+                .hasType(new ArrayType(BOOLEAN))
+                .isEqualTo(ImmutableList.of(true));
+
         assertThat(assertions.function("repeat", "0.5E0", "4"))
+                .hasType(new ArrayType(DOUBLE))
+                .isEqualTo(ImmutableList.of(0.5, 0.5, 0.5, 0.5));
+
+        assertThat(assertions.function("repeat", "0.5E0", "BIGINT '4'"))
                 .hasType(new ArrayType(DOUBLE))
                 .isEqualTo(ImmutableList.of(0.5, 0.5, 0.5, 0.5));
 
         assertThat(assertions.function("repeat", "array[1]", "4"))
                 .hasType(new ArrayType(new ArrayType(INTEGER)))
                 .isEqualTo(ImmutableList.of(ImmutableList.of(1), ImmutableList.of(1), ImmutableList.of(1), ImmutableList.of(1)));
+
+        assertThat(assertions.function("repeat", "array[1]", "BIGINT '4'"))
+                .hasType(new ArrayType(new ArrayType(INTEGER)))
+                .isEqualTo(ImmutableList.of(ImmutableList.of(1), ImmutableList.of(1), ImmutableList.of(1), ImmutableList.of(1)));
+
+        assertThat(assertions.function("repeat", "array[NULL]", "BIGINT '4'"))
+                .hasType(new ArrayType(new ArrayType(UNKNOWN)))
+                .isEqualTo(ImmutableList.of(singletonList(null), singletonList(null), singletonList(null), singletonList(null)));
 
         // null values
         assertThat(assertions.function("repeat", "null", "4"))
@@ -4149,16 +4206,16 @@ public class TestArrayOperators
                 .isEqualTo(ImmutableList.of());
 
         // illegal inputs
-        assertTrinoExceptionThrownBy(() -> assertions.function("repeat", "2", "-1").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("repeat", "2", "-1")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("repeat", "1", "1000000").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("repeat", "1", "1000000")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("repeat", "'loooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooongvarchar'", "9999").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("repeat", "'loooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooongvarchar'", "9999")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("repeat", "array[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]", "9999").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("repeat", "array[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]", "9999")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
     }
 
@@ -4302,17 +4359,80 @@ public class TestArrayOperators
                 .hasType(new ArrayType(BIGINT))
                 .isEqualTo(ImmutableList.of(10L, 8L, 6L, 4L, 2L));
 
+        assertThat(assertions.function("sequence", "9223372036854775807", "-9223372036854775808", "-9223372036854775807"))
+                .hasType(new ArrayType(BIGINT))
+                .isEqualTo(ImmutableList.of(9223372036854775807L, 0L, -9223372036854775807L));
+
+        assertThat(assertions.function("sequence", "9223372036854775807", "-9223372036854775808", "-9223372036854775808"))
+                .hasType(new ArrayType(BIGINT))
+                .isEqualTo(ImmutableList.of(9223372036854775807L, -1L));
+
+        assertThat(assertions.function("sequence", "-9223372036854775808", "9223372036854775807", "9223372036854775807"))
+                .hasType(new ArrayType(BIGINT))
+                .isEqualTo(ImmutableList.of(-9223372036854775808L, -1L, 9223372036854775806L));
+
+        assertThat(assertions.function("sequence", "-9223372036854775808", "-2", "9223372036854775807"))
+                .hasType(new ArrayType(BIGINT))
+                .isEqualTo(ImmutableList.of(-9223372036854775808L));
+
+        // test small range with big steps
+        assertThat(assertions.function("sequence", "-5", "5", "1000"))
+                .hasType(new ArrayType(BIGINT))
+                .isEqualTo(ImmutableList.of(-5L));
+
+        assertThat(assertions.function("sequence", "-5", "5", "7"))
+                .hasType(new ArrayType(BIGINT))
+                .isEqualTo(ImmutableList.of(-5L, 2L));
+
+        assertThat(assertions.function("sequence", "-100", "5", "100"))
+                .hasType(new ArrayType(BIGINT))
+                .isEqualTo(ImmutableList.of(-100L, 0L));
+
         // failure modes
-        assertTrinoExceptionThrownBy(() -> assertions.function("sequence", "2", "-1", "1").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "2", "-1", "1")::evaluate)
                 .hasMessage("sequence stop value should be greater than or equal to start value if step is greater than zero otherwise stop should be less than or equal to start");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("sequence", "-1", "-10", "1").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "-1", "-10", "1")::evaluate)
                 .hasMessage("sequence stop value should be greater than or equal to start value if step is greater than zero otherwise stop should be less than or equal to start");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("sequence", "1", "1000000").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "1", "1000000")::evaluate)
                 .hasMessage("result of sequence function must not have more than 10000 entries");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("sequence", "DATE '2000-04-14'", "DATE '2030-04-12'").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "DATE '2000-04-14'", "DATE '2030-04-12'")::evaluate)
+                .hasMessage("result of sequence function must not have more than 10000 entries");
+
+        // long overflow
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "9223372036854775807", "-9223372036854775808", "-100")::evaluate)
+                .hasMessage("result of sequence function must not have more than 10000 entries");
+
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "9223372036854775807", "-9223372036854775808", "-1")::evaluate)
+                .hasMessage("result of sequence function must not have more than 10000 entries");
+
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "-9223372036854775808", "9223372036854775807", "100")::evaluate)
+                .hasMessage("result of sequence function must not have more than 10000 entries");
+
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "-9223372036854775808", "9223372036854775807", "1")::evaluate)
+                .hasMessage("result of sequence function must not have more than 10000 entries");
+
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "-9223372036854775808", "0", "100")::evaluate)
+                .hasMessage("result of sequence function must not have more than 10000 entries");
+
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "-9223372036854775808", "0", "1")::evaluate)
+                .hasMessage("result of sequence function must not have more than 10000 entries");
+
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "9223372036854775807", "0", "-1")::evaluate)
+                .hasMessage("result of sequence function must not have more than 10000 entries");
+
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "0", "9223372036854775807", "1")::evaluate)
+                .hasMessage("result of sequence function must not have more than 10000 entries");
+
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "0", "-9223372036854775808", "-1")::evaluate)
+                .hasMessage("result of sequence function must not have more than 10000 entries");
+
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "-5000", "5000")::evaluate)
+                .hasMessage("result of sequence function must not have more than 10000 entries");
+
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "5000", "-5000", "-1")::evaluate)
                 .hasMessage("result of sequence function must not have more than 10000 entries");
     }
 
@@ -4350,25 +4470,25 @@ public class TestArrayOperators
                 .matches("ARRAY[TIMESTAMP '2016-04-16 01:00:10',TIMESTAMP '2016-04-15 06:00:10',TIMESTAMP '2016-04-14 11:00:10']");
 
         // failure modes
-        assertTrinoExceptionThrownBy(() -> assertions.function("sequence", "DATE '2016-04-12'", "DATE '2016-04-14'", "interval '-1' day").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "DATE '2016-04-12'", "DATE '2016-04-14'", "interval '-1' day")::evaluate)
                 .hasMessage("sequence stop value should be greater than or equal to start value if step is greater than zero otherwise stop should be less than or equal to start");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("sequence", "DATE '2016-04-14'", "DATE '2016-04-12'", "interval '1' day").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "DATE '2016-04-14'", "DATE '2016-04-12'", "interval '1' day")::evaluate)
                 .hasMessage("sequence stop value should be greater than or equal to start value if step is greater than zero otherwise stop should be less than or equal to start");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("sequence", "DATE '2000-04-14'", "DATE '2030-04-12'", "interval '1' day").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "DATE '2000-04-14'", "DATE '2030-04-12'", "interval '1' day")::evaluate)
                 .hasMessage("result of sequence function must not have more than 10000 entries");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("sequence", "DATE '2018-01-01'", "DATE '2018-01-04'", "interval '18' hour").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "DATE '2018-01-01'", "DATE '2018-01-04'", "interval '18' hour")::evaluate)
                 .hasMessage("sequence step must be a day interval if start and end values are dates");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("sequence", "timestamp '2016-04-16 01:00:10'", "timestamp '2016-04-16 01:01:00'", "interval '-20' second").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "timestamp '2016-04-16 01:00:10'", "timestamp '2016-04-16 01:01:00'", "interval '-20' second")::evaluate)
                 .hasMessage("sequence stop value should be greater than or equal to start value if step is greater than zero otherwise stop should be less than or equal to start");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("sequence", "timestamp '2016-04-16 01:10:10'", "timestamp '2016-04-16 01:01:00'", "interval '20' second").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "timestamp '2016-04-16 01:10:10'", "timestamp '2016-04-16 01:01:00'", "interval '20' second")::evaluate)
                 .hasMessage("sequence stop value should be greater than or equal to start value if step is greater than zero otherwise stop should be less than or equal to start");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("sequence", "timestamp '2016-04-16 01:00:10'", "timestamp '2016-04-16 09:01:00'", "interval '1' second").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "timestamp '2016-04-16 01:00:10'", "timestamp '2016-04-16 09:01:00'", "interval '1' second")::evaluate)
                 .hasMessage("result of sequence function must not have more than 10000 entries");
     }
 
@@ -4406,22 +4526,22 @@ public class TestArrayOperators
                 .matches("ARRAY[TIMESTAMP '2016-04-16 01:01:10', TIMESTAMP '2014-04-16 01:01:10', TIMESTAMP '2012-04-16 01:01:10']");
 
         // failure modes
-        assertTrinoExceptionThrownBy(() -> assertions.function("sequence", "DATE '2016-06-12'", "DATE '2016-04-12'", "interval '1' month").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "DATE '2016-06-12'", "DATE '2016-04-12'", "interval '1' month")::evaluate)
                 .hasMessage("sequence stop value should be greater than or equal to start value if step is greater than zero otherwise stop should be less than or equal to start");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("sequence", "DATE '2016-04-12'", "DATE '2016-06-12'", "interval '-1' month").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "DATE '2016-04-12'", "DATE '2016-06-12'", "interval '-1' month")::evaluate)
                 .hasMessage("sequence stop value should be greater than or equal to start value if step is greater than zero otherwise stop should be less than or equal to start");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("sequence", "DATE '2000-04-12'", "DATE '3000-06-12'", "interval '1' month").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "DATE '2000-04-12'", "DATE '3000-06-12'", "interval '1' month")::evaluate)
                 .hasMessage("result of sequence function must not have more than 10000 entries");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("sequence", "timestamp '2016-05-16 01:00:10'", "timestamp '2016-04-16 01:01:00'", "interval '1' month").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "timestamp '2016-05-16 01:00:10'", "timestamp '2016-04-16 01:01:00'", "interval '1' month")::evaluate)
                 .hasMessage("sequence stop value should be greater than or equal to start value if step is greater than zero otherwise stop should be less than or equal to start");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("sequence", "timestamp '2016-04-16 01:10:10'", "timestamp '2016-05-16 01:01:00'", "interval '-1' month").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "timestamp '2016-04-16 01:10:10'", "timestamp '2016-05-16 01:01:00'", "interval '-1' month")::evaluate)
                 .hasMessage("sequence stop value should be greater than or equal to start value if step is greater than zero otherwise stop should be less than or equal to start");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("sequence", "timestamp '2016-04-16 01:00:10'", "timestamp '3000-04-16 09:01:00'", "interval '1' month").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("sequence", "timestamp '2016-04-16 01:00:10'", "timestamp '3000-04-16 09:01:00'", "interval '1' month")::evaluate)
                 .hasMessage("result of sequence function must not have more than 10000 entries");
     }
 

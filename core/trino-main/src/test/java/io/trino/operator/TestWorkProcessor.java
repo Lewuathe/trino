@@ -18,7 +18,8 @@ import com.google.common.util.concurrent.SettableFuture;
 import io.trino.operator.WorkProcessor.ProcessState;
 import io.trino.operator.WorkProcessor.TransformationState;
 import io.trino.operator.WorkProcessorAssertion.Transform;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.Comparator;
 import java.util.Iterator;
@@ -38,10 +39,8 @@ import static io.trino.operator.WorkProcessorAssertion.assertUnblocks;
 import static io.trino.operator.WorkProcessorAssertion.assertYields;
 import static io.trino.operator.WorkProcessorAssertion.processorFrom;
 import static io.trino.operator.WorkProcessorAssertion.transformationFrom;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
 
 public class TestWorkProcessor
 {
@@ -54,11 +53,11 @@ public class TestWorkProcessor
                 ProcessState.finished()));
 
         Iterator<Integer> iterator = processor.iterator();
-        assertTrue(iterator.hasNext());
-        assertEquals(iterator.next(), (Integer) 1);
-        assertTrue(iterator.hasNext());
-        assertEquals(iterator.next(), (Integer) 2);
-        assertFalse(iterator.hasNext());
+        assertThat(iterator.hasNext()).isTrue();
+        assertThat(iterator.next()).isEqualTo((Integer) 1);
+        assertThat(iterator.hasNext()).isTrue();
+        assertThat(iterator.next()).isEqualTo((Integer) 2);
+        assertThat(iterator.hasNext()).isFalse();
     }
 
     @Test
@@ -85,7 +84,8 @@ public class TestWorkProcessor
                 .hasMessage("Cannot iterate over blocking WorkProcessor");
     }
 
-    @Test(timeOut = 10_000)
+    @Test
+    @Timeout(10)
     public void testMergeSorted()
     {
         List<ProcessState<Integer>> firstStream = ImmutableList.of(
@@ -134,7 +134,8 @@ public class TestWorkProcessor
         assertFinishes(mergedStream);
     }
 
-    @Test(timeOut = 10_000)
+    @Test
+    @Timeout(10)
     public void testMergeSortedEmptyStreams()
     {
         SettableFuture<Void> firstFuture = SettableFuture.create();
@@ -152,8 +153,8 @@ public class TestWorkProcessor
                 ImmutableList.of(processorFrom(firstStream), processorFrom(secondStream)),
                 Comparator.comparingInt(firstInteger -> firstInteger));
 
-        assertFalse(mergedStream.isBlocked());
-        assertFalse(mergedStream.isFinished());
+        assertThat(mergedStream.isBlocked()).isFalse();
+        assertThat(mergedStream.isFinished()).isFalse();
 
         // first stream blocked
         assertBlocks(mergedStream);
@@ -174,7 +175,8 @@ public class TestWorkProcessor
         assertFinishes(mergedStream);
     }
 
-    @Test(timeOut = 10_000)
+    @Test
+    @Timeout(10)
     public void testMergeSortedEmptyStreamsWithFinishedOnly()
     {
         List<ProcessState<Integer>> firstStream = ImmutableList.of(
@@ -188,13 +190,14 @@ public class TestWorkProcessor
                 Comparator.comparingInt(firstInteger -> firstInteger));
 
         // before
-        assertFalse(mergedStream.isBlocked());
-        assertFalse(mergedStream.isFinished());
+        assertThat(mergedStream.isBlocked()).isFalse();
+        assertThat(mergedStream.isFinished()).isFalse();
 
         assertFinishes(mergedStream);
     }
 
-    @Test(timeOut = 10_000)
+    @Test
+    @Timeout(10)
     public void testYield()
     {
         SettableFuture<Void> future = SettableFuture.create();
@@ -234,7 +237,8 @@ public class TestWorkProcessor
         assertFinishes(processor);
     }
 
-    @Test(timeOut = 10_000)
+    @Test
+    @Timeout(10)
     public void testBlock()
     {
         SettableFuture<Void> phase1 = SettableFuture.create();
@@ -248,6 +252,9 @@ public class TestWorkProcessor
         AtomicReference<SettableFuture<Void>> phase2 = new AtomicReference<>(SettableFuture.create());
         WorkProcessor<Integer> processor = processorFrom(scenario)
                 .blocking(phase2::get);
+
+        // Make sure processor is initially blocked
+        assertThat(processor.isBlocked()).isTrue();
 
         // WorkProcessor.blocking future overrides phase1 future
         assertBlocks(processor);
@@ -269,7 +276,8 @@ public class TestWorkProcessor
         assertFinishes(processor);
     }
 
-    @Test(timeOut = 10_000)
+    @Test
+    @Timeout(10)
     public void testProcessStateMonitor()
     {
         SettableFuture<Void> future = SettableFuture.create();
@@ -291,10 +299,11 @@ public class TestWorkProcessor
         assertUnblocks(processor, future);
         assertFinishes(processor);
 
-        assertEquals(actions.build(), ImmutableList.of(RESULT, YIELD, BLOCKED, FINISHED));
+        assertThat(actions.build()).isEqualTo(ImmutableList.of(RESULT, YIELD, BLOCKED, FINISHED));
     }
 
-    @Test(timeOut = 10_000)
+    @Test
+    @Timeout(10)
     public void testFinished()
     {
         AtomicBoolean finished = new AtomicBoolean();
@@ -320,7 +329,8 @@ public class TestWorkProcessor
         assertFinishes(processor);
     }
 
-    @Test(timeOut = 10_000)
+    @Test
+    @Timeout(10)
     public void testFlatMap()
     {
         List<ProcessState<Integer>> baseScenario = ImmutableList.of(
@@ -338,7 +348,8 @@ public class TestWorkProcessor
         assertFinishes(processor);
     }
 
-    @Test(timeOut = 10_000)
+    @Test
+    @Timeout(10)
     public void testMap()
     {
         List<ProcessState<Integer>> baseScenario = ImmutableList.of(
@@ -354,7 +365,8 @@ public class TestWorkProcessor
         assertFinishes(processor);
     }
 
-    @Test(timeOut = 10_000)
+    @Test
+    @Timeout(10)
     public void testFlatTransform()
     {
         SettableFuture<Void> baseFuture = SettableFuture.create();
@@ -441,7 +453,8 @@ public class TestWorkProcessor
         assertFinishes(processor);
     }
 
-    @Test(timeOut = 10_000)
+    @Test
+    @Timeout(10)
     public void testTransform()
     {
         SettableFuture<Void> baseFuture = SettableFuture.create();
@@ -468,8 +481,8 @@ public class TestWorkProcessor
                 .transform(transformationFrom(transformationScenario));
 
         // before
-        assertFalse(processor.isBlocked());
-        assertFalse(processor.isFinished());
+        assertThat(processor.isBlocked()).isFalse();
+        assertThat(processor.isFinished()).isFalse();
 
         // base.yield
         assertYields(processor);
@@ -505,7 +518,8 @@ public class TestWorkProcessor
         assertFinishes(processor);
     }
 
-    @Test(timeOut = 10_000)
+    @Test
+    @Timeout(10)
     public void testCreateFrom()
     {
         SettableFuture<Void> future = SettableFuture.create();
@@ -519,8 +533,8 @@ public class TestWorkProcessor
         WorkProcessor<Integer> processor = processorFrom(scenario);
 
         // before
-        assertFalse(processor.isBlocked());
-        assertFalse(processor.isFinished());
+        assertThat(processor.isBlocked()).isFalse();
+        assertThat(processor.isFinished()).isFalse();
 
         assertYields(processor);
         assertResult(processor, 1);

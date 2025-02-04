@@ -13,15 +13,14 @@
  */
 package io.trino.spi.exchange;
 
+import com.google.errorprone.annotations.ThreadSafe;
 import io.airlift.slice.Slice;
-import io.trino.spi.Experimental;
+import io.trino.spi.metrics.Metrics;
 
-import javax.annotation.concurrent.ThreadSafe;
-
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 @ThreadSafe
-@Experimental(eta = "2023-01-01")
 public interface ExchangeSink
 {
     CompletableFuture<Void> NOT_BLOCKED = CompletableFuture.completedFuture(null);
@@ -60,6 +59,14 @@ public interface ExchangeSink
      * This memory should include any buffers, etc. that are used for writing data
      */
     long getMemoryUsage();
+
+    /**
+     * Get the metrics for the exchange sink
+     */
+    default Optional<Metrics> getMetrics()
+    {
+        return Optional.empty();
+    }
 
     /**
      * Notifies the exchange sink that no more data will be appended.

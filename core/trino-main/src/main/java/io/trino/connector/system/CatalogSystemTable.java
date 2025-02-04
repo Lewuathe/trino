@@ -13,6 +13,7 @@
  */
 package io.trino.connector.system;
 
+import com.google.inject.Inject;
 import io.trino.FullConnectorSession;
 import io.trino.Session;
 import io.trino.metadata.CatalogInfo;
@@ -27,8 +28,6 @@ import io.trino.spi.connector.RecordCursor;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SystemTable;
 import io.trino.spi.predicate.TupleDomain;
-
-import javax.inject.Inject;
 
 import static io.trino.metadata.MetadataListing.listCatalogs;
 import static io.trino.metadata.MetadataUtil.TableMetadataBuilder.tableMetadataBuilder;
@@ -75,9 +74,9 @@ public class CatalogSystemTable
         Builder table = InMemoryRecordSet.builder(CATALOG_TABLE);
         for (CatalogInfo catalogInfo : listCatalogs(session, metadata, accessControl)) {
             table.addRow(
-                    catalogInfo.getCatalogName(),
-                    catalogInfo.getCatalogName(),
-                    catalogInfo.getConnectorName().toString());
+                    catalogInfo.catalogName(),
+                    catalogInfo.catalogName(),
+                    catalogInfo.connectorName().toString());
         }
         return table.build().cursor();
     }

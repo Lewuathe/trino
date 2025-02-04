@@ -14,7 +14,7 @@
 package io.trino.plugin.redshift;
 
 import com.google.common.collect.ImmutableMap;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
@@ -28,21 +28,24 @@ public class TestRedshiftConfig
     public void testDefaults()
     {
         assertRecordedDefaults(recordDefaults(RedshiftConfig.class)
-                .setDisableAutomaticFetchSize(false)
-                .setLegacyTypeMapping(false));
+                .setFetchSize(null)
+                .setUnloadLocation(null)
+                .setUnloadIamRole(null));
     }
 
     @Test
     public void testExplicitPropertyMappings()
     {
         Map<String, String> properties = ImmutableMap.<String, String>builder()
-                .put("redshift.disable-automatic-fetch-size", "true")
-                .put("redshift.use-legacy-type-mapping", "true")
+                .put("redshift.fetch-size", "2000")
+                .put("redshift.unload-location", "s3://bucket")
+                .put("redshift.unload-iam-role", "arn:aws:iam::123456789000:role/redshift_iam_role")
                 .buildOrThrow();
 
         RedshiftConfig expected = new RedshiftConfig()
-                .setDisableAutomaticFetchSize(true)
-                .setLegacyTypeMapping(true);
+                .setFetchSize(2000)
+                .setUnloadLocation("s3://bucket")
+                .setUnloadIamRole("arn:aws:iam::123456789000:role/redshift_iam_role");
 
         assertFullMapping(properties, expected);
     }

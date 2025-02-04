@@ -23,10 +23,10 @@ import io.trino.plugin.hive.FileWriter;
 import io.trino.spi.Page;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
-import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.RunLengthEncodedBlock;
 import io.trino.spi.type.Type;
 import org.apache.parquet.format.CompressionCodec;
+import org.apache.parquet.format.FileMetaData;
 import org.apache.parquet.schema.MessageType;
 import org.joda.time.DateTimeZone;
 
@@ -50,7 +50,7 @@ import static io.trino.plugin.hive.HiveErrorCode.HIVE_WRITER_DATA_ERROR;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_WRITE_VALIDATION_FAILED;
 import static java.util.Objects.requireNonNull;
 
-public class ParquetFileWriter
+public final class ParquetFileWriter
         implements FileWriter
 {
     private static final int INSTANCE_SIZE = instanceSize(ParquetFileWriter.class);
@@ -75,7 +75,6 @@ public class ParquetFileWriter
             int[] fileInputColumnIndexes,
             CompressionCodec compressionCodec,
             String trinoVersion,
-            boolean useBatchColumnReadersForVerification,
             Optional<DateTimeZone> parquetTimeZone,
             Optional<Supplier<ParquetDataSource>> validationInputFactory)
             throws IOException
@@ -92,7 +91,6 @@ public class ParquetFileWriter
                 parquetWriterOptions,
                 compressionCodec,
                 trinoVersion,
-                useBatchColumnReadersForVerification,
                 parquetTimeZone,
                 validationInputFactory.isPresent()
                         ? Optional.of(new ParquetWriteValidationBuilder(fileColumnTypes, fileColumnNames))
@@ -103,9 +101,7 @@ public class ParquetFileWriter
 
         ImmutableList.Builder<Block> nullBlocks = ImmutableList.builder();
         for (Type fileColumnType : fileColumnTypes) {
-            BlockBuilder blockBuilder = fileColumnType.createBlockBuilder(null, 1, 0);
-            blockBuilder.appendNull();
-            nullBlocks.add(blockBuilder.build());
+            nullBlocks.add(fileColumnType.createNullBlock());
         }
         this.nullBlocks = nullBlocks.build();
     }
@@ -154,7 +150,7 @@ public class ParquetFileWriter
             try {
                 rollbackAction.close();
             }
-            catch (Exception ignored) {
+            catch (Exception _) {
                 // ignore
             }
             throw new TrinoException(HIVE_WRITER_CLOSE_ERROR, "Error committing write parquet to Hive", e);
@@ -199,5 +195,10 @@ public class ParquetFileWriter
         return toStringHelper(this)
                 .add("writer", parquetWriter)
                 .toString();
+    }
+
+    public FileMetaData getFileMetadata()
+    {
+        return parquetWriter.getFileMetaData();
     }
 }

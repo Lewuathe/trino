@@ -14,6 +14,10 @@
 package io.trino.plugin.singlestore;
 
 import com.google.common.collect.ImmutableSet;
+import com.google.inject.Inject;
+import io.airlift.slice.Slice;
+import io.trino.plugin.base.expression.ConnectorExpressionRewriter;
+import io.trino.plugin.base.mapping.IdentifierMapping;
 import io.trino.plugin.jdbc.BaseJdbcClient;
 import io.trino.plugin.jdbc.BaseJdbcConfig;
 import io.trino.plugin.jdbc.ColumnMapping;
@@ -28,9 +32,11 @@ import io.trino.plugin.jdbc.LongWriteFunction;
 import io.trino.plugin.jdbc.PreparedQuery;
 import io.trino.plugin.jdbc.QueryBuilder;
 import io.trino.plugin.jdbc.RemoteTableName;
+import io.trino.plugin.jdbc.SliceReadFunction;
 import io.trino.plugin.jdbc.WriteMapping;
+import io.trino.plugin.jdbc.expression.JdbcConnectorExpressionRewriterBuilder;
+import io.trino.plugin.jdbc.expression.ParameterizedExpression;
 import io.trino.plugin.jdbc.logging.RemoteQueryModifier;
-import io.trino.plugin.jdbc.mapping.IdentifierMapping;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.ColumnHandle;
@@ -39,6 +45,7 @@ import io.trino.spi.connector.JoinCondition;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.expression.ConnectorExpression;
 import io.trino.spi.type.CharType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.Decimals;
@@ -49,8 +56,6 @@ import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeSignature;
 import io.trino.spi.type.VarcharType;
-
-import javax.inject.Inject;
 
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
@@ -108,6 +113,7 @@ import static io.trino.plugin.jdbc.StandardColumnMappings.varcharWriteFunction;
 import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.getUnsupportedTypeHandling;
 import static io.trino.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
+import static io.trino.spi.StandardErrorCode.SCHEMA_NOT_EMPTY;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DateType.DATE;
@@ -125,6 +131,7 @@ import static io.trino.spi.type.Timestamps.PICOSECONDS_PER_NANOSECOND;
 import static io.trino.spi.type.Timestamps.round;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarbinaryType.VARBINARY;
+import static io.trino.spi.type.VarcharType.UNBOUNDED_LENGTH;
 import static java.lang.Float.floatToRawIntBits;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
@@ -151,6 +158,7 @@ public class SingleStoreClient
     private static final Pattern UNSIGNED_TYPE_REGEX = Pattern.compile("(?i).*unsigned$");
 
     private final Type jsonType;
+    private final ConnectorExpressionRewriter<ParameterizedExpression> connectorExpressionRewriter;
 
     @Inject
     public SingleStoreClient(
@@ -183,6 +191,19 @@ public class SingleStoreClient
         super("`", connectionFactory, queryBuilder, config.getJdbcTypesMappedToVarchar(), identifierMapping, queryModifier, supportsRetries);
         requireNonNull(typeManager, "typeManager is null");
         this.jsonType = typeManager.getType(new TypeSignature(StandardTypes.JSON));
+
+        this.connectorExpressionRewriter = JdbcConnectorExpressionRewriterBuilder.newBuilder()
+                .addStandardRules(this::quoted)
+                // No "real" on the list; pushdown on REAL is disabled also in toColumnMapping
+                .withTypeClass("numeric_type", ImmutableSet.of("tinyint", "smallint", "integer", "bigint", "decimal", "double"))
+                .map("$equal(left: numeric_type, right: numeric_type)").to("left = right")
+                .map("$not_equal(left: numeric_type, right: numeric_type)").to("left <> right")
+                // .map("$is_distinct_from(left: numeric_type, right: numeric_type)").to("left IS DISTINCT FROM right")
+                .map("$less_than(left: numeric_type, right: numeric_type)").to("left < right")
+                .map("$less_than_or_equal(left: numeric_type, right: numeric_type)").to("left <= right")
+                .map("$greater_than(left: numeric_type, right: numeric_type)").to("left > right")
+                .map("$greater_than_or_equal(left: numeric_type, right: numeric_type)").to("left >= right")
+                .build();
     }
 
     @Override
@@ -222,6 +243,22 @@ public class SingleStoreClient
     }
 
     @Override
+    protected void dropSchema(ConnectorSession session, Connection connection, String remoteSchemaName, boolean cascade)
+            throws SQLException
+    {
+        // SingleStore always deletes all tables inside the database though
+        // the behavior isn't documented in https://docs.singlestore.com/cloud/reference/sql-reference/data-definition-language-ddl/drop-database/
+        if (!cascade) {
+            try (ResultSet tables = getTables(connection, Optional.of(remoteSchemaName), Optional.empty())) {
+                if (tables.next()) {
+                    throw new TrinoException(SCHEMA_NOT_EMPTY, "Cannot drop non-empty schema '%s'".formatted(remoteSchemaName));
+                }
+            }
+        }
+        execute(session, connection, "DROP SCHEMA " + quoted(remoteSchemaName));
+    }
+
+    @Override
     public Optional<String> getTableComment(ResultSet resultSet)
     {
         // Don't return a comment until the connector supports creating tables with comment
@@ -231,7 +268,7 @@ public class SingleStoreClient
     @Override
     public Optional<ColumnMapping> toColumnMapping(ConnectorSession session, Connection connection, JdbcTypeHandle typeHandle)
     {
-        String jdbcTypeName = typeHandle.getJdbcTypeName()
+        String jdbcTypeName = typeHandle.jdbcTypeName()
                 .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + typeHandle));
 
         Optional<ColumnMapping> mapping = getForcedMappingToVarchar(typeHandle);
@@ -247,7 +284,7 @@ public class SingleStoreClient
             return Optional.of(jsonColumnMapping());
         }
 
-        switch (typeHandle.getJdbcType()) {
+        switch (typeHandle.jdbcType()) {
             case Types.BIT:
             case Types.BOOLEAN:
                 return Optional.of(booleanColumnMapping());
@@ -271,13 +308,21 @@ public class SingleStoreClient
                 return Optional.of(doubleColumnMapping());
             case Types.CHAR:
             case Types.NCHAR: // TODO it it is dummy copied from StandardColumnMappings, verify if it is proper mapping
-                return Optional.of(defaultCharColumnMapping(typeHandle.getRequiredColumnSize(), false));
+                return Optional.of(defaultCharColumnMapping(typeHandle.requiredColumnSize(), false));
             case Types.VARCHAR:
             case Types.LONGVARCHAR:
-                return Optional.of(defaultVarcharColumnMapping(typeHandle.getRequiredColumnSize(), false));
+                int columnSize = switch (jdbcTypeName) {
+                    case "TINYTEXT" -> 255;
+                    case "TEXT" -> 65535;
+                    case "MEDIUMTEXT" -> 16777215;
+                    case "LONGTEXT" -> UNBOUNDED_LENGTH;
+                    case "VARCHAR" -> typeHandle.requiredColumnSize();
+                    default -> throw new IllegalStateException("Unexpected type: " + jdbcTypeName);
+                };
+                return Optional.of(checkNullUsingBytes(defaultVarcharColumnMapping(columnSize, false)));
             case Types.DECIMAL:
-                int precision = typeHandle.getRequiredColumnSize();
-                int decimalDigits = typeHandle.getRequiredDecimalDigits();
+                int precision = typeHandle.requiredColumnSize();
+                int decimalDigits = typeHandle.requiredDecimalDigits();
                 if (getDecimalRounding(session) == ALLOW_OVERFLOW && precision > Decimals.MAX_PRECISION) {
                     int scale = min(decimalDigits, getDecimalDefaultScale(session));
                     return Optional.of(decimalColumnMapping(createDecimalType(Decimals.MAX_PRECISION, scale), getDecimalRoundingMode(session)));
@@ -289,21 +334,21 @@ public class SingleStoreClient
             case Types.BINARY:
             case Types.VARBINARY:
             case Types.LONGVARBINARY:
-                return Optional.of(varbinaryColumnMapping());
+                return Optional.of(checkNullUsingBytes(varbinaryColumnMapping()));
             case Types.DATE:
                 return Optional.of(ColumnMapping.longMapping(
                         DATE,
                         dateReadFunctionUsingLocalDate(),
                         dateWriteFunction()));
             case Types.TIME:
-                TimeType timeType = createTimeType(getTimePrecision(typeHandle.getRequiredColumnSize()));
+                TimeType timeType = createTimeType(getTimePrecision(typeHandle.requiredColumnSize()));
                 return Optional.of(ColumnMapping.longMapping(
                         timeType,
                         singleStoreTimeReadFunction(timeType),
                         timeWriteFunction(timeType.getPrecision())));
             case Types.TIMESTAMP:
                 // TODO (https://github.com/trinodb/trino/issues/5450) Fix DST handling
-                TimestampType timestampType = createTimestampType(getTimestampPrecision(typeHandle.getRequiredColumnSize()));
+                TimestampType timestampType = createTimestampType(getTimestampPrecision(typeHandle.requiredColumnSize()));
                 return Optional.of(timestampColumnMapping(timestampType));
         }
 
@@ -311,6 +356,32 @@ public class SingleStoreClient
             return mapToUnboundedVarchar(typeHandle);
         }
         return Optional.empty();
+    }
+
+    private static ColumnMapping checkNullUsingBytes(ColumnMapping mapping)
+    {
+        if (mapping.getReadFunction() instanceof SliceReadFunction sliceReadFunction) {
+            SliceReadFunction wrapper = new SliceReadFunction() {
+                @Override
+                public Slice readSlice(ResultSet resultSet, int columnIndex)
+                        throws SQLException
+                {
+                    return sliceReadFunction.readSlice(resultSet, columnIndex);
+                }
+
+                @Override
+                public boolean isNull(ResultSet resultSet, int columnIndex)
+                        throws SQLException
+                {
+                    // Singlestore driver 1.2.1 will throw an exception if blob backed columns are read using getObject()
+                    resultSet.getBytes(columnIndex);
+                    return resultSet.wasNull();
+                }
+            };
+
+            return ColumnMapping.mapping(mapping.getType(), wrapper, mapping.getWriteFunction(), mapping.getPredicatePushdownController());
+        }
+        return mapping;
     }
 
     private static int getTimePrecision(int timeColumnSize)
@@ -347,6 +418,19 @@ public class SingleStoreClient
     }
 
     @Override
+    protected ResultSet getAllTableColumns(Connection connection, Optional<String> remoteSchemaName)
+            throws SQLException
+    {
+        // SingleStore maps their "database" to SQL catalogs and does not have schemas
+        DatabaseMetaData metadata = connection.getMetaData();
+        return metadata.getColumns(
+                remoteSchemaName.orElse(null),
+                null,
+                null,
+                null);
+    }
+
+    @Override
     public void renameTable(ConnectorSession session, JdbcTableHandle handle, SchemaTableName newTableName)
     {
         RemoteTableName remoteTableName = handle.asPlainTable().getRemoteTableName();
@@ -377,6 +461,12 @@ public class SingleStoreClient
     public void setColumnType(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle column, Type type)
     {
         throw new TrinoException(NOT_SUPPORTED, "This connector does not support setting column types");
+    }
+
+    @Override
+    public void dropNotNullConstraint(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle column)
+    {
+        throw new TrinoException(NOT_SUPPORTED, "This connector does not support dropping a not null constraint");
     }
 
     @Override
@@ -490,7 +580,7 @@ public class SingleStoreClient
     public boolean supportsTopN(ConnectorSession session, JdbcTableHandle handle, List<JdbcSortItem> sortOrder)
     {
         for (JdbcSortItem sortItem : sortOrder) {
-            Type sortItemType = sortItem.getColumn().getColumnType();
+            Type sortItemType = sortItem.column().getColumnType();
             if (sortItemType instanceof CharType || sortItemType instanceof VarcharType) {
                 // Remote database can be case insensitive.
                 return false;
@@ -505,26 +595,15 @@ public class SingleStoreClient
         return Optional.of((query, sortItems, limit) -> {
             String orderBy = sortItems.stream()
                     .flatMap(sortItem -> {
-                        String ordering = sortItem.getSortOrder().isAscending() ? "ASC" : "DESC";
-                        String columnSorting = format("%s %s", quoted(sortItem.getColumn().getColumnName()), ordering);
+                        String ordering = sortItem.sortOrder().isAscending() ? "ASC" : "DESC";
+                        String columnSorting = format("%s %s", quoted(sortItem.column().getColumnName()), ordering);
 
-                        switch (sortItem.getSortOrder()) {
-                            case ASC_NULLS_FIRST:
-                                // In SingleStore ASC implies NULLS FIRST
-                            case DESC_NULLS_LAST:
-                                // In SingleStore DESC implies NULLS LAST
-                                return Stream.of(columnSorting);
-
-                            case ASC_NULLS_LAST:
-                                return Stream.of(
-                                        format("ISNULL(%s) ASC", quoted(sortItem.getColumn().getColumnName())),
-                                        columnSorting);
-                            case DESC_NULLS_FIRST:
-                                return Stream.of(
-                                        format("ISNULL(%s) DESC", quoted(sortItem.getColumn().getColumnName())),
-                                        columnSorting);
-                        }
-                        throw new UnsupportedOperationException("Unsupported sort order: " + sortItem.getSortOrder());
+                        return switch (sortItem.sortOrder()) {
+                            // In SingleStore ASC implies NULLS FIRST, DESC implies NULLS LAST
+                            case ASC_NULLS_FIRST, DESC_NULLS_LAST -> Stream.of(columnSorting);
+                            case ASC_NULLS_LAST -> Stream.of(format("ISNULL(%s) ASC", quoted(sortItem.column().getColumnName())), columnSorting);
+                            case DESC_NULLS_FIRST -> Stream.of(format("ISNULL(%s) DESC", quoted(sortItem.column().getColumnName())), columnSorting);
+                        };
                     })
                     .collect(joining(", "));
             return format("%s ORDER BY %s LIMIT %s", query, orderBy, limit);
@@ -538,7 +617,31 @@ public class SingleStoreClient
     }
 
     @Override
+    public Optional<ParameterizedExpression> convertPredicate(ConnectorSession session, ConnectorExpression expression, Map<String, ColumnHandle> assignments)
+    {
+        return connectorExpressionRewriter.rewrite(session, expression, assignments);
+    }
+
+    @Override
     public Optional<PreparedQuery> implementJoin(
+            ConnectorSession session,
+            JoinType joinType,
+            PreparedQuery leftSource,
+            Map<JdbcColumnHandle, String> leftProjections,
+            PreparedQuery rightSource,
+            Map<JdbcColumnHandle, String> rightProjections,
+            List<ParameterizedExpression> joinConditions,
+            JoinStatistics statistics)
+    {
+        if (joinType == JoinType.FULL_OUTER) {
+            // Not supported in SingleStore
+            return Optional.empty();
+        }
+        return super.implementJoin(session, joinType, leftSource, leftProjections, rightSource, rightProjections, joinConditions, statistics);
+    }
+
+    @Override
+    public Optional<PreparedQuery> legacyImplementJoin(
             ConnectorSession session,
             JoinType joinType,
             PreparedQuery leftSource,
@@ -552,13 +655,13 @@ public class SingleStoreClient
             // Not supported in SingleStore
             return Optional.empty();
         }
-        return super.implementJoin(session, joinType, leftSource, rightSource, joinConditions, rightAssignments, leftAssignments, statistics);
+        return super.legacyImplementJoin(session, joinType, leftSource, rightSource, joinConditions, rightAssignments, leftAssignments, statistics);
     }
 
     @Override
     protected boolean isSupportedJoinCondition(ConnectorSession session, JdbcJoinCondition joinCondition)
     {
-        if (joinCondition.getOperator() == JoinCondition.Operator.IS_DISTINCT_FROM) {
+        if (joinCondition.getOperator() == JoinCondition.Operator.IDENTICAL) {
             // Not supported in SingleStore
             return false;
         }
@@ -571,13 +674,13 @@ public class SingleStoreClient
 
     private static Optional<ColumnMapping> getUnsignedMapping(JdbcTypeHandle typeHandle)
     {
-        if (typeHandle.getJdbcTypeName().isEmpty()) {
+        if (typeHandle.jdbcTypeName().isEmpty()) {
             return Optional.empty();
         }
 
-        String typeName = typeHandle.getJdbcTypeName().get();
+        String typeName = typeHandle.jdbcTypeName().get();
         if (UNSIGNED_TYPE_REGEX.matcher(typeName).matches()) {
-            switch (typeHandle.getJdbcType()) {
+            switch (typeHandle.jdbcType()) {
                 case Types.BIT:
                     return Optional.of(booleanColumnMapping());
 

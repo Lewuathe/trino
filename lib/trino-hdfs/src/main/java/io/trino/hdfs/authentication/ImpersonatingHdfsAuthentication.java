@@ -13,13 +13,14 @@
  */
 package io.trino.hdfs.authentication;
 
+import com.google.inject.Inject;
 import io.trino.plugin.base.security.UserNameProvider;
 import io.trino.spi.security.ConnectorIdentity;
 import org.apache.hadoop.security.UserGroupInformation;
 
-import javax.inject.Inject;
+import java.io.IOException;
+import java.io.InterruptedIOException;
 
-import static io.trino.hdfs.authentication.UserGroupInformationUtils.executeActionInDoAs;
 import static java.util.Objects.requireNonNull;
 
 public class ImpersonatingHdfsAuthentication
@@ -36,10 +37,16 @@ public class ImpersonatingHdfsAuthentication
     }
 
     @Override
-    public <R, E extends Exception> R doAs(ConnectorIdentity identity, GenericExceptionAction<R, E> action)
-            throws E
+    public <T> T doAs(ConnectorIdentity identity, ExceptionAction<T> action)
+            throws IOException
     {
-        return executeActionInDoAs(createProxyUser(userNameProvider.get(identity)), action);
+        try {
+            return createProxyUser(userNameProvider.get(identity)).callAs(action::run);
+        }
+        catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new InterruptedIOException();
+        }
     }
 
     private UserGroupInformation createProxyUser(String user)

@@ -237,19 +237,13 @@ public class StripeReader
     private static boolean isSupportedStreamType(Stream stream, OrcTypeKind orcTypeKind)
     {
         if (stream.getStreamKind() == BLOOM_FILTER) {
-            switch (orcTypeKind) {
-                case STRING:
-                case VARCHAR:
-                case CHAR:
-                    // non-utf8 bloom filters are not allowed for character types
-                    return false;
-                case TIMESTAMP:
-                case TIMESTAMP_INSTANT:
-                    // non-utf8 bloom filters are not supported for timestamp
-                    return false;
-                default:
-                    return true;
-            }
+            return switch (orcTypeKind) {
+                // non-utf8 bloom filters are not allowed for character types
+                case STRING, VARCHAR, CHAR -> false;
+                // non-utf8 bloom filters are not supported for timestamp
+                case TIMESTAMP, TIMESTAMP_INSTANT -> false;
+                default -> true;
+            };
         }
         if (stream.getStreamKind() == BLOOM_FILTER_UTF8) {
             // char types require padding for bloom filters, which is not supported
@@ -407,16 +401,9 @@ public class StripeReader
         HashMap<OrcColumnId, List<BloomFilter>> bloomFilters = new HashMap<>();
         for (Entry<StreamId, Stream> entry : streams.entrySet()) {
             Stream stream = entry.getValue();
-            if (stream.getStreamKind() == BLOOM_FILTER_UTF8) {
+            if (stream.getStreamKind() == BLOOM_FILTER_UTF8 || stream.getStreamKind() == BLOOM_FILTER && !bloomFilters.containsKey(stream.getColumnId())) {
                 OrcInputStream inputStream = new OrcInputStream(streamsData.get(entry.getKey()));
                 bloomFilters.put(stream.getColumnId(), metadataReader.readBloomFilterIndexes(inputStream));
-            }
-        }
-        for (Entry<StreamId, Stream> entry : streams.entrySet()) {
-            Stream stream = entry.getValue();
-            if (stream.getStreamKind() == BLOOM_FILTER && !bloomFilters.containsKey(stream.getColumnId())) {
-                OrcInputStream inputStream = new OrcInputStream(streamsData.get(entry.getKey()));
-                bloomFilters.put(entry.getKey().getColumnId(), metadataReader.readBloomFilterIndexes(inputStream));
             }
         }
         return ImmutableMap.copyOf(bloomFilters);

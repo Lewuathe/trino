@@ -13,10 +13,10 @@
  */
 package io.trino.connector;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import io.airlift.log.Logger;
+import io.opentelemetry.api.trace.Tracer;
 import io.trino.metadata.CatalogMetadata.SecurityManagement;
 import io.trino.metadata.CatalogProcedures;
 import io.trino.metadata.CatalogTableFunctions;
@@ -29,27 +29,32 @@ import io.trino.spi.connector.ConnectorCapabilities;
 import io.trino.spi.connector.ConnectorIndexProvider;
 import io.trino.spi.connector.ConnectorNodePartitioningProvider;
 import io.trino.spi.connector.ConnectorPageSinkProvider;
-import io.trino.spi.connector.ConnectorPageSourceProvider;
+import io.trino.spi.connector.ConnectorPageSourceProviderFactory;
 import io.trino.spi.connector.ConnectorRecordSetProvider;
+import io.trino.spi.connector.ConnectorSecurityContext;
 import io.trino.spi.connector.ConnectorSplitManager;
+import io.trino.spi.connector.SchemaRoutineName;
 import io.trino.spi.connector.SystemTable;
 import io.trino.spi.connector.TableProcedureMetadata;
-import io.trino.spi.eventlistener.EventListener;
+import io.trino.spi.function.FunctionKind;
 import io.trino.spi.function.FunctionProvider;
+import io.trino.spi.function.table.ArgumentSpecification;
+import io.trino.spi.function.table.ConnectorTableFunction;
+import io.trino.spi.function.table.ReturnTypeSpecification.DescribedTable;
+import io.trino.spi.function.table.TableArgumentSpecification;
 import io.trino.spi.procedure.Procedure;
-import io.trino.spi.ptf.ArgumentSpecification;
-import io.trino.spi.ptf.ConnectorTableFunction;
-import io.trino.spi.ptf.ReturnTypeSpecification.DescribedTable;
-import io.trino.spi.ptf.TableArgumentSpecification;
+import io.trino.spi.security.TrinoPrincipal;
 import io.trino.spi.session.PropertyMetadata;
 import io.trino.split.RecordPageSourceProvider;
 
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Verify.verify;
@@ -62,23 +67,23 @@ public class ConnectorServices
 {
     private static final Logger log = Logger.get(ConnectorServices.class);
 
+    private final Tracer tracer;
     private final CatalogHandle catalogHandle;
     private final Connector connector;
-    private final Runnable afterShutdown;
     private final Set<SystemTable> systemTables;
     private final CatalogProcedures procedures;
     private final CatalogTableProcedures tableProcedures;
     private final Optional<FunctionProvider> functionProvider;
     private final CatalogTableFunctions tableFunctions;
     private final Optional<ConnectorSplitManager> splitManager;
-    private final Optional<ConnectorPageSourceProvider> pageSourceProvider;
+    private final Optional<ConnectorPageSourceProviderFactory> pageSourceProviderFactory;
     private final Optional<ConnectorPageSinkProvider> pageSinkProvider;
     private final Optional<ConnectorIndexProvider> indexProvider;
     private final Optional<ConnectorNodePartitioningProvider> partitioningProvider;
     private final Optional<ConnectorAccessControl> accessControl;
-    private final List<EventListener> eventListeners;
     private final Map<String, PropertyMetadata<?>> sessionProperties;
     private final Map<String, PropertyMetadata<?>> tableProperties;
+    private final Map<String, PropertyMetadata<?>> viewProperties;
     private final Map<String, PropertyMetadata<?>> materializedViewProperties;
     private final Map<String, PropertyMetadata<?>> schemaProperties;
     private final Map<String, PropertyMetadata<?>> columnProperties;
@@ -87,11 +92,11 @@ public class ConnectorServices
 
     private final AtomicBoolean shutdown = new AtomicBoolean();
 
-    public ConnectorServices(CatalogHandle catalogHandle, Connector connector, Runnable afterShutdown)
+    public ConnectorServices(Tracer tracer, CatalogHandle catalogHandle, Connector connector)
     {
+        this.tracer = requireNonNull(tracer, "tracer is null");
         this.catalogHandle = requireNonNull(catalogHandle, "catalogHandle is null");
         this.connector = requireNonNull(connector, "connector is null");
-        this.afterShutdown = requireNonNull(afterShutdown, "afterShutdown is null");
 
         Set<SystemTable> systemTables = connector.getSystemTables();
         requireNonNull(systemTables, format("Connector '%s' returned a null system tables set", catalogHandle));
@@ -117,34 +122,35 @@ public class ConnectorServices
         try {
             splitManager = connector.getSplitManager();
         }
-        catch (UnsupportedOperationException ignored) {
+        catch (UnsupportedOperationException _) {
         }
         this.splitManager = Optional.ofNullable(splitManager);
 
-        ConnectorPageSourceProvider connectorPageSourceProvider = null;
+        ConnectorPageSourceProviderFactory connectorPageSourceProviderFactory = null;
         try {
-            connectorPageSourceProvider = connector.getPageSourceProvider();
-            requireNonNull(connectorPageSourceProvider, format("Connector '%s' returned a null page source provider", catalogHandle));
+            connectorPageSourceProviderFactory = connector.getPageSourceProviderFactory();
+            requireNonNull(connectorPageSourceProviderFactory, format("Connector '%s' returned a null page source provider factory", catalogHandle));
         }
-        catch (UnsupportedOperationException ignored) {
+        catch (UnsupportedOperationException _) {
         }
 
         try {
             ConnectorRecordSetProvider connectorRecordSetProvider = connector.getRecordSetProvider();
             requireNonNull(connectorRecordSetProvider, format("Connector '%s' returned a null record set provider", catalogHandle));
-            verify(connectorPageSourceProvider == null, "Connector '%s' returned both page source and record set providers", catalogHandle);
-            connectorPageSourceProvider = new RecordPageSourceProvider(connectorRecordSetProvider);
+            verify(connectorPageSourceProviderFactory == null, "Connector '%s' returned both page source and record set providers", catalogHandle);
+            var pageSourceProvider = new RecordPageSourceProvider(connectorRecordSetProvider);
+            connectorPageSourceProviderFactory = () -> pageSourceProvider;
         }
-        catch (UnsupportedOperationException ignored) {
+        catch (UnsupportedOperationException _) {
         }
-        this.pageSourceProvider = Optional.ofNullable(connectorPageSourceProvider);
+        this.pageSourceProviderFactory = Optional.ofNullable(connectorPageSourceProviderFactory);
 
         ConnectorPageSinkProvider connectorPageSinkProvider = null;
         try {
             connectorPageSinkProvider = connector.getPageSinkProvider();
             requireNonNull(connectorPageSinkProvider, format("Connector '%s' returned a null page sink provider", catalogHandle));
         }
-        catch (UnsupportedOperationException ignored) {
+        catch (UnsupportedOperationException _) {
         }
         this.pageSinkProvider = Optional.ofNullable(connectorPageSinkProvider);
 
@@ -153,7 +159,7 @@ public class ConnectorServices
             indexProvider = connector.getIndexProvider();
             requireNonNull(indexProvider, format("Connector '%s' returned a null index provider", catalogHandle));
         }
-        catch (UnsupportedOperationException ignored) {
+        catch (UnsupportedOperationException _) {
         }
         this.indexProvider = Optional.ofNullable(indexProvider);
 
@@ -162,7 +168,7 @@ public class ConnectorServices
             partitioningProvider = connector.getNodePartitioningProvider();
             requireNonNull(partitioningProvider, format("Connector '%s' returned a null partitioning provider", catalogHandle));
         }
-        catch (UnsupportedOperationException ignored) {
+        catch (UnsupportedOperationException _) {
         }
         this.partitioningProvider = Optional.ofNullable(partitioningProvider);
 
@@ -170,13 +176,10 @@ public class ConnectorServices
         try {
             accessControl = connector.getAccessControl();
         }
-        catch (UnsupportedOperationException ignored) {
+        catch (UnsupportedOperationException _) {
         }
+        verifyAccessControl(accessControl);
         this.accessControl = Optional.ofNullable(accessControl);
-
-        Iterable<EventListener> eventListeners = connector.getEventListeners();
-        requireNonNull(eventListeners, format("Connector '%s' returned a null event listeners iterable", eventListeners));
-        this.eventListeners = ImmutableList.copyOf(eventListeners);
 
         List<PropertyMetadata<?>> sessionProperties = connector.getSessionProperties();
         requireNonNull(sessionProperties, format("Connector '%s' returned a null system properties set", catalogHandle));
@@ -185,6 +188,10 @@ public class ConnectorServices
         List<PropertyMetadata<?>> tableProperties = connector.getTableProperties();
         requireNonNull(tableProperties, format("Connector '%s' returned a null table properties set", catalogHandle));
         this.tableProperties = Maps.uniqueIndex(tableProperties, PropertyMetadata::getName);
+
+        List<PropertyMetadata<?>> viewProperties = connector.getViewProperties();
+        requireNonNull(viewProperties, format("Connector '%s' returned a null view properties set", catalogHandle));
+        this.viewProperties = Maps.uniqueIndex(viewProperties, PropertyMetadata::getName);
 
         List<PropertyMetadata<?>> materializedViewProperties = connector.getMaterializedViewProperties();
         requireNonNull(materializedViewProperties, format("Connector '%s' returned a null materialized view properties set", catalogHandle));
@@ -205,6 +212,11 @@ public class ConnectorServices
         Set<ConnectorCapabilities> capabilities = connector.getCapabilities();
         requireNonNull(capabilities, format("Connector '%s' returned a null capabilities set", catalogHandle));
         this.capabilities = capabilities;
+    }
+
+    public Tracer getTracer()
+    {
+        return tracer;
     }
 
     public CatalogHandle getCatalogHandle()
@@ -248,9 +260,9 @@ public class ConnectorServices
         return splitManager;
     }
 
-    public Optional<ConnectorPageSourceProvider> getPageSourceProvider()
+    public Optional<ConnectorPageSourceProviderFactory> getPageSourceProviderFactory()
     {
-        return pageSourceProvider;
+        return pageSourceProviderFactory;
     }
 
     public Optional<ConnectorPageSinkProvider> getPageSinkProvider()
@@ -278,11 +290,6 @@ public class ConnectorServices
         return accessControl;
     }
 
-    public List<EventListener> getEventListeners()
-    {
-        return eventListeners;
-    }
-
     public Map<String, PropertyMetadata<?>> getSessionProperties()
     {
         return sessionProperties;
@@ -291,6 +298,11 @@ public class ConnectorServices
     public Map<String, PropertyMetadata<?>> getTableProperties()
     {
         return tableProperties;
+    }
+
+    public Map<String, PropertyMetadata<?>> getViewProperties()
+    {
+        return viewProperties;
     }
 
     public Map<String, PropertyMetadata<?>> getMaterializedViewProperties()
@@ -324,14 +336,11 @@ public class ConnectorServices
             return;
         }
 
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(connector.getClass().getClassLoader())) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(connector.getClass().getClassLoader())) {
             connector.shutdown();
         }
         catch (Throwable t) {
             log.error(t, "Error shutting down catalog: %s", catalogHandle);
-        }
-        finally {
-            afterShutdown.run();
         }
     }
 
@@ -364,6 +373,26 @@ public class ConnectorServices
 
         if (tableFunction.getReturnTypeSpecification() instanceof DescribedTable describedTable) {
             checkArgument(describedTable.getDescriptor().isTyped(), "field types missing in returned type specification");
+        }
+    }
+
+    private static void verifyAccessControl(ConnectorAccessControl accessControl)
+    {
+        if (accessControl != null) {
+            mustNotDeclareMethod(accessControl.getClass(), "checkCanExecuteFunction", ConnectorSecurityContext.class, FunctionKind.class, SchemaRoutineName.class);
+            mustNotDeclareMethod(accessControl.getClass(), "checkCanGrantExecuteFunctionPrivilege", ConnectorSecurityContext.class, FunctionKind.class, SchemaRoutineName.class, TrinoPrincipal.class, boolean.class);
+        }
+    }
+
+    private static void mustNotDeclareMethod(Class<?> clazz, String name, Class<?>... parameterTypes)
+    {
+        try {
+            clazz.getMethod(name, parameterTypes);
+            throw new IllegalArgumentException(format("Access control %s must not implement removed method %s(%s)",
+                    clazz.getName(),
+                    name, Arrays.stream(parameterTypes).map(Class::getName).collect(Collectors.joining(", "))));
+        }
+        catch (ReflectiveOperationException _) {
         }
     }
 }

@@ -23,8 +23,9 @@ import io.trino.plugin.jdbc.JdbcJoinPushdownSupportModule;
 import io.trino.plugin.jdbc.JdbcStatisticsConfig;
 import io.trino.plugin.jdbc.QueryBuilder;
 import io.trino.plugin.jdbc.RemoteQueryCancellationModule;
+import io.trino.plugin.jdbc.TimestampTimeZoneDomain;
 import io.trino.plugin.jdbc.ptf.Query;
-import io.trino.spi.ptf.ConnectorTableFunction;
+import io.trino.spi.function.table.ConnectorTableFunction;
 
 import static com.google.inject.multibindings.Multibinder.newSetBinder;
 import static com.google.inject.multibindings.OptionalBinder.newOptionalBinder;
@@ -38,6 +39,7 @@ public class PostgreSqlClientModule
     public void setup(Binder binder)
     {
         binder.bind(JdbcClient.class).annotatedWith(ForBaseJdbc.class).to(PostgreSqlClient.class).in(Scopes.SINGLETON);
+        newOptionalBinder(binder, TimestampTimeZoneDomain.class).setBinding().toInstance(TimestampTimeZoneDomain.UTC_ONLY);
         configBinder(binder).bindConfig(PostgreSqlConfig.class);
         configBinder(binder).bindConfig(JdbcStatisticsConfig.class);
         bindSessionPropertiesProvider(binder, PostgreSqlSessionProperties.class);

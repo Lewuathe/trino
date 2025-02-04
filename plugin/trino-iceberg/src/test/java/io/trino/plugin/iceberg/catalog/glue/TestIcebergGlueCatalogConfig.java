@@ -14,7 +14,7 @@
 package io.trino.plugin.iceberg.catalog.glue;
 
 import com.google.common.collect.ImmutableMap;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
@@ -28,16 +28,18 @@ public class TestIcebergGlueCatalogConfig
     public void testDefaults()
     {
         assertRecordedDefaults(recordDefaults(IcebergGlueCatalogConfig.class)
-                .setSkipArchive(false));
+                .setCacheTableMetadata(true));
     }
 
     @Test
     public void testExplicitPropertyMapping()
     {
-        Map<String, String> properties = ImmutableMap.of("iceberg.glue.skip-archive", "true");
+        Map<String, String> properties = ImmutableMap.<String, String>builder()
+                .put("iceberg.glue.cache-table-metadata", "false")
+                .buildOrThrow();
 
         IcebergGlueCatalogConfig expected = new IcebergGlueCatalogConfig()
-                .setSkipArchive(true);
+                .setCacheTableMetadata(false);
 
         assertFullMapping(properties, expected);
     }

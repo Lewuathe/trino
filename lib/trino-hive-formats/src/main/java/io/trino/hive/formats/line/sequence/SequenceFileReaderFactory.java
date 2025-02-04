@@ -13,6 +13,7 @@
  */
 package io.trino.hive.formats.line.sequence;
 
+import com.google.common.collect.ImmutableSet;
 import io.trino.filesystem.TrinoInputFile;
 import io.trino.hive.formats.line.FooterAwareLineReader;
 import io.trino.hive.formats.line.LineBuffer;
@@ -20,6 +21,10 @@ import io.trino.hive.formats.line.LineReader;
 import io.trino.hive.formats.line.LineReaderFactory;
 
 import java.io.IOException;
+import java.util.Set;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static io.trino.hive.formats.HiveClassNames.SEQUENCEFILE_INPUT_FORMAT_CLASS;
 
 public class SequenceFileReaderFactory
         implements LineReaderFactory
@@ -34,9 +39,9 @@ public class SequenceFileReaderFactory
     }
 
     @Override
-    public String getHiveOutputFormatClassName()
+    public Set<String> getHiveInputFormatClassNames()
     {
-        return "org.apache.hadoop.mapred.SequenceFileInputFormat";
+        return ImmutableSet.of(SEQUENCEFILE_INPUT_FORMAT_CLASS);
     }
 
     @Override
@@ -56,12 +61,16 @@ public class SequenceFileReaderFactory
     {
         LineReader lineReader = new SequenceFileReader(inputFile, start, length);
 
-        //  Only skip header rows when the split is at the beginning of the file
         if (headerCount > 0) {
-            skipHeader(lineReader, headerCount);
+            checkArgument(start == 0 || headerCount == 1, "file cannot be split when there is more than one header row");
+            // header is only skipped at the beginning of the file
+            if (start == 0) {
+                skipHeader(lineReader, headerCount);
+            }
         }
 
         if (footerCount > 0) {
+            checkArgument(start == 0, "file cannot be split when there are footer rows");
             lineReader = new FooterAwareLineReader(lineReader, footerCount, this::createLineBuffer);
         }
         return lineReader;

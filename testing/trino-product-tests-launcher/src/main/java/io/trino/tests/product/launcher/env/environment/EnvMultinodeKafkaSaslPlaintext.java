@@ -14,6 +14,7 @@
 
 package io.trino.tests.product.launcher.env.environment;
 
+import com.google.inject.Inject;
 import io.trino.tests.product.launcher.docker.DockerFiles;
 import io.trino.tests.product.launcher.docker.DockerFiles.ResourceProvider;
 import io.trino.tests.product.launcher.env.DockerContainer;
@@ -23,13 +24,12 @@ import io.trino.tests.product.launcher.env.common.KafkaSaslPlaintext;
 import io.trino.tests.product.launcher.env.common.StandardMultinode;
 import io.trino.tests.product.launcher.env.common.TestsEnvironment;
 
-import javax.inject.Inject;
-
 import static io.trino.tests.product.launcher.env.EnvironmentContainers.COORDINATOR;
 import static io.trino.tests.product.launcher.env.EnvironmentContainers.TESTS;
 import static io.trino.tests.product.launcher.env.EnvironmentContainers.WORKER;
 import static io.trino.tests.product.launcher.env.EnvironmentContainers.configureTempto;
 import static io.trino.tests.product.launcher.env.common.Standard.CONTAINER_TRINO_ETC;
+import static io.trino.tests.product.launcher.env.common.Standard.CONTAINER_TRINO_JVM_CONFIG;
 import static java.util.Objects.requireNonNull;
 import static org.testcontainers.utility.MountableFile.forHostPath;
 
@@ -50,8 +50,8 @@ public final class EnvMultinodeKafkaSaslPlaintext
     @Override
     public void extendEnvironment(Environment.Builder builder)
     {
-        builder.configureContainer(COORDINATOR, this::addCatalogs);
-        builder.configureContainer(WORKER, this::addCatalogs);
+        builder.configureContainer(COORDINATOR, this::configureTrino);
+        builder.configureContainer(WORKER, this::configureTrino);
         builder.addConnector("kafka");
 
         configureTempto(builder, configDir);
@@ -61,7 +61,7 @@ public final class EnvMultinodeKafkaSaslPlaintext
                         CONTAINER_TRINO_ETC + "/kafka-configuration.properties"));
     }
 
-    private void addCatalogs(DockerContainer container)
+    private void configureTrino(DockerContainer container)
     {
         container
                 .withCopyFileToContainer(
@@ -72,6 +72,8 @@ public final class EnvMultinodeKafkaSaslPlaintext
                         CONTAINER_TRINO_ETC + "/catalog/kafka.properties")
                 .withCopyFileToContainer(
                         forHostPath(configDir.getPath("kafka-configuration.properties")),
-                        CONTAINER_TRINO_ETC + "/kafka-configuration.properties");
+                        CONTAINER_TRINO_ETC + "/kafka-configuration.properties")
+                .withCopyFileToContainer(forHostPath(configDir.getPath("jvm.config")),
+                        CONTAINER_TRINO_JVM_CONFIG);
     }
 }

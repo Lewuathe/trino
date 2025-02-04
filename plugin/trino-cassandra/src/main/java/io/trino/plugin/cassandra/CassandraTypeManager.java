@@ -34,9 +34,8 @@ import com.google.common.net.InetAddresses;
 import com.google.inject.Inject;
 import io.airlift.slice.Slice;
 import io.trino.spi.TrinoException;
-import io.trino.spi.block.Block;
-import io.trino.spi.block.RowBlockBuilder;
-import io.trino.spi.block.SingleRowBlockWriter;
+import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.block.SqlRow;
 import io.trino.spi.predicate.NullableValue;
 import io.trino.spi.type.BigintType;
 import io.trino.spi.type.BooleanType;
@@ -79,16 +78,19 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.net.InetAddresses.toAddrString;
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.airlift.slice.Slices.wrappedBuffer;
+import static io.airlift.slice.Slices.wrappedHeapBuffer;
 import static io.trino.plugin.cassandra.CassandraType.Kind.DATE;
 import static io.trino.plugin.cassandra.CassandraType.Kind.TIME;
 import static io.trino.plugin.cassandra.CassandraType.Kind.TIMESTAMP;
 import static io.trino.plugin.cassandra.CassandraType.Kind.TUPLE;
 import static io.trino.plugin.cassandra.CassandraType.Kind.UDT;
+import static io.trino.plugin.cassandra.CassandraType.primitiveType;
 import static io.trino.plugin.cassandra.util.CassandraCqlUtils.quoteStringLiteral;
 import static io.trino.plugin.cassandra.util.CassandraCqlUtils.quoteStringLiteralForJson;
 import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static io.trino.spi.StandardErrorCode.INVALID_CAST_ARGUMENT;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
+import static io.trino.spi.block.RowValueBuilder.buildRowValue;
 import static io.trino.spi.type.DateTimeEncoding.packDateTimeWithZone;
 import static io.trino.spi.type.DateTimeEncoding.unpackMillisUtc;
 import static io.trino.spi.type.Timestamps.PICOSECONDS_PER_NANOSECOND;
@@ -98,7 +100,6 @@ import static io.trino.spi.type.UuidType.javaUuidToTrinoUuid;
 import static io.trino.spi.type.UuidType.trinoUuidToJavaUuid;
 import static java.lang.Float.floatToRawIntBits;
 import static java.lang.Float.intBitsToFloat;
-import static java.lang.Math.toIntExact;
 import static java.lang.String.format;
 import static java.lang.System.arraycopy;
 import static java.util.Objects.requireNonNull;
@@ -116,69 +117,41 @@ public class CassandraTypeManager
 
     public Optional<CassandraType> toCassandraType(DataType dataType)
     {
-        switch (dataType.getProtocolCode()) {
-            case ProtocolConstants.DataType.ASCII:
-                return Optional.of(CassandraTypes.ASCII);
-            case ProtocolConstants.DataType.BIGINT:
-                return Optional.of(CassandraTypes.BIGINT);
-            case ProtocolConstants.DataType.BLOB:
-                return Optional.of(CassandraTypes.BLOB);
-            case ProtocolConstants.DataType.BOOLEAN:
-                return Optional.of(CassandraTypes.BOOLEAN);
-            case ProtocolConstants.DataType.COUNTER:
-                return Optional.of(CassandraTypes.COUNTER);
-            case ProtocolConstants.DataType.CUSTOM:
-                return Optional.of(CassandraTypes.CUSTOM);
-            case ProtocolConstants.DataType.DATE:
-                return Optional.of(CassandraTypes.DATE);
-            case ProtocolConstants.DataType.DECIMAL:
-                return Optional.of(CassandraTypes.DECIMAL);
-            case ProtocolConstants.DataType.DOUBLE:
-                return Optional.of(CassandraTypes.DOUBLE);
-            case ProtocolConstants.DataType.FLOAT:
-                return Optional.of(CassandraTypes.FLOAT);
-            case ProtocolConstants.DataType.INET:
-                return Optional.of(new CassandraType(
-                    CassandraType.Kind.INET,
-                    ipAddressType));
-            case ProtocolConstants.DataType.INT:
-                return Optional.of(CassandraTypes.INT);
-            case ProtocolConstants.DataType.LIST:
-                return Optional.of(CassandraTypes.LIST);
-            case ProtocolConstants.DataType.MAP:
-                return Optional.of(CassandraTypes.MAP);
-            case ProtocolConstants.DataType.SET:
-                return Optional.of(CassandraTypes.SET);
-            case ProtocolConstants.DataType.SMALLINT:
-                return Optional.of(CassandraTypes.SMALLINT);
-            case ProtocolConstants.DataType.TIME:
-                return Optional.of(CassandraTypes.TIME);
-            case ProtocolConstants.DataType.TIMESTAMP:
-                return Optional.of(CassandraTypes.TIMESTAMP);
-            case ProtocolConstants.DataType.TIMEUUID:
-                return Optional.of(CassandraTypes.TIMEUUID);
-            case ProtocolConstants.DataType.TINYINT:
-                return Optional.of(CassandraTypes.TINYINT);
-            case ProtocolConstants.DataType.TUPLE:
-                return createTypeForTuple(dataType);
-            case ProtocolConstants.DataType.UDT:
-                return createTypeForUserType(dataType);
-            case ProtocolConstants.DataType.UUID:
-                return Optional.of(CassandraTypes.UUID);
-            case ProtocolConstants.DataType.VARCHAR:
-                return Optional.of(CassandraTypes.VARCHAR);
-            case ProtocolConstants.DataType.VARINT:
-                return Optional.of(CassandraTypes.VARINT);
-            default:
-                return Optional.empty();
-        }
+        return switch (dataType.getProtocolCode()) {
+            case ProtocolConstants.DataType.ASCII -> Optional.of(CassandraTypes.ASCII);
+            case ProtocolConstants.DataType.BIGINT -> Optional.of(CassandraTypes.BIGINT);
+            case ProtocolConstants.DataType.BLOB -> Optional.of(CassandraTypes.BLOB);
+            case ProtocolConstants.DataType.BOOLEAN -> Optional.of(CassandraTypes.BOOLEAN);
+            case ProtocolConstants.DataType.COUNTER -> Optional.of(CassandraTypes.COUNTER);
+            case ProtocolConstants.DataType.CUSTOM -> Optional.of(CassandraTypes.CUSTOM);
+            case ProtocolConstants.DataType.DATE -> Optional.of(CassandraTypes.DATE);
+            case ProtocolConstants.DataType.DECIMAL -> Optional.of(CassandraTypes.DECIMAL);
+            case ProtocolConstants.DataType.DOUBLE -> Optional.of(CassandraTypes.DOUBLE);
+            case ProtocolConstants.DataType.FLOAT -> Optional.of(CassandraTypes.FLOAT);
+            case ProtocolConstants.DataType.INET -> Optional.of(primitiveType(CassandraType.Kind.INET, ipAddressType));
+            case ProtocolConstants.DataType.INT -> Optional.of(CassandraTypes.INT);
+            case ProtocolConstants.DataType.LIST -> Optional.of(CassandraTypes.LIST);
+            case ProtocolConstants.DataType.MAP -> Optional.of(CassandraTypes.MAP);
+            case ProtocolConstants.DataType.SET -> Optional.of(CassandraTypes.SET);
+            case ProtocolConstants.DataType.SMALLINT -> Optional.of(CassandraTypes.SMALLINT);
+            case ProtocolConstants.DataType.TIME -> Optional.of(CassandraTypes.TIME);
+            case ProtocolConstants.DataType.TIMESTAMP -> Optional.of(CassandraTypes.TIMESTAMP);
+            case ProtocolConstants.DataType.TIMEUUID -> Optional.of(CassandraTypes.TIMEUUID);
+            case ProtocolConstants.DataType.TINYINT -> Optional.of(CassandraTypes.TINYINT);
+            case ProtocolConstants.DataType.TUPLE -> createTypeForTuple(dataType);
+            case ProtocolConstants.DataType.UDT -> createTypeForUserType(dataType);
+            case ProtocolConstants.DataType.UUID -> Optional.of(CassandraTypes.UUID);
+            case ProtocolConstants.DataType.VARCHAR -> Optional.of(CassandraTypes.VARCHAR);
+            case ProtocolConstants.DataType.VARINT -> Optional.of(CassandraTypes.VARINT);
+            default -> Optional.empty();
+        };
     }
 
     private Optional<CassandraType> createTypeForTuple(DataType dataType)
     {
         TupleType tupleType = (TupleType) dataType;
         List<Optional<CassandraType>> argumentTypesOptionals = tupleType.getComponentTypes().stream()
-                .map(componentType -> toCassandraType(componentType))
+                .map(this::toCassandraType)
                 .collect(toImmutableList());
 
         if (argumentTypesOptionals.stream().anyMatch(Optional::isEmpty)) {
@@ -191,7 +164,7 @@ public class CassandraTypeManager
 
         RowType trinoType = RowType.anonymous(
                 argumentTypes.stream()
-                        .map(CassandraType::getTrinoType)
+                        .map(CassandraType::trinoType)
                         .collect(toImmutableList()));
 
         return Optional.of(new CassandraType(TUPLE, trinoType, argumentTypes));
@@ -218,7 +191,7 @@ public class CassandraTypeManager
 
         RowType trinoType = RowType.from(
                 argumentTypes.buildOrThrow().entrySet().stream()
-                        .map(field -> new RowType.Field(Optional.of(field.getKey()), field.getValue().getTrinoType()))
+                        .map(field -> new RowType.Field(Optional.of(field.getKey()), field.getValue().trinoType()))
                         .collect(toImmutableList()));
 
         return Optional.of(new CassandraType(UDT, trinoType, ImmutableList.copyOf(argumentTypes.buildOrThrow().values())));
@@ -231,61 +204,34 @@ public class CassandraTypeManager
 
     public NullableValue getColumnValue(CassandraType cassandraType, GettableByIndex row, int position, Supplier<DataType> dataTypeSupplier)
     {
-        Type trinoType = cassandraType.getTrinoType();
+        Type trinoType = cassandraType.trinoType();
         if (row.isNull(position)) {
             return NullableValue.asNull(trinoType);
         }
 
-        switch (cassandraType.getKind()) {
-            case ASCII:
-            case TEXT:
-            case VARCHAR:
-                return NullableValue.of(trinoType, utf8Slice(row.getString(position)));
-            case INT:
-                return NullableValue.of(trinoType, (long) row.getInt(position));
-            case SMALLINT:
-                return NullableValue.of(trinoType, (long) row.getShort(position));
-            case TINYINT:
-                return NullableValue.of(trinoType, (long) row.getByte(position));
-            case BIGINT:
-            case COUNTER:
-                return NullableValue.of(trinoType, row.getLong(position));
-            case BOOLEAN:
-                return NullableValue.of(trinoType, row.getBoolean(position));
-            case DOUBLE:
-                return NullableValue.of(trinoType, row.getDouble(position));
-            case FLOAT:
-                return NullableValue.of(trinoType, (long) floatToRawIntBits(row.getFloat(position)));
-            case DECIMAL:
-                return NullableValue.of(trinoType, row.getBigDecimal(position).doubleValue());
-            case UUID:
-            case TIMEUUID:
-                return NullableValue.of(trinoType, javaUuidToTrinoUuid(row.getUuid(position)));
-            case TIME:
-                return NullableValue.of(trinoType, row.getLocalTime(position).toNanoOfDay() * PICOSECONDS_PER_NANOSECOND);
-            case TIMESTAMP:
-                return NullableValue.of(trinoType, packDateTimeWithZone(row.getInstant(position).toEpochMilli(), TimeZoneKey.UTC_KEY));
-            case DATE:
-                return NullableValue.of(trinoType, row.getLocalDate(position).toEpochDay());
-            case INET:
-                return NullableValue.of(trinoType, castFromVarcharToIpAddress(utf8Slice(toAddrString(row.getInetAddress(position)))));
-            case VARINT:
-                return NullableValue.of(trinoType, utf8Slice(row.getBigInteger(position).toString()));
-            case BLOB:
-            case CUSTOM:
-                return NullableValue.of(trinoType, wrappedBuffer(row.getBytesUnsafe(position)));
-            case SET:
-                return NullableValue.of(trinoType, utf8Slice(buildArrayValueFromSetType(row, position, dataTypeSupplier.get())));
-            case LIST:
-                return NullableValue.of(trinoType, utf8Slice(buildArrayValueFromListType(row, position, dataTypeSupplier.get())));
-            case MAP:
-                return NullableValue.of(trinoType, utf8Slice(buildMapValue(row, position, dataTypeSupplier.get())));
-            case TUPLE:
-                return NullableValue.of(trinoType, buildTupleValue(cassandraType, row, position));
-            case UDT:
-                return NullableValue.of(trinoType, buildUserTypeValue(cassandraType, row, position));
-        }
-        throw new IllegalStateException("Handling of type " + this + " is not implemented");
+        return switch (cassandraType.kind()) {
+            case ASCII, TEXT, VARCHAR -> NullableValue.of(trinoType, utf8Slice(row.getString(position)));
+            case INT -> NullableValue.of(trinoType, (long) row.getInt(position));
+            case SMALLINT -> NullableValue.of(trinoType, (long) row.getShort(position));
+            case TINYINT -> NullableValue.of(trinoType, (long) row.getByte(position));
+            case BIGINT, COUNTER -> NullableValue.of(trinoType, row.getLong(position));
+            case BOOLEAN -> NullableValue.of(trinoType, row.getBoolean(position));
+            case DOUBLE -> NullableValue.of(trinoType, row.getDouble(position));
+            case FLOAT -> NullableValue.of(trinoType, (long) floatToRawIntBits(row.getFloat(position)));
+            case DECIMAL -> NullableValue.of(trinoType, row.getBigDecimal(position).doubleValue());
+            case UUID, TIMEUUID -> NullableValue.of(trinoType, javaUuidToTrinoUuid(row.getUuid(position)));
+            case TIME -> NullableValue.of(trinoType, row.getLocalTime(position).toNanoOfDay() * PICOSECONDS_PER_NANOSECOND);
+            case TIMESTAMP -> NullableValue.of(trinoType, packDateTimeWithZone(row.getInstant(position).toEpochMilli(), TimeZoneKey.UTC_KEY));
+            case DATE -> NullableValue.of(trinoType, row.getLocalDate(position).toEpochDay());
+            case INET -> NullableValue.of(trinoType, castFromVarcharToIpAddress(utf8Slice(toAddrString(row.getInetAddress(position)))));
+            case VARINT -> NullableValue.of(trinoType, utf8Slice(row.getBigInteger(position).toString()));
+            case BLOB, CUSTOM -> NullableValue.of(trinoType, wrappedHeapBuffer(row.getBytesUnsafe(position)));
+            case SET -> NullableValue.of(trinoType, utf8Slice(buildArrayValueFromSetType(row, position, dataTypeSupplier.get())));
+            case LIST -> NullableValue.of(trinoType, utf8Slice(buildArrayValueFromListType(row, position, dataTypeSupplier.get())));
+            case MAP -> NullableValue.of(trinoType, utf8Slice(buildMapValue(row, position, dataTypeSupplier.get())));
+            case TUPLE -> NullableValue.of(trinoType, buildTupleValue(cassandraType, row, position));
+            case UDT -> NullableValue.of(trinoType, buildUserTypeValue(cassandraType, row, position));
+        };
     }
 
     private String buildMapValue(GettableByIndex row, int position, DataType dataType)
@@ -340,41 +286,41 @@ public class CassandraTypeManager
         return sb.toString();
     }
 
-    private Block buildTupleValue(CassandraType type, GettableByIndex row, int position)
+    private SqlRow buildTupleValue(CassandraType type, GettableByIndex row, int position)
     {
-        verify(type.getKind() == TUPLE, "Not a TUPLE type");
+        verify(type.kind() == TUPLE, "Not a TUPLE type");
         TupleValue tupleValue = row.getTupleValue(position);
-        RowBlockBuilder blockBuilder = (RowBlockBuilder) type.getTrinoType().createBlockBuilder(null, 1);
-        SingleRowBlockWriter singleRowBlockWriter = blockBuilder.beginBlockEntry();
-        int tuplePosition = 0;
-        for (CassandraType argumentType : type.getArgumentTypes()) {
-            int finalTuplePosition = tuplePosition;
-            NullableValue value = getColumnValue(argumentType, tupleValue, tuplePosition, () -> tupleValue.getType().getComponentTypes().get(finalTuplePosition));
-            writeNativeValue(argumentType.getTrinoType(), singleRowBlockWriter, value.getValue());
-            tuplePosition++;
-        }
-        // can I just return singleRowBlockWriter here? It extends AbstractSingleRowBlock and tests pass.
-        blockBuilder.closeEntry();
-        return (Block) type.getTrinoType().getObject(blockBuilder, 0);
+        return buildRowValue((RowType) type.trinoType(), fieldBuilders -> {
+            int tuplePosition = 0;
+            List<CassandraType> argumentTypes = type.argumentTypes();
+            for (int i = 0; i < argumentTypes.size(); i++) {
+                CassandraType argumentType = argumentTypes.get(i);
+                BlockBuilder fieldBuilder = fieldBuilders.get(i);
+                int finalTuplePosition = tuplePosition;
+                NullableValue value = getColumnValue(argumentType, tupleValue, tuplePosition, () -> tupleValue.getType().getComponentTypes().get(finalTuplePosition));
+                writeNativeValue(argumentType.trinoType(), fieldBuilder, value.getValue());
+                tuplePosition++;
+            }
+        });
     }
 
-    private Block buildUserTypeValue(CassandraType type, GettableByIndex row, int position)
+    private SqlRow buildUserTypeValue(CassandraType type, GettableByIndex row, int position)
     {
-        verify(type.getKind() == UDT, "Not a user defined type: %s", type.getKind());
+        verify(type.kind() == UDT, "Not a user defined type: %s", type.kind());
         UdtValue udtValue = row.getUdtValue(position);
-        RowBlockBuilder blockBuilder = (RowBlockBuilder) type.getTrinoType().createBlockBuilder(null, 1);
-        SingleRowBlockWriter singleRowBlockWriter = blockBuilder.beginBlockEntry();
-        int tuplePosition = 0;
-        List<DataType> udtTypeFieldTypes = udtValue.getType().getFieldTypes();
-        for (CassandraType argumentType : type.getArgumentTypes()) {
-            int finalTuplePosition = tuplePosition;
-            NullableValue value = getColumnValue(argumentType, udtValue, tuplePosition, () -> udtTypeFieldTypes.get(finalTuplePosition));
-            writeNativeValue(argumentType.getTrinoType(), singleRowBlockWriter, value.getValue());
-            tuplePosition++;
-        }
-
-        blockBuilder.closeEntry();
-        return (Block) type.getTrinoType().getObject(blockBuilder, 0);
+        return buildRowValue((RowType) type.trinoType(), fieldBuilders -> {
+            int tuplePosition = 0;
+            List<DataType> udtTypeFieldTypes = udtValue.getType().getFieldTypes();
+            List<CassandraType> argumentTypes = type.argumentTypes();
+            for (int i = 0; i < argumentTypes.size(); i++) {
+                CassandraType argumentType = argumentTypes.get(i);
+                BlockBuilder fieldBuilder = fieldBuilders.get(i);
+                int finalTuplePosition = tuplePosition;
+                NullableValue value = getColumnValue(argumentType, udtValue, tuplePosition, () -> udtTypeFieldTypes.get(finalTuplePosition));
+                writeNativeValue(argumentType.trinoType(), fieldBuilder, value.getValue());
+                tuplePosition++;
+            }
+        });
     }
 
     // TODO unify with toCqlLiteral
@@ -384,62 +330,33 @@ public class CassandraTypeManager
             return null;
         }
 
-        switch (type.getKind()) {
-            case ASCII:
-            case TEXT:
-            case VARCHAR:
-                return quoteStringLiteral(row.getString(position));
-            case INT:
-                return Integer.toString(row.getInt(position));
-            case SMALLINT:
-                return Short.toString(row.getShort(position));
-            case TINYINT:
-                return Byte.toString(row.getByte(position));
-            case BIGINT:
-            case COUNTER:
-                return Long.toString(row.getLong(position));
-            case BOOLEAN:
-                return Boolean.toString(row.getBool(position));
-            case DOUBLE:
-                return Double.toString(row.getDouble(position));
-            case FLOAT:
-                return Float.toString(row.getFloat(position));
-            case DECIMAL:
-                return row.getBigDecimal(position).toString();
-            case UUID:
-            case TIMEUUID:
-                return row.getUuid(position).toString();
-            case TIME:
-                return quoteStringLiteral(row.getLocalTime(position).toString());
-            case TIMESTAMP:
-                return Long.toString(row.getInstant(position).toEpochMilli());
-            case DATE:
-                return quoteStringLiteral(row.getLocalDate(position).toString());
-            case INET:
-                return quoteStringLiteral(toAddrString(row.getInetAddress(position)));
-            case VARINT:
-                return row.getBigInteger(position).toString();
-            case BLOB:
-            case CUSTOM:
-                return Bytes.toHexString(row.getBytesUnsafe(position));
-
-            case LIST:
-            case SET:
-            case MAP:
-            case TUPLE:
-            case UDT:
-                // unsupported
-                break;
-        }
-        throw new IllegalStateException("Handling of type " + this + " is not implemented");
+        return switch (type.kind()) {
+            case ASCII, TEXT, VARCHAR -> quoteStringLiteral(row.getString(position));
+            case INT -> Integer.toString(row.getInt(position));
+            case SMALLINT -> Short.toString(row.getShort(position));
+            case TINYINT -> Byte.toString(row.getByte(position));
+            case BIGINT, COUNTER -> Long.toString(row.getLong(position));
+            case BOOLEAN -> Boolean.toString(row.getBoolean(position));
+            case DOUBLE -> Double.toString(row.getDouble(position));
+            case FLOAT -> Float.toString(row.getFloat(position));
+            case DECIMAL -> row.getBigDecimal(position).toString();
+            case UUID, TIMEUUID -> row.getUuid(position).toString();
+            case TIME -> quoteStringLiteral(row.getLocalTime(position).toString());
+            case TIMESTAMP -> Long.toString(row.getInstant(position).toEpochMilli());
+            case DATE -> quoteStringLiteral(row.getLocalDate(position).toString());
+            case INET -> quoteStringLiteral(toAddrString(row.getInetAddress(position)));
+            case VARINT -> row.getBigInteger(position).toString();
+            case BLOB, CUSTOM -> Bytes.toHexString(row.getBytesUnsafe(position));
+            case LIST, SET, MAP, TUPLE, UDT -> throw new IllegalStateException("Handling of type " + this + " is not implemented");
+        };
     }
 
     // TODO unify with getColumnValueForCql
     public String toCqlLiteral(CassandraType type, Object trinoNativeValue)
     {
-        CassandraType.Kind kind = type.getKind();
+        CassandraType.Kind kind = type.kind();
         if (kind == DATE) {
-            LocalDate date = LocalDate.ofEpochDay(toIntExact((long) trinoNativeValue));
+            LocalDate date = LocalDate.ofEpochDay((long) trinoNativeValue);
             return quoteStringLiteral(date.toString());
         }
         if (kind == TIME) {
@@ -458,17 +375,11 @@ public class CassandraTypeManager
             value = trinoNativeValue.toString();
         }
 
-        switch (kind) {
-            case ASCII:
-            case TEXT:
-            case VARCHAR:
-                return quoteStringLiteral(value);
-            case INET:
-                // remove '/' in the string. e.g. /127.0.0.1
-                return quoteStringLiteral(value.substring(1));
-            default:
-                return value;
-        }
+        return switch (kind) {
+            case ASCII, TEXT, VARCHAR -> quoteStringLiteral(value);
+            case INET -> quoteStringLiteral(value.substring(1)); // remove '/' in the string. e.g. /127.0.0.1
+            default -> value;
+        };
     }
 
     private String objectToJson(Object cassandraValue, DataType dataType)
@@ -476,7 +387,7 @@ public class CassandraTypeManager
         CassandraType cassandraType = toCassandraType(dataType)
                 .orElseThrow(() -> new IllegalStateException("Unsupported type: " + dataType));
 
-        switch (cassandraType.getKind()) {
+        switch (cassandraType.kind()) {
             case ASCII:
             case TEXT:
             case VARCHAR:
@@ -558,7 +469,7 @@ public class CassandraTypeManager
             case TIMESTAMP:
                 return Instant.ofEpochMilli(unpackMillisUtc((Long) trinoNativeValue));
             case DATE:
-                return LocalDate.ofEpochDay(((Long) trinoNativeValue).intValue());
+                return LocalDate.ofEpochDay((Long) trinoNativeValue);
             case UUID:
             case TIMEUUID:
                 return trinoUuidToJavaUuid((Slice) trinoNativeValue);
@@ -574,41 +485,6 @@ public class CassandraTypeManager
             case MAP:
         }
         throw new IllegalStateException("Back conversion not implemented for " + this);
-    }
-
-    public boolean isSupportedPartitionKey(CassandraType.Kind kind)
-    {
-        switch (kind) {
-            case ASCII:
-            case TEXT:
-            case VARCHAR:
-            case BIGINT:
-            case BOOLEAN:
-            case DOUBLE:
-            case INET:
-            case INT:
-            case TINYINT:
-            case SMALLINT:
-            case FLOAT:
-            case DECIMAL:
-            case DATE:
-            case TIME:
-            case TIMESTAMP:
-            case UUID:
-            case TIMEUUID:
-                return true;
-            case COUNTER:
-            case BLOB:
-            case CUSTOM:
-            case VARINT:
-            case SET:
-            case LIST:
-            case MAP:
-            case TUPLE:
-            case UDT:
-            default:
-                return false;
-        }
     }
 
     public boolean isFullySupported(DataType dataType)
@@ -687,7 +563,7 @@ public class CassandraTypeManager
             return CassandraTypes.UUID;
         }
         if (type.equals(ipAddressType)) {
-            return new CassandraType(
+            return primitiveType(
                     CassandraType.Kind.INET,
                     ipAddressType);
         }

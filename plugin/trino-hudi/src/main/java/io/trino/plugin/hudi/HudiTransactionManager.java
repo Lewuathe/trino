@@ -13,12 +13,11 @@
  */
 package io.trino.plugin.hudi;
 
+import com.google.errorprone.annotations.concurrent.GuardedBy;
+import com.google.inject.Inject;
 import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.security.ConnectorIdentity;
-
-import javax.annotation.concurrent.GuardedBy;
-import javax.inject.Inject;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -71,7 +70,7 @@ public class HudiTransactionManager
         public synchronized HudiMetadata get(ConnectorIdentity identity)
         {
             if (metadata == null) {
-                try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(getClass().getClassLoader())) {
+                try (ThreadContextClassLoader _ = new ThreadContextClassLoader(getClass().getClassLoader())) {
                     metadata = metadataFactory.create(identity);
                 }
             }

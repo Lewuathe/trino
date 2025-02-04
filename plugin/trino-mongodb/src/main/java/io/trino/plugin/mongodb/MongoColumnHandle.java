@@ -13,106 +13,71 @@
  */
 package io.trino.plugin.mongodb;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.google.common.base.Joiner;
+import com.google.common.collect.ImmutableList;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.type.Type;
 import org.bson.Document;
 
-import java.util.Objects;
+import java.util.List;
 import java.util.Optional;
 
 import static java.util.Objects.requireNonNull;
 
-public class MongoColumnHandle
+/**
+ * @param dbRefField Represent if the field is inside a DBRef type. The getter may return a wrong value when row type use the same field names and types as dbref.
+ */
+public record MongoColumnHandle(String baseName, List<String> dereferenceNames, Type type, boolean hidden, boolean dbRefField, Optional<String> comment)
         implements ColumnHandle
 {
-    private final String name;
-    private final Type type;
-    private final boolean hidden;
-    private final Optional<String> comment;
-
-    @JsonCreator
-    public MongoColumnHandle(
-            @JsonProperty("name") String name,
-            @JsonProperty("columnType") Type type,
-            @JsonProperty("hidden") boolean hidden,
-            @JsonProperty("comment") Optional<String> comment)
+    public MongoColumnHandle
     {
-        this.name = requireNonNull(name, "name is null");
-        this.type = requireNonNull(type, "type is null");
-        this.hidden = hidden;
-        this.comment = requireNonNull(comment, "comment is null");
-    }
-
-    @JsonProperty
-    public String getName()
-    {
-        return name;
-    }
-
-    @JsonProperty("columnType")
-    public Type getType()
-    {
-        return type;
-    }
-
-    @JsonProperty
-    public boolean isHidden()
-    {
-        return hidden;
-    }
-
-    @JsonProperty
-    public Optional<String> getComment()
-    {
-        return comment;
+        requireNonNull(baseName, "baseName is null");
+        dereferenceNames = ImmutableList.copyOf(requireNonNull(dereferenceNames, "dereferenceNames is null"));
+        requireNonNull(type, "type is null");
+        requireNonNull(comment, "comment is null");
     }
 
     public ColumnMetadata toColumnMetadata()
     {
         return ColumnMetadata.builder()
-                .setName(name)
+                .setName(getQualifiedName())
                 .setType(type)
                 .setHidden(hidden)
                 .setComment(comment)
                 .build();
     }
 
+    @JsonIgnore
+    public String getQualifiedName()
+    {
+        return Joiner.on('.')
+                .join(ImmutableList.<String>builder()
+                        .add(baseName)
+                        .addAll(dereferenceNames)
+                        .build());
+    }
+
+    @JsonIgnore
+    public boolean isBaseColumn()
+    {
+        return dereferenceNames.isEmpty();
+    }
+
     public Document getDocument()
     {
-        return new Document().append("name", name)
+        return new Document().append("name", getQualifiedName())
                 .append("type", type.getTypeSignature().toString())
                 .append("hidden", hidden)
+                .append("dbRefField", dbRefField)
                 .append("comment", comment.orElse(null));
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return Objects.hash(name, type, hidden, comment);
-    }
-
-    @Override
-    public boolean equals(Object obj)
-    {
-        if (this == obj) {
-            return true;
-        }
-        if (obj == null || getClass() != obj.getClass()) {
-            return false;
-        }
-        MongoColumnHandle other = (MongoColumnHandle) obj;
-        return Objects.equals(name, other.name) &&
-                Objects.equals(type, other.type) &&
-                Objects.equals(hidden, other.hidden) &&
-                Objects.equals(comment, other.comment);
     }
 
     @Override
     public String toString()
     {
-        return name + ":" + type;
+        return getQualifiedName() + ":" + type;
     }
 }

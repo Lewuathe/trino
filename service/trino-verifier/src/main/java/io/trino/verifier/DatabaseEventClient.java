@@ -13,12 +13,10 @@
  */
 package io.trino.verifier;
 
-import io.airlift.event.client.AbstractEventClient;
+import com.google.inject.Inject;
 import io.airlift.json.JsonCodec;
-
-import javax.annotation.Nullable;
-import javax.annotation.PostConstruct;
-import javax.inject.Inject;
+import jakarta.annotation.Nullable;
+import jakarta.annotation.PostConstruct;
 
 import java.util.List;
 import java.util.Optional;
@@ -27,7 +25,7 @@ import java.util.OptionalDouble;
 import static java.util.Objects.requireNonNull;
 
 public class DatabaseEventClient
-        extends AbstractEventClient
+        implements EventConsumer
 {
     private final VerifierQueryEventDao dao;
     private final JsonCodec<List<String>> codec;
@@ -46,9 +44,8 @@ public class DatabaseEventClient
     }
 
     @Override
-    protected <T> void postEvent(T event)
+    public void postEvent(VerifierQueryEvent queryEvent)
     {
-        VerifierQueryEvent queryEvent = (VerifierQueryEvent) event;
         VerifierQueryEventEntity entity = new VerifierQueryEventEntity(
                 queryEvent.getSuite(),
                 Optional.ofNullable(queryEvent.getRunId()),
@@ -79,5 +76,10 @@ public class DatabaseEventClient
             return OptionalDouble.empty();
         }
         return OptionalDouble.of(value);
+    }
+
+    @Override
+    public void close()
+    {
     }
 }

@@ -17,15 +17,16 @@ import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.inject.Inject;
 import io.airlift.json.JsonCodec;
 import io.airlift.log.Logger;
 import io.trino.decoder.dummy.DummyRowDecoder;
 import io.trino.spi.connector.SchemaTableName;
 
-import javax.inject.Inject;
-
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.Map;
@@ -35,7 +36,6 @@ import java.util.function.Supplier;
 import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Strings.isNullOrEmpty;
-import static java.nio.file.Files.readAllBytes;
 import static java.util.Arrays.asList;
 import static java.util.Objects.requireNonNull;
 
@@ -67,10 +67,12 @@ public class RedisTableDescriptionSupplier
         try {
             for (File file : listFiles(tableDescriptionDir)) {
                 if (file.isFile() && file.getName().endsWith(".json")) {
-                    RedisTableDescription table = tableDescriptionCodec.fromJson(readAllBytes(file.toPath()));
-                    String schemaName = firstNonNull(table.getSchemaName(), defaultSchema);
-                    log.debug("Redis table %s.%s: %s", schemaName, table.getTableName(), table);
-                    builder.put(new SchemaTableName(schemaName, table.getTableName()), table);
+                    try (InputStream stream = new FileInputStream(file)) {
+                        RedisTableDescription table = tableDescriptionCodec.fromJson(stream);
+                        String schemaName = firstNonNull(table.schemaName(), defaultSchema);
+                        log.debug("Redis table %s.%s: %s", schemaName, table.tableName(), table);
+                        builder.put(new SchemaTableName(schemaName, table.tableName()), table);
+                    }
                 }
             }
 

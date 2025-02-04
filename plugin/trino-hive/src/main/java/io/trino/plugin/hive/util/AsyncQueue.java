@@ -17,9 +17,8 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
-
-import javax.annotation.concurrent.GuardedBy;
-import javax.annotation.concurrent.ThreadSafe;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -63,12 +62,12 @@ public class AsyncQueue<T>
     }
 
     /**
-     * Returns <tt>true</tt> if all future attempts to retrieve elements from this queue
+     * Returns {@code true} if all future attempts to retrieve elements from this queue
      * are guaranteed to return empty.
      */
     public synchronized boolean isFinished()
     {
-        return finishing && borrowerCount == 0 && elements.size() == 0;
+        return finishing && borrowerCount == 0 && elements.isEmpty();
     }
 
     public synchronized void finish()
@@ -84,7 +83,7 @@ public class AsyncQueue<T>
     private synchronized void signalIfFinishing()
     {
         if (finishing && borrowerCount == 0) {
-            if (elements.size() == 0) {
+            if (elements.isEmpty()) {
                 // Reset elements queue after finishing to avoid holding on to the full sized empty array inside
                 elements = new ArrayDeque<>(0);
                 completeAsync(executor, notEmptySignal);
@@ -194,7 +193,7 @@ public class AsyncQueue<T>
             else {
                 borrowedListFuture = Futures.transform(
                         notEmptySignal,
-                        ignored -> {
+                        _ -> {
                             synchronized (this) {
                                 List<T> batch = getBatch(maxSize);
                                 if (!batch.isEmpty()) {

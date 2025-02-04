@@ -19,6 +19,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.inject.Inject;
 import io.airlift.log.Logger;
 import io.airlift.slice.Slice;
+import io.trino.plugin.jdbc.JdbcProcedureHandle.ProcedureQuery;
 import io.trino.plugin.jdbc.expression.ParameterizedExpression;
 import io.trino.plugin.jdbc.logging.RemoteQueryModifier;
 import io.trino.spi.connector.ColumnHandle;
@@ -30,10 +31,12 @@ import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.predicate.ValueSet;
 import io.trino.spi.type.Type;
 
+import java.sql.CallableStatement;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -115,6 +118,45 @@ public class DefaultQueryBuilder
             Connection connection,
             JoinType joinType,
             PreparedQuery leftSource,
+            Map<JdbcColumnHandle, String> leftProjections,
+            PreparedQuery rightSource,
+            Map<JdbcColumnHandle, String> rightProjections,
+            List<ParameterizedExpression> joinConditions)
+    {
+        // Joins wih no conditions are not pushed down, so it is a same assumption and simplifies the code here
+        verify(!joinConditions.isEmpty(), "joinConditions is empty");
+
+        String query = format(
+                // The subquery aliases (`l` and `r`) are needed by some databases, but are not needed for expressions
+                // The joinConditions and output columns are aliased to use unique names.
+                "SELECT %s, %s FROM (SELECT %s FROM (%s) l) l %s (SELECT %s FROM (%s) r) r ON %s",
+                formatProjectionAliases(client, leftProjections.values()),
+                formatProjectionAliases(client, rightProjections.values()),
+                formatProjections(client, leftProjections),
+                leftSource.query(),
+                formatJoinType(joinType),
+                formatProjections(client, rightProjections),
+                rightSource.query(),
+                joinConditions.stream()
+                        .map(ParameterizedExpression::expression)
+                        .collect(joining(") AND (", "(", ")")));
+        List<QueryParameter> parameters = ImmutableList.<QueryParameter>builder()
+                .addAll(leftSource.parameters())
+                .addAll(rightSource.parameters())
+                .addAll(joinConditions.stream()
+                        .flatMap(expression -> expression.parameters().stream())
+                        .iterator())
+                .build();
+        return new PreparedQuery(query, parameters);
+    }
+
+    @Override
+    public PreparedQuery legacyPrepareJoinQuery(
+            JdbcClient client,
+            ConnectorSession session,
+            Connection connection,
+            JoinType joinType,
+            PreparedQuery leftSource,
             PreparedQuery rightSource,
             List<JdbcJoinCondition> joinConditions,
             Map<JdbcColumnHandle, String> leftAssignments,
@@ -133,17 +175,17 @@ public class DefaultQueryBuilder
                 "SELECT %s, %s FROM (%s) %s %s (%s) %s ON %s",
                 formatAssignments(client, leftRelationAlias, leftAssignments),
                 formatAssignments(client, rightRelationAlias, rightAssignments),
-                leftSource.getQuery(),
+                leftSource.query(),
                 leftRelationAlias,
                 formatJoinType(joinType),
-                rightSource.getQuery(),
+                rightSource.query(),
                 rightRelationAlias,
                 joinConditions.stream()
                         .map(condition -> formatJoinCondition(client, leftRelationAlias, rightRelationAlias, condition))
                         .collect(joining(" AND ")));
         List<QueryParameter> parameters = ImmutableList.<QueryParameter>builder()
-                .addAll(leftSource.getParameters())
-                .addAll(rightSource.getParameters())
+                .addAll(leftSource.parameters())
+                .addAll(rightSource.parameters())
                 .build();
         return new PreparedQuery(query, parameters);
     }
@@ -175,6 +217,57 @@ public class DefaultQueryBuilder
     }
 
     @Override
+    public PreparedQuery prepareUpdateQuery(
+            JdbcClient client,
+            ConnectorSession session,
+            Connection connection,
+            JdbcNamedRelationHandle baseRelation,
+            TupleDomain<ColumnHandle> tupleDomain,
+            Optional<ParameterizedExpression> additionalPredicate,
+            List<JdbcAssignmentItem> assignments)
+    {
+        ImmutableList.Builder<QueryParameter> accumulator = ImmutableList.builder();
+
+        String sql = "UPDATE " + getRelation(client, baseRelation.getRemoteTableName()) + " SET ";
+
+        assignments.forEach(entry -> {
+            JdbcColumnHandle columnHandle = entry.column();
+            accumulator.add(
+                    new QueryParameter(
+                            columnHandle.getJdbcTypeHandle(),
+                            columnHandle.getColumnType(),
+                            entry.queryParameter().getValue()));
+        });
+
+        sql += assignments.stream()
+                .map(JdbcAssignmentItem::column)
+                .map(columnHandle -> {
+                    String bindExpression = getWriteFunction(
+                            client,
+                            session,
+                            connection,
+                            columnHandle.getJdbcTypeHandle(),
+                            columnHandle.getColumnType())
+                            .getBindExpression();
+                    return client.quoted(columnHandle.getColumnName()) + " = " + bindExpression;
+                })
+                .collect(joining(", "));
+
+        ImmutableList.Builder<String> conjuncts = ImmutableList.builder();
+
+        toConjuncts(client, session, connection, tupleDomain, conjuncts, accumulator::add);
+        additionalPredicate.ifPresent(predicate -> {
+            conjuncts.add(predicate.expression());
+            accumulator.addAll(predicate.parameters());
+        });
+        List<String> clauses = conjuncts.build();
+        if (!clauses.isEmpty()) {
+            sql += " WHERE " + Joiner.on(" AND ").join(clauses);
+        }
+        return new PreparedQuery(sql, accumulator.build());
+    }
+
+    @Override
     public PreparedStatement prepareStatement(
             JdbcClient client,
             ConnectorSession session,
@@ -183,41 +276,54 @@ public class DefaultQueryBuilder
             Optional<Integer> columnCount)
             throws SQLException
     {
-        String modifiedQuery = queryModifier.apply(session, preparedQuery.getQuery());
+        String modifiedQuery = queryModifier.apply(session, preparedQuery.query());
         log.debug("Preparing query: %s", modifiedQuery);
         columnCount = columnCount.map(count -> max(count, 1)); // Query builder appends a dummy projection when no columns projected
         PreparedStatement statement = client.getPreparedStatement(connection, modifiedQuery, columnCount);
 
-        List<QueryParameter> parameters = preparedQuery.getParameters();
+        List<QueryParameter> parameters = preparedQuery.parameters();
         for (int i = 0; i < parameters.size(); i++) {
             QueryParameter parameter = parameters.get(i);
             int parameterIndex = i + 1;
             WriteFunction writeFunction = parameter.getJdbcType()
                     .map(jdbcType -> getWriteFunction(client, session, connection, jdbcType, parameter.getType()))
                     .orElseGet(() -> getWriteFunction(client, session, parameter.getType()));
-            Class<?> javaType = writeFunction.getJavaType();
-            Object value = parameter.getValue()
-                    // The value must be present, since DefaultQueryBuilder never creates null parameters. Values coming from Domain's ValueSet are non-null, and
-                    // nullable domains are handled explicitly, with SQL syntax.
-                    .orElseThrow(() -> new VerifyException("Value is missing"));
-            if (javaType == boolean.class) {
-                ((BooleanWriteFunction) writeFunction).set(statement, parameterIndex, (boolean) value);
-            }
-            else if (javaType == long.class) {
-                ((LongWriteFunction) writeFunction).set(statement, parameterIndex, (long) value);
-            }
-            else if (javaType == double.class) {
-                ((DoubleWriteFunction) writeFunction).set(statement, parameterIndex, (double) value);
-            }
-            else if (javaType == Slice.class) {
-                ((SliceWriteFunction) writeFunction).set(statement, parameterIndex, (Slice) value);
+
+            if (parameter.getValue().isEmpty()) {
+                writeFunction.setNull(statement, parameterIndex);
             }
             else {
-                ((ObjectWriteFunction) writeFunction).set(statement, parameterIndex, value);
+                Class<?> javaType = writeFunction.getJavaType();
+                Object value = parameter.getValue()
+                        // The value must be present, since DefaultQueryBuilder never creates null parameters. Values coming from Domain's ValueSet are non-null, and
+                        // nullable domains are handled explicitly, with SQL syntax.
+                        .orElseThrow(() -> new VerifyException("Value is missing"));
+                if (javaType == boolean.class) {
+                    ((BooleanWriteFunction) writeFunction).set(statement, parameterIndex, (boolean) value);
+                }
+                else if (javaType == long.class) {
+                    ((LongWriteFunction) writeFunction).set(statement, parameterIndex, (long) value);
+                }
+                else if (javaType == double.class) {
+                    ((DoubleWriteFunction) writeFunction).set(statement, parameterIndex, (double) value);
+                }
+                else if (javaType == Slice.class) {
+                    ((SliceWriteFunction) writeFunction).set(statement, parameterIndex, (Slice) value);
+                }
+                else {
+                    ((ObjectWriteFunction) writeFunction).set(statement, parameterIndex, value);
+                }
             }
         }
 
         return statement;
+    }
+
+    @Override
+    public CallableStatement callProcedure(JdbcClient client, ConnectorSession session, Connection connection, ProcedureQuery procedureQuery)
+            throws SQLException
+    {
+        return connection.prepareCall(procedureQuery.query());
     }
 
     protected String formatJoinCondition(JdbcClient client, String leftRelationAlias, String rightRelationAlias, JdbcJoinCondition condition)
@@ -236,6 +342,20 @@ public class DefaultQueryBuilder
         return client.quoted(columnHandle.getColumnName());
     }
 
+    protected String formatProjections(JdbcClient client, Map<JdbcColumnHandle, String> projections)
+    {
+        return projections.entrySet().stream()
+                .map(entry -> format("%s AS %s", client.quoted(entry.getKey().getColumnName()), client.quoted(entry.getValue())))
+                .collect(joining(", "));
+    }
+
+    protected String formatProjectionAliases(JdbcClient client, Collection<String> aliases)
+    {
+        return aliases.stream()
+                .map(s -> format("%s", client.quoted(s)))
+                .collect(joining(", "));
+    }
+
     protected String formatAssignments(JdbcClient client, String relationAlias, Map<JdbcColumnHandle, String> assignments)
     {
         return assignments.entrySet().stream()
@@ -245,17 +365,12 @@ public class DefaultQueryBuilder
 
     protected String formatJoinType(JoinType joinType)
     {
-        switch (joinType) {
-            case INNER:
-                return "INNER JOIN";
-            case LEFT_OUTER:
-                return "LEFT JOIN";
-            case RIGHT_OUTER:
-                return "RIGHT JOIN";
-            case FULL_OUTER:
-                return "FULL JOIN";
-        }
-        throw new IllegalStateException("Unsupported join type: " + joinType);
+        return switch (joinType) {
+            case INNER -> "INNER JOIN";
+            case LEFT_OUTER -> "LEFT JOIN";
+            case RIGHT_OUTER -> "RIGHT JOIN";
+            case FULL_OUTER -> "FULL JOIN";
+        };
     }
 
     protected String getRelation(JdbcClient client, RemoteTableName remoteTableName)
@@ -283,15 +398,15 @@ public class DefaultQueryBuilder
         return String.join(", ", projections);
     }
 
-    private String getFrom(JdbcClient client, JdbcRelationHandle baseRelation, Consumer<QueryParameter> accumulator)
+    protected String getFrom(JdbcClient client, JdbcRelationHandle baseRelation, Consumer<QueryParameter> accumulator)
     {
         if (baseRelation instanceof JdbcNamedRelationHandle) {
             return " FROM " + getRelation(client, ((JdbcNamedRelationHandle) baseRelation).getRemoteTableName());
         }
         if (baseRelation instanceof JdbcQueryRelationHandle) {
             PreparedQuery preparedQuery = ((JdbcQueryRelationHandle) baseRelation).getPreparedQuery();
-            preparedQuery.getParameters().forEach(accumulator);
-            return " FROM (" + preparedQuery.getQuery() + ") o";
+            preparedQuery.parameters().forEach(accumulator);
+            return " FROM (" + preparedQuery.query() + ") o";
         }
         throw new IllegalArgumentException("Unsupported relation: " + baseRelation);
     }

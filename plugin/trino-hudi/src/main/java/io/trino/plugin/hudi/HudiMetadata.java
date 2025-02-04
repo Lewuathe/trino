@@ -15,14 +15,14 @@ package io.trino.plugin.hudi;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.log.Logger;
-import io.trino.hdfs.HdfsContext;
-import io.trino.hdfs.HdfsEnvironment;
+import io.trino.filesystem.Location;
+import io.trino.filesystem.TrinoFileSystemFactory;
+import io.trino.metastore.Column;
+import io.trino.metastore.HiveMetastore;
+import io.trino.metastore.Table;
+import io.trino.metastore.TableInfo;
 import io.trino.plugin.base.classloader.ClassLoaderSafeSystemTable;
 import io.trino.plugin.hive.HiveColumnHandle;
-import io.trino.plugin.hive.metastore.Column;
-import io.trino.plugin.hive.metastore.HiveMetastore;
-import io.trino.plugin.hive.metastore.Table;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
@@ -30,18 +30,16 @@ import io.trino.spi.connector.ConnectorMetadata;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTableMetadata;
+import io.trino.spi.connector.ConnectorTableVersion;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
+import io.trino.spi.connector.RelationColumnsMetadata;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SchemaTablePrefix;
 import io.trino.spi.connector.SystemTable;
-import io.trino.spi.connector.TableColumnsMetadata;
 import io.trino.spi.connector.TableNotFoundException;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.TypeManager;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.Path;
-import org.apache.hudi.common.model.HoodieTableType;
 
 import java.util.Collection;
 import java.util.Collections;
@@ -49,42 +47,49 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
+import java.util.function.UnaryOperator;
+import java.util.stream.Stream;
 
+import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
-import static io.trino.plugin.hive.HiveMetadata.TABLE_COMMENT;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static io.trino.metastore.Table.TABLE_COMMENT;
 import static io.trino.plugin.hive.HiveTimestampPrecision.NANOSECONDS;
 import static io.trino.plugin.hive.util.HiveUtil.columnMetadataGetter;
+import static io.trino.plugin.hive.util.HiveUtil.getPartitionKeyColumnHandles;
 import static io.trino.plugin.hive.util.HiveUtil.hiveColumnHandles;
 import static io.trino.plugin.hive.util.HiveUtil.isHiveSystemSchema;
-import static io.trino.plugin.hudi.HudiErrorCode.HUDI_UNKNOWN_TABLE_TYPE;
+import static io.trino.plugin.hive.util.HiveUtil.isHudiTable;
+import static io.trino.plugin.hudi.HudiErrorCode.HUDI_BAD_DATA;
 import static io.trino.plugin.hudi.HudiSessionProperties.getColumnsToHide;
+import static io.trino.plugin.hudi.HudiSessionProperties.isQueryPartitionFilterRequired;
 import static io.trino.plugin.hudi.HudiTableProperties.LOCATION_PROPERTY;
 import static io.trino.plugin.hudi.HudiTableProperties.PARTITIONED_BY_PROPERTY;
+import static io.trino.plugin.hudi.HudiUtil.hudiMetadataExists;
+import static io.trino.plugin.hudi.model.HudiTableType.COPY_ON_WRITE;
+import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
+import static io.trino.spi.StandardErrorCode.QUERY_REJECTED;
+import static io.trino.spi.StandardErrorCode.UNSUPPORTED_TABLE_TYPE;
 import static io.trino.spi.connector.SchemaTableName.schemaTableName;
 import static java.lang.String.format;
 import static java.util.Collections.singletonList;
 import static java.util.Objects.requireNonNull;
 import static java.util.function.Function.identity;
-import static org.apache.hudi.common.fs.FSUtils.getFs;
-import static org.apache.hudi.common.table.HoodieTableMetaClient.METAFOLDER_NAME;
-import static org.apache.hudi.common.util.StringUtils.isNullOrEmpty;
-import static org.apache.hudi.exception.TableNotFoundException.checkTableValidity;
 
 public class HudiMetadata
         implements ConnectorMetadata
 {
-    public static final Logger log = Logger.get(HudiMetadata.class);
-
     private final HiveMetastore metastore;
-    private final HdfsEnvironment hdfsEnvironment;
+    private final TrinoFileSystemFactory fileSystemFactory;
     private final TypeManager typeManager;
 
-    public HudiMetadata(HiveMetastore metastore, HdfsEnvironment hdfsEnvironment, TypeManager typeManager)
+    public HudiMetadata(HiveMetastore metastore, TrinoFileSystemFactory fileSystemFactory, TypeManager typeManager)
     {
         this.metastore = requireNonNull(metastore, "metastore is null");
-        this.hdfsEnvironment = requireNonNull(hdfsEnvironment, "hdfsEnvironment is null");
+        this.fileSystemFactory = requireNonNull(fileSystemFactory, "fileSystemFactory is null");
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
     }
 
@@ -97,8 +102,12 @@ public class HudiMetadata
     }
 
     @Override
-    public HudiTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName)
+    public HudiTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName, Optional<ConnectorTableVersion> startVersion, Optional<ConnectorTableVersion> endVersion)
     {
+        if (startVersion.isPresent() || endVersion.isPresent()) {
+            throw new TrinoException(NOT_SUPPORTED, "This connector does not support versioned tables");
+        }
+
         if (isHiveSystemSchema(tableName.getSchemaName())) {
             return null;
         }
@@ -106,14 +115,20 @@ public class HudiMetadata
         if (table.isEmpty()) {
             return null;
         }
-        if (!isHudiTable(session, table.get())) {
-            throw new TrinoException(HUDI_UNKNOWN_TABLE_TYPE, format("Not a Hudi table: %s", tableName));
+        if (!isHudiTable(table.get())) {
+            throw new TrinoException(UNSUPPORTED_TABLE_TYPE, format("Not a Hudi table: %s", tableName));
         }
+        Location location = Location.of(table.get().getStorage().getLocation());
+        if (!hudiMetadataExists(fileSystemFactory.create(session), location)) {
+            throw new TrinoException(HUDI_BAD_DATA, "Location of table %s does not contain Hudi table metadata: %s".formatted(tableName, location));
+        }
+
         return new HudiTableHandle(
                 tableName.getSchemaName(),
                 tableName.getTableName(),
                 table.get().getStorage().getLocation(),
-                HoodieTableType.COPY_ON_WRITE,
+                COPY_ON_WRITE,
+                getPartitionKeyColumnHandles(table.get(), typeManager),
                 TupleDomain.all(),
                 TupleDomain.all());
     }
@@ -121,30 +136,33 @@ public class HudiMetadata
     @Override
     public Optional<SystemTable> getSystemTable(ConnectorSession session, SchemaTableName tableName)
     {
-        return getRawSystemTable(session, tableName)
+        return getRawSystemTable(tableName, session)
                 .map(systemTable -> new ClassLoaderSafeSystemTable(systemTable, getClass().getClassLoader()));
     }
 
-    private Optional<SystemTable> getRawSystemTable(ConnectorSession session, SchemaTableName tableName)
+    private Optional<SystemTable> getRawSystemTable(SchemaTableName tableName, ConnectorSession session)
     {
         HudiTableName name = HudiTableName.from(tableName.getTableName());
-        if (name.getTableType() == TableType.DATA) {
+        if (name.tableType() == TableType.DATA) {
             return Optional.empty();
         }
 
-        Optional<Table> tableOptional = metastore.getTable(tableName.getSchemaName(), name.getTableName());
+        Optional<Table> tableOptional = metastore.getTable(tableName.getSchemaName(), name.tableName());
         if (tableOptional.isEmpty()) {
             return Optional.empty();
         }
-        switch (name.getTableType()) {
-            case DATA:
-                break;
-            case TIMELINE:
-                SchemaTableName systemTableName = new SchemaTableName(tableName.getSchemaName(), name.getTableNameWithType());
-                Configuration configuration = hdfsEnvironment.getConfiguration(new HdfsContext(session), new Path(tableOptional.get().getStorage().getLocation()));
-                return Optional.of(new TimelineTable(configuration, systemTableName, tableOptional.get()));
+        if (!isHudiTable(tableOptional.get())) {
+            return Optional.empty();
         }
-        return Optional.empty();
+        return switch (name.tableType()) {
+            case DATA ->
+                // TODO (https://github.com/trinodb/trino/issues/17973) remove DATA table type
+                    Optional.empty();
+            case TIMELINE -> {
+                SchemaTableName systemTableName = new SchemaTableName(tableName.getSchemaName(), name.tableNameWithType());
+                yield Optional.of(new TimelineTable(fileSystemFactory.create(session), systemTableName, tableOptional.get()));
+            }
+        };
     }
 
     @Override
@@ -159,18 +177,37 @@ public class HudiMetadata
     {
         HudiTableHandle handle = (HudiTableHandle) tableHandle;
         HudiPredicates predicates = HudiPredicates.from(constraint.getSummary());
+        TupleDomain<HiveColumnHandle> regularColumnPredicates = predicates.getRegularColumnPredicates();
+        TupleDomain<HiveColumnHandle> partitionColumnPredicates = predicates.getPartitionColumnPredicates();
+
+        // TODO Since the constraint#predicate isn't utilized during split generation. So,
+        //  Let's not add constraint#predicateColumns to newConstraintColumns.
+        Set<HiveColumnHandle> newConstraintColumns = Stream.concat(
+                        Stream.concat(
+                                regularColumnPredicates.getDomains().stream()
+                                        .map(Map::keySet)
+                                        .flatMap(Collection::stream),
+                                partitionColumnPredicates.getDomains().stream()
+                                        .map(Map::keySet)
+                                        .flatMap(Collection::stream)),
+                        handle.getConstraintColumns().stream())
+                .collect(toImmutableSet());
+
         HudiTableHandle newHudiTableHandle = handle.applyPredicates(
-                predicates.getPartitionColumnPredicates(),
-                predicates.getRegularColumnPredicates());
+                newConstraintColumns,
+                partitionColumnPredicates,
+                regularColumnPredicates);
 
         if (handle.getPartitionPredicates().equals(newHudiTableHandle.getPartitionPredicates())
-                && handle.getRegularPredicates().equals(newHudiTableHandle.getRegularPredicates())) {
+                && handle.getRegularPredicates().equals(newHudiTableHandle.getRegularPredicates())
+                && handle.getConstraintColumns().equals(newHudiTableHandle.getConstraintColumns())) {
             return Optional.empty();
         }
 
         return Optional.of(new ConstraintApplicationResult<>(
                 newHudiTableHandle,
                 newHudiTableHandle.getRegularPredicates().transformKeys(ColumnHandle.class::cast),
+                constraint.getExpression(),
                 false));
     }
 
@@ -191,9 +228,10 @@ public class HudiMetadata
     }
 
     @Override
-    public Optional<Object> getInfo(ConnectorTableHandle table)
+    public Optional<Object> getInfo(ConnectorTableHandle tableHandle)
     {
-        return Optional.of(HudiTableInfo.from((HudiTableHandle) table));
+        HudiTableHandle table = (HudiTableHandle) tableHandle;
+        return Optional.of(new HudiTableInfo(table.getSchemaTableName(), table.getTableType().name(), table.getBasePath()));
     }
 
     @Override
@@ -201,23 +239,60 @@ public class HudiMetadata
     {
         ImmutableList.Builder<SchemaTableName> tableNames = ImmutableList.builder();
         for (String schemaName : listSchemas(session, optionalSchemaName)) {
-            for (String tableName : metastore.getAllTables(schemaName)) {
-                tableNames.add(new SchemaTableName(schemaName, tableName));
+            for (TableInfo tableInfo : metastore.getTables(schemaName)) {
+                tableNames.add(tableInfo.tableName());
             }
         }
         return tableNames.build();
     }
 
     @Override
-    public Iterator<TableColumnsMetadata> streamTableColumns(ConnectorSession session, SchemaTablePrefix prefix)
+    public Iterator<RelationColumnsMetadata> streamRelationColumns(
+            ConnectorSession session,
+            Optional<String> schemaName,
+            UnaryOperator<Set<SchemaTableName>> relationFilter)
     {
+        SchemaTablePrefix prefix = schemaName.map(SchemaTablePrefix::new)
+                .orElseGet(SchemaTablePrefix::new);
         List<SchemaTableName> tables = prefix.getTable()
-                .map(ignored -> singletonList(prefix.toSchemaTableName()))
+                .map(_ -> singletonList(prefix.toSchemaTableName()))
                 .orElseGet(() -> listTables(session, prefix.getSchema()));
-        return tables.stream()
+
+        Map<SchemaTableName, RelationColumnsMetadata> relationColumns = tables.stream()
                 .map(table -> getTableColumnMetadata(session, table))
                 .flatMap(Optional::stream)
+                .collect(toImmutableMap(RelationColumnsMetadata::name, Function.identity()));
+        return relationFilter.apply(relationColumns.keySet()).stream()
+                .map(relationColumns::get)
                 .iterator();
+    }
+
+    @Override
+    public void validateScan(ConnectorSession session, ConnectorTableHandle handle)
+    {
+        HudiTableHandle hudiTableHandle = (HudiTableHandle) handle;
+        if (isQueryPartitionFilterRequired(session)) {
+            if (!hudiTableHandle.getPartitionColumns().isEmpty()) {
+                Set<String> partitionColumns = hudiTableHandle.getPartitionColumns().stream()
+                        .map(HiveColumnHandle::getName)
+                        .collect(toImmutableSet());
+                Set<String> constraintColumns = hudiTableHandle.getConstraintColumns().stream()
+                        .map(HiveColumnHandle::getBaseColumnName)
+                        .collect(toImmutableSet());
+                if (Collections.disjoint(constraintColumns, partitionColumns)) {
+                    throw new TrinoException(
+                            QUERY_REJECTED,
+                            format("Filter required on %s for at least one of the partition columns: %s", hudiTableHandle.getSchemaTableName(), String.join(", ", partitionColumns)));
+                }
+            }
+        }
+    }
+
+    @Override
+    public boolean allowSplittingReadIntoMultipleSubQueries(ConnectorSession session, ConnectorTableHandle tableHandle)
+    {
+        // hudi supports only a columnar (parquet) storage format
+        return true;
     }
 
     HiveMetastore getMetastore()
@@ -225,27 +300,13 @@ public class HudiMetadata
         return metastore;
     }
 
-    private boolean isHudiTable(ConnectorSession session, Table table)
-    {
-        String basePath = table.getStorage().getLocation();
-        Configuration configuration = hdfsEnvironment.getConfiguration(new HdfsContext(session), new Path(basePath));
-        try {
-            checkTableValidity(getFs(basePath, configuration), new Path(basePath), new Path(basePath, METAFOLDER_NAME));
-        }
-        catch (org.apache.hudi.exception.TableNotFoundException e) {
-            log.warn("Could not find Hudi table at path '%s'", basePath);
-            return false;
-        }
-        return true;
-    }
-
-    private Optional<TableColumnsMetadata> getTableColumnMetadata(ConnectorSession session, SchemaTableName table)
+    private Optional<RelationColumnsMetadata> getTableColumnMetadata(ConnectorSession session, SchemaTableName table)
     {
         try {
             List<ColumnMetadata> columns = getTableMetadata(table, getColumnsToHide(session)).getColumns();
-            return Optional.of(TableColumnsMetadata.forTable(table, columns));
+            return Optional.of(RelationColumnsMetadata.forTable(table, columns));
         }
-        catch (TableNotFoundException ignored) {
+        catch (TableNotFoundException _) {
             return Optional.empty();
         }
     }

@@ -15,7 +15,7 @@ package io.trino.server.security;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
@@ -29,7 +29,7 @@ public class TestSecurityConfig
     public void testDefaults()
     {
         assertRecordedDefaults(recordDefaults(SecurityConfig.class)
-                .setAuthenticationTypes("insecure")
+                .setAuthenticationTypes(ImmutableList.of("insecure"))
                 .setInsecureAuthenticationOverHttpAllowed(true)
                 .setFixedManagementUser(null)
                 .setFixedManagementUserForHttps(false));

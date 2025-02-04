@@ -13,22 +13,18 @@
  */
 package io.trino.connector;
 
-import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import io.airlift.configuration.Config;
 import io.airlift.configuration.LegacyConfig;
-
-import javax.validation.constraints.NotNull;
+import jakarta.validation.constraints.NotNull;
 
 import java.io.File;
 import java.util.List;
 
 public class StaticCatalogManagerConfig
 {
-    private static final Splitter SPLITTER = Splitter.on(',').trimResults().omitEmptyStrings();
-
     private File catalogConfigurationDir = new File("etc/catalog/");
-    private List<String> disabledCatalogs;
+    private List<String> disabledCatalogs = ImmutableList.of();
 
     @NotNull
     public File getCatalogConfigurationDir()
@@ -50,15 +46,9 @@ public class StaticCatalogManagerConfig
     }
 
     @Config("catalog.disabled-catalogs")
-    public StaticCatalogManagerConfig setDisabledCatalogs(String catalogs)
-    {
-        this.disabledCatalogs = (catalogs == null) ? null : SPLITTER.splitToList(catalogs);
-        return this;
-    }
-
     public StaticCatalogManagerConfig setDisabledCatalogs(List<String> catalogs)
     {
-        this.disabledCatalogs = (catalogs == null) ? null : ImmutableList.copyOf(catalogs);
+        this.disabledCatalogs = ImmutableList.copyOf(catalogs);
         return this;
     }
 }

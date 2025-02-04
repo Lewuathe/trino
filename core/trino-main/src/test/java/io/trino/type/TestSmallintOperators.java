@@ -19,6 +19,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import static io.trino.spi.StandardErrorCode.DIVISION_BY_ZERO;
 import static io.trino.spi.StandardErrorCode.INVALID_CAST_ARGUMENT;
@@ -27,8 +28,8 @@ import static io.trino.spi.StandardErrorCode.NUMERIC_VALUE_OUT_OF_RANGE;
 import static io.trino.spi.function.OperatorType.ADD;
 import static io.trino.spi.function.OperatorType.DIVIDE;
 import static io.trino.spi.function.OperatorType.EQUAL;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 import static io.trino.spi.function.OperatorType.INDETERMINATE;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
 import static io.trino.spi.function.OperatorType.LESS_THAN;
 import static io.trino.spi.function.OperatorType.LESS_THAN_OR_EQUAL;
 import static io.trino.spi.function.OperatorType.MODULUS;
@@ -41,8 +42,10 @@ import static io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExcept
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestSmallintOperators
 {
     private QueryAssertions assertions;
@@ -69,7 +72,7 @@ public class TestSmallintOperators
         assertThat(assertions.expression("SMALLINT '17'"))
                 .isEqualTo((short) 17);
 
-        assertTrinoExceptionThrownBy(() -> assertions.expression("SMALLINT '" + ((long) Short.MAX_VALUE + 1L) + "'").evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression("SMALLINT '" + ((long) Short.MAX_VALUE + 1L) + "'")::evaluate)
                 .hasErrorCode(INVALID_LITERAL);
     }
 
@@ -92,7 +95,7 @@ public class TestSmallintOperators
         assertThat(assertions.expression("SMALLINT '-17'"))
                 .isEqualTo((short) -17);
 
-        assertTrinoExceptionThrownBy(() -> assertions.expression("SMALLINT '-" + Short.MIN_VALUE + "'").evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression("SMALLINT '-" + Short.MIN_VALUE + "'")::evaluate)
                 .hasErrorCode(INVALID_LITERAL);
     }
 
@@ -111,7 +114,7 @@ public class TestSmallintOperators
         assertThat(assertions.operator(ADD, "SMALLINT '17'", "SMALLINT '17'"))
                 .isEqualTo((short) (17 + 17));
 
-        assertTrinoExceptionThrownBy(() -> assertions.expression(format("SMALLINT '%s' + SMALLINT '1'", Short.MAX_VALUE)).evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression(format("SMALLINT '%s' + SMALLINT '1'", Short.MAX_VALUE))::evaluate)
                 .hasErrorCode(NUMERIC_VALUE_OUT_OF_RANGE)
                 .hasMessage("smallint addition overflow: 32767 + 1");
     }
@@ -131,7 +134,7 @@ public class TestSmallintOperators
         assertThat(assertions.operator(SUBTRACT, "SMALLINT '17'", "SMALLINT '17'"))
                 .isEqualTo((short) 0);
 
-        assertTrinoExceptionThrownBy(() -> assertions.expression(format("SMALLINT '%s' - SMALLINT '1'", Short.MIN_VALUE)).evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression(format("SMALLINT '%s' - SMALLINT '1'", Short.MIN_VALUE))::evaluate)
                 .hasErrorCode(NUMERIC_VALUE_OUT_OF_RANGE)
                 .hasMessage("smallint subtraction overflow: -32768 - 1");
     }
@@ -151,7 +154,7 @@ public class TestSmallintOperators
         assertThat(assertions.operator(MULTIPLY, "SMALLINT '17'", "SMALLINT '17'"))
                 .isEqualTo((short) (17 * 17));
 
-        assertTrinoExceptionThrownBy(() -> assertions.expression(format("SMALLINT '%s' * SMALLINT '2'", Short.MAX_VALUE)).evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression(format("SMALLINT '%s' * SMALLINT '2'", Short.MAX_VALUE))::evaluate)
                 .hasErrorCode(NUMERIC_VALUE_OUT_OF_RANGE)
                 .hasMessage("smallint multiplication overflow: 32767 * 2");
     }
@@ -171,7 +174,7 @@ public class TestSmallintOperators
         assertThat(assertions.operator(DIVIDE, "SMALLINT '17'", "SMALLINT '17'"))
                 .isEqualTo((short) 1);
 
-        assertTrinoExceptionThrownBy(() -> assertions.operator(DIVIDE, "SMALLINT '17'", "SMALLINT '0'").evaluate())
+        assertTrinoExceptionThrownBy(assertions.operator(DIVIDE, "SMALLINT '17'", "SMALLINT '0'")::evaluate)
                 .hasErrorCode(DIVISION_BY_ZERO);
     }
 
@@ -190,7 +193,7 @@ public class TestSmallintOperators
         assertThat(assertions.operator(MODULUS, "SMALLINT '17'", "SMALLINT '17'"))
                 .isEqualTo((short) 0);
 
-        assertTrinoExceptionThrownBy(() -> assertions.operator(MODULUS, "SMALLINT '17'", "SMALLINT '0'").evaluate())
+        assertTrinoExceptionThrownBy(assertions.operator(MODULUS, "SMALLINT '17'", "SMALLINT '0'")::evaluate)
                 .hasErrorCode(DIVISION_BY_ZERO);
     }
 
@@ -206,7 +209,7 @@ public class TestSmallintOperators
         assertThat(assertions.expression("-(SMALLINT '" + Short.MAX_VALUE + "')"))
                 .isEqualTo((short) (Short.MIN_VALUE + 1));
 
-        assertTrinoExceptionThrownBy(() -> assertions.expression(format("-(SMALLINT '%s')", Short.MIN_VALUE)).evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression(format("-(SMALLINT '%s')", Short.MIN_VALUE))::evaluate)
                 .hasErrorCode(NUMERIC_VALUE_OUT_OF_RANGE)
                 .hasMessage("smallint negation overflow: -32768");
     }
@@ -507,22 +510,22 @@ public class TestSmallintOperators
     }
 
     @Test
-    public void testIsDistinctFrom()
+    public void testIdentical()
     {
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "cast(NULL as SMALLINT)", "CAST(NULL AS SMALLINT)"))
+        assertThat(assertions.operator(IDENTICAL, "cast(NULL as SMALLINT)", "CAST(NULL AS SMALLINT)"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "SMALLINT '37'", "SMALLINT '37'"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "SMALLINT '37'", "SMALLINT '38'"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "SMALLINT '37'", "SMALLINT '37'"))
+        assertThat(assertions.operator(IDENTICAL, "NULL", "SMALLINT '37'"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "SMALLINT '37'", "SMALLINT '38'"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "NULL", "SMALLINT '37'"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "SMALLINT '37'", "NULL"))
-                .isEqualTo(true);
+        assertThat(assertions.operator(IDENTICAL, "SMALLINT '37'", "NULL"))
+                .isEqualTo(false);
     }
 
     @Test

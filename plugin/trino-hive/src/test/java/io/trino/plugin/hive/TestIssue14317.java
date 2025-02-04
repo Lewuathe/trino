@@ -14,8 +14,8 @@
 package io.trino.plugin.hive;
 
 import io.trino.sql.query.QueryAssertions;
-import io.trino.testing.DistributedQueryRunner;
-import org.testng.annotations.Test;
+import io.trino.testing.QueryRunner;
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -34,7 +34,7 @@ public class TestIssue14317
         HiveQueryRunner.Builder<?> builder = HiveQueryRunner.builder()
                 .setCreateTpchSchemas(false);
 
-        try (DistributedQueryRunner queryRunner = builder.build();
+        try (QueryRunner queryRunner = builder.build();
                 QueryAssertions assertions = new QueryAssertions(queryRunner);) {
             queryRunner.execute("CREATE SCHEMA s");
 
@@ -46,7 +46,8 @@ public class TestIssue14317
             queryRunner.execute("INSERT INTO s.u VALUES (5, 6)");
             queryRunner.execute("INSERT INTO s.v VALUES (5, 6)");
 
-            assertThat(assertions.query("""
+            assertThat(assertions.query(
+                    """
                     WITH t1 AS (
                       SELECT a
                       FROM (

@@ -18,9 +18,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
-import io.trino.Session;
 import io.trino.memory.context.LocalMemoryContext;
-import io.trino.memory.context.MemoryTrackingContext;
 import io.trino.metadata.Split;
 import io.trino.metadata.TableHandle;
 import io.trino.spi.Page;
@@ -30,13 +28,14 @@ import io.trino.spi.connector.DynamicFilter;
 import io.trino.spi.connector.EmptyPageSource;
 import io.trino.split.EmptySplit;
 import io.trino.split.PageSourceProvider;
+import io.trino.split.PageSourceProviderFactory;
 import io.trino.sql.planner.plan.PlanNodeId;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 import static com.google.common.base.Preconditions.checkState;
@@ -48,9 +47,10 @@ public class TableScanOperator
         implements SourceOperator
 {
     public static class TableScanOperatorFactory
-            implements SourceOperatorFactory, WorkProcessorSourceOperatorFactory
+            implements SourceOperatorFactory
     {
         private final int operatorId;
+        private final PlanNodeId planNodeId;
         private final PlanNodeId sourceId;
         private final PageSourceProvider pageSourceProvider;
         private final TableHandle table;
@@ -60,24 +60,20 @@ public class TableScanOperator
 
         public TableScanOperatorFactory(
                 int operatorId,
+                PlanNodeId planNodeId,
                 PlanNodeId sourceId,
-                PageSourceProvider pageSourceProvider,
+                PageSourceProviderFactory pageSourceProvider,
                 TableHandle table,
                 Iterable<ColumnHandle> columns,
                 DynamicFilter dynamicFilter)
         {
             this.operatorId = operatorId;
+            this.planNodeId = requireNonNull(planNodeId, "planNodeId is null");
             this.sourceId = requireNonNull(sourceId, "sourceId is null");
-            this.pageSourceProvider = requireNonNull(pageSourceProvider, "pageSourceProvider is null");
             this.table = requireNonNull(table, "table is null");
             this.columns = ImmutableList.copyOf(requireNonNull(columns, "columns is null"));
             this.dynamicFilter = requireNonNull(dynamicFilter, "dynamicFilter is null");
-        }
-
-        @Override
-        public int getOperatorId()
-        {
-            return operatorId;
+            this.pageSourceProvider = pageSourceProvider.createPageSourceProvider(table.catalogHandle());
         }
 
         @Override
@@ -87,42 +83,13 @@ public class TableScanOperator
         }
 
         @Override
-        public PlanNodeId getPlanNodeId()
-        {
-            return sourceId;
-        }
-
-        @Override
-        public String getOperatorType()
-        {
-            return TableScanOperator.class.getSimpleName();
-        }
-
-        @Override
         public SourceOperator createOperator(DriverContext driverContext)
         {
             checkState(!closed, "Factory is already closed");
-            OperatorContext operatorContext = driverContext.addOperatorContext(operatorId, sourceId, getOperatorType());
+            OperatorContext operatorContext = driverContext.addOperatorContext(operatorId, planNodeId, TableScanOperator.class.getSimpleName());
             return new TableScanOperator(
                     operatorContext,
                     sourceId,
-                    pageSourceProvider,
-                    table,
-                    columns,
-                    dynamicFilter);
-        }
-
-        @Override
-        public WorkProcessorSourceOperator create(
-                Session session,
-                MemoryTrackingContext memoryTrackingContext,
-                DriverYieldSignal yieldSignal,
-                WorkProcessor<Split> splits)
-        {
-            return new TableScanWorkProcessorOperator(
-                    session,
-                    memoryTrackingContext,
-                    splits,
                     pageSourceProvider,
                     table,
                     columns,
@@ -137,7 +104,7 @@ public class TableScanOperator
     }
 
     private final OperatorContext operatorContext;
-    private final PlanNodeId planNodeId;
+    private final PlanNodeId sourceId;
     private final PageSourceProvider pageSourceProvider;
     private final TableHandle table;
     private final List<ColumnHandle> columns;
@@ -158,14 +125,14 @@ public class TableScanOperator
 
     public TableScanOperator(
             OperatorContext operatorContext,
-            PlanNodeId planNodeId,
+            PlanNodeId sourceId,
             PageSourceProvider pageSourceProvider,
             TableHandle table,
             Iterable<ColumnHandle> columns,
             DynamicFilter dynamicFilter)
     {
         this.operatorContext = requireNonNull(operatorContext, "operatorContext is null");
-        this.planNodeId = requireNonNull(planNodeId, "planNodeId is null");
+        this.sourceId = requireNonNull(sourceId, "planNodeId is null");
         this.pageSourceProvider = requireNonNull(pageSourceProvider, "pageSourceProvider is null");
         this.table = requireNonNull(table, "table is null");
         this.columns = ImmutableList.copyOf(requireNonNull(columns, "columns is null"));
@@ -182,7 +149,7 @@ public class TableScanOperator
     @Override
     public PlanNodeId getSourceId()
     {
-        return planNodeId;
+        return sourceId;
     }
 
     @Override
@@ -197,8 +164,8 @@ public class TableScanOperator
 
         this.split = split;
 
-        Object splitInfo = split.getInfo();
-        if (splitInfo != null) {
+        Map<String, String> splitInfo = split.getInfo();
+        if (!splitInfo.isEmpty()) {
             operatorContext.setInfoSupplier(Suppliers.ofInstance(new SplitOperatorInfo(split.getCatalogHandle(), splitInfo)));
         }
 

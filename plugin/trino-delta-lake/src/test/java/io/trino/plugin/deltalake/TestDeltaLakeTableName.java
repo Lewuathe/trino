@@ -13,18 +13,17 @@
  */
 package io.trino.plugin.deltalake;
 
-import org.assertj.core.api.Assertions;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
 import static io.trino.plugin.deltalake.DeltaLakeTableType.DATA;
 import static io.trino.plugin.deltalake.DeltaLakeTableType.HISTORY;
+import static io.trino.plugin.deltalake.DeltaLakeTableType.PARTITIONS;
+import static io.trino.plugin.deltalake.DeltaLakeTableType.PROPERTIES;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExceptionThrownBy;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestDeltaLakeTableName
 {
@@ -33,6 +32,8 @@ public class TestDeltaLakeTableName
     {
         assertParseNameAndType("abc", "abc", DATA);
         assertParseNameAndType("abc$history", "abc", DeltaLakeTableType.HISTORY);
+        assertParseNameAndType("abc$properties", "abc", DeltaLakeTableType.PROPERTIES);
+        assertParseNameAndType("abc$partitions", "abc", DeltaLakeTableType.PARTITIONS);
 
         assertNoValidTableType("abc$data");
         assertInvalid("abc@123", "Invalid Delta Lake table name: abc@123");
@@ -45,42 +46,40 @@ public class TestDeltaLakeTableName
     @Test
     public void testIsDataTable()
     {
-        assertTrue(DeltaLakeTableName.isDataTable("abc"));
+        assertThat(DeltaLakeTableName.isDataTable("abc")).isTrue();
 
-        assertFalse(DeltaLakeTableName.isDataTable("abc$data")); // it's invalid
-        assertFalse(DeltaLakeTableName.isDataTable("abc$history"));
-        assertFalse(DeltaLakeTableName.isDataTable("abc$invalid"));
+        assertThat(DeltaLakeTableName.isDataTable("abc$data")).isFalse(); // it's invalid
+        assertThat(DeltaLakeTableName.isDataTable("abc$history")).isFalse();
+        assertThat(DeltaLakeTableName.isDataTable("abc$partitions")).isFalse();
+        assertThat(DeltaLakeTableName.isDataTable("abc$invalid")).isFalse();
     }
 
     @Test
     public void testTableNameFrom()
     {
-        assertEquals(DeltaLakeTableName.tableNameFrom("abc"), "abc");
-        assertEquals(DeltaLakeTableName.tableNameFrom("abc$data"), "abc");
-        assertEquals(DeltaLakeTableName.tableNameFrom("abc$history"), "abc");
-        assertEquals(DeltaLakeTableName.tableNameFrom("abc$invalid"), "abc");
+        assertThat(DeltaLakeTableName.tableNameFrom("abc")).isEqualTo("abc");
+        assertThat(DeltaLakeTableName.tableNameFrom("abc$data")).isEqualTo("abc");
+        assertThat(DeltaLakeTableName.tableNameFrom("abc$history")).isEqualTo("abc");
+        assertThat(DeltaLakeTableName.tableNameFrom("abc$properties")).isEqualTo("abc");
+        assertThat(DeltaLakeTableName.tableNameFrom("abc$partitions")).isEqualTo("abc");
+        assertThat(DeltaLakeTableName.tableNameFrom("abc$invalid")).isEqualTo("abc");
     }
 
     @Test
     public void testTableTypeFrom()
     {
-        assertEquals(DeltaLakeTableName.tableTypeFrom("abc"), Optional.of(DATA));
-        assertEquals(DeltaLakeTableName.tableTypeFrom("abc$data"), Optional.empty()); // it's invalid
-        assertEquals(DeltaLakeTableName.tableTypeFrom("abc$history"), Optional.of(HISTORY));
+        assertThat(DeltaLakeTableName.tableTypeFrom("abc")).isEqualTo(Optional.of(DATA));
+        assertThat(DeltaLakeTableName.tableTypeFrom("abc$data")).isEqualTo(Optional.empty()); // it's invalid
+        assertThat(DeltaLakeTableName.tableTypeFrom("abc$history")).isEqualTo(Optional.of(HISTORY));
+        assertThat(DeltaLakeTableName.tableTypeFrom("abc$properties")).isEqualTo(Optional.of(PROPERTIES));
+        assertThat(DeltaLakeTableName.tableTypeFrom("abc$partitions")).isEqualTo(Optional.of(PARTITIONS));
 
-        assertEquals(DeltaLakeTableName.tableTypeFrom("abc$invalid"), Optional.empty());
-    }
-
-    @Test
-    public void testTableNameWithType()
-    {
-        assertEquals(DeltaLakeTableName.tableNameWithType("abc", DATA), "abc$data");
-        assertEquals(DeltaLakeTableName.tableNameWithType("abc", HISTORY), "abc$history");
+        assertThat(DeltaLakeTableName.tableTypeFrom("abc$invalid")).isEqualTo(Optional.empty());
     }
 
     private static void assertNoValidTableType(String inputName)
     {
-        Assertions.assertThat(DeltaLakeTableName.tableTypeFrom(inputName))
+        assertThat(DeltaLakeTableName.tableTypeFrom(inputName))
                 .isEmpty();
     }
 
@@ -93,7 +92,7 @@ public class TestDeltaLakeTableName
 
     private static void assertParseNameAndType(String inputName, String tableName, DeltaLakeTableType tableType)
     {
-        assertEquals(DeltaLakeTableName.tableNameFrom(inputName), tableName);
-        assertEquals(DeltaLakeTableName.tableTypeFrom(inputName), Optional.of(tableType));
+        assertThat(DeltaLakeTableName.tableNameFrom(inputName)).isEqualTo(tableName);
+        assertThat(DeltaLakeTableName.tableTypeFrom(inputName)).isEqualTo(Optional.of(tableType));
     }
 }

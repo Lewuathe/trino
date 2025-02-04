@@ -14,8 +14,9 @@
 package io.trino.server.security.oauth2;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import io.airlift.units.Duration;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -40,12 +41,13 @@ public class TestOAuth2Config
                 .setIssuer(null)
                 .setClientId(null)
                 .setClientSecret(null)
-                .setScopes("openid")
+                .setScopes(ImmutableSet.of("openid"))
                 .setChallengeTimeout(new Duration(15, MINUTES))
                 .setPrincipalField("sub")
                 .setGroupsField(null)
                 .setAdditionalAudiences(Collections.emptyList())
                 .setMaxClockSkew(new Duration(1, MINUTES))
+                .setJwtType(null)
                 .setUserMappingPattern(null)
                 .setUserMappingFile(null)
                 .setEnableRefreshTokens(false)
@@ -68,6 +70,7 @@ public class TestOAuth2Config
                 .put("http-server.authentication.oauth2.additional-audiences", "test-aud1,test-aud2")
                 .put("http-server.authentication.oauth2.challenge-timeout", "90s")
                 .put("http-server.authentication.oauth2.max-clock-skew", "15s")
+                .put("http-server.authentication.oauth2.jwt-type", "at+jwt")
                 .put("http-server.authentication.oauth2.user-mapping.pattern", "(.*)@something")
                 .put("http-server.authentication.oauth2.user-mapping.file", userMappingFile.toString())
                 .put("http-server.authentication.oauth2.refresh-tokens", "true")
@@ -79,12 +82,13 @@ public class TestOAuth2Config
                 .setIssuer("http://127.0.0.1:9000/oauth2")
                 .setClientId("another-consumer")
                 .setClientSecret("consumer-secret")
-                .setScopes("email, offline")
+                .setScopes(ImmutableSet.of("email", "offline"))
                 .setPrincipalField("some-field")
                 .setGroupsField("groups")
                 .setAdditionalAudiences(List.of("test-aud1", "test-aud2"))
                 .setChallengeTimeout(new Duration(90, SECONDS))
                 .setMaxClockSkew(new Duration(15, SECONDS))
+                .setJwtType("at+jwt")
                 .setUserMappingPattern("(.*)@something")
                 .setUserMappingFile(userMappingFile.toFile())
                 .setEnableRefreshTokens(true)

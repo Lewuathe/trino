@@ -17,11 +17,11 @@ import io.trino.tempto.ProductTest;
 import org.testng.annotations.Test;
 
 import static io.trino.tempto.assertions.QueryAssert.Row.row;
-import static io.trino.tempto.assertions.QueryAssert.assertThat;
 import static io.trino.tests.product.TestGroups.HMS_ONLY;
 import static io.trino.tests.product.TestGroups.PROFILE_SPECIFIC_TESTS;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
 import static java.lang.String.format;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestWriteToHiveTransactionalTableInTrino
         extends ProductTest
@@ -41,6 +41,16 @@ public class TestWriteToHiveTransactionalTableInTrino
     {
         String tableName = "partitioned_transactional_insert";
         onTrino().executeQuery(format("CREATE TABLE %s (column1 INT, column2 INT) WITH (transactional = true, partitioned_by = ARRAY['column2'])", tableName));
+        onTrino().executeQuery(format("INSERT INTO %s VALUES (11, 12), (111, 121)", tableName));
+        assertThat(onTrino().executeQuery(format("SELECT * FROM %s", tableName))).containsOnly(row(11, 12), row(111, 121));
+        onTrino().executeQuery(format("DROP TABLE %s", tableName));
+    }
+
+    @Test(groups = {HMS_ONLY, PROFILE_SPECIFIC_TESTS})
+    public void testInsertIntoNonPartitionedTable()
+    {
+        String tableName = "non_partitioned_transactional_insert";
+        onTrino().executeQuery(format("CREATE TABLE %s (column1 INT, column2 INT) WITH (transactional = true)", tableName));
         onTrino().executeQuery(format("INSERT INTO %s VALUES (11, 12), (111, 121)", tableName));
         assertThat(onTrino().executeQuery(format("SELECT * FROM %s", tableName))).containsOnly(row(11, 12), row(111, 121));
         onTrino().executeQuery(format("DROP TABLE %s", tableName));

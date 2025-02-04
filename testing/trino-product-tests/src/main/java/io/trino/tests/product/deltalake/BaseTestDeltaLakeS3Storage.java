@@ -13,19 +13,19 @@
  */
 package io.trino.tests.product.deltalake;
 
-import io.trino.tempto.BeforeTestWithContext;
+import io.trino.tempto.BeforeMethodWithContext;
 import io.trino.tempto.ProductTest;
 
-import static java.util.Objects.requireNonNull;
+import static io.trino.testing.SystemEnvironmentUtils.requireEnv;
 
 public abstract class BaseTestDeltaLakeS3Storage
         extends ProductTest
 {
     protected String bucketName;
 
-    @BeforeTestWithContext
+    @BeforeMethodWithContext
     public void setUp()
     {
-        bucketName = requireNonNull(System.getenv("S3_BUCKET"), "Environment variable not set: S3_BUCKET");
+        bucketName = requireEnv("S3_BUCKET");
     }
 }

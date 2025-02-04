@@ -13,7 +13,8 @@
  */
 package io.trino.plugin.bigquery;
 
-import javax.inject.Inject;
+import com.google.common.util.concurrent.ListeningExecutorService;
+import com.google.inject.Inject;
 
 import static java.util.Objects.requireNonNull;
 
@@ -21,16 +22,29 @@ public class DefaultBigQueryMetadataFactory
         implements BigQueryMetadataFactory
 {
     private final BigQueryClientFactory bigQueryClient;
+    private final BigQueryWriteClientFactory writeClientFactory;
+    private final ListeningExecutorService executorService;
+    private final BigQueryTypeManager typeManager;
+    private final boolean isLegacyMetadataListing;
 
     @Inject
-    public DefaultBigQueryMetadataFactory(BigQueryClientFactory bigQueryClient)
+    public DefaultBigQueryMetadataFactory(
+            BigQueryClientFactory bigQueryClient,
+            BigQueryWriteClientFactory writeClientFactory,
+            BigQueryTypeManager typeManager,
+            ListeningExecutorService executorService,
+            BigQueryConfig config)
     {
         this.bigQueryClient = requireNonNull(bigQueryClient, "bigQueryClient is null");
+        this.writeClientFactory = requireNonNull(writeClientFactory, "writeClientFactory is null");
+        this.typeManager = requireNonNull(typeManager, "typeManager is null");
+        this.executorService = requireNonNull(executorService, "executorService is null");
+        this.isLegacyMetadataListing = config.isLegacyMetadataListing();
     }
 
     @Override
     public BigQueryMetadata create(BigQueryTransactionHandle transaction)
     {
-        return new BigQueryMetadata(bigQueryClient);
+        return new BigQueryMetadata(bigQueryClient, writeClientFactory, typeManager, executorService, isLegacyMetadataListing);
     }
 }

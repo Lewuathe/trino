@@ -19,6 +19,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.Base64;
 
@@ -36,8 +37,10 @@ import static io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExcept
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestVarbinaryFunctions
 {
     private static final byte[] ALL_BYTES;
@@ -87,7 +90,7 @@ public class TestVarbinaryFunctions
     @Test
     public void testConcat()
     {
-        assertTrinoExceptionThrownBy(() -> assertions.function("CONCAT", "X''").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("CONCAT", "X''")::evaluate)
                 .hasMessage("There must be two or more concatenation arguments");
 
         assertThat(assertions.expression("CAST('foo' AS VARBINARY) || CAST ('bar' AS VARBINARY)"))
@@ -324,16 +327,16 @@ public class TestVarbinaryFunctions
         assertThat(assertions.function("from_base32", "CAST(NULL AS VARBINARY)"))
                 .isNull(VARBINARY);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("from_base32", "'1='").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("from_base32", "'1='")::evaluate)
                 .hasMessage("Invalid input length 1");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("from_base32", "'M1======'").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("from_base32", "'M1======'")::evaluate)
                 .hasMessage("Unrecognized character: 1");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("from_base32", "CAST('1=' AS VARBINARY)").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("from_base32", "CAST('1=' AS VARBINARY)")::evaluate)
                 .hasMessage("Invalid input length 1");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("from_base32", "CAST('M1======' AS VARBINARY)").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("from_base32", "CAST('M1======' AS VARBINARY)")::evaluate)
                 .hasMessage("Unrecognized character: 1");
     }
 
@@ -386,30 +389,30 @@ public class TestVarbinaryFunctions
                 .isEqualTo(base16().encode(ALL_BYTES));
 
         // '0' - 1
-        assertTrinoExceptionThrownBy(() -> assertions.function("from_hex", "'f/'").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("from_hex", "'f/'")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
         // '9' + 1
-        assertTrinoExceptionThrownBy(() -> assertions.function("from_hex", "'f:'").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("from_hex", "'f:'")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
         // 'A' - 1
-        assertTrinoExceptionThrownBy(() -> assertions.function("from_hex", "'f@'").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("from_hex", "'f@'")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
         // 'F' + 1
-        assertTrinoExceptionThrownBy(() -> assertions.function("from_hex", "'fG'").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("from_hex", "'fG'")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
         // 'a' - 1
-        assertTrinoExceptionThrownBy(() -> assertions.function("from_hex", "'f`'").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("from_hex", "'f`'")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
         // 'f' + 1
-        assertTrinoExceptionThrownBy(() -> assertions.function("from_hex", "'fg'").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("from_hex", "'fg'")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("from_hex", "'fff'").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("from_hex", "'fff'")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
     }
 
@@ -444,13 +447,13 @@ public class TestVarbinaryFunctions
         assertThat(assertions.function("from_big_endian_64", "from_hex('8000000000000001')"))
                 .isEqualTo(-9223372036854775807L);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("from_big_endian_64", "from_hex('')").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("from_big_endian_64", "from_hex('')")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("from_big_endian_64", "from_hex('1111')").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("from_big_endian_64", "from_hex('1111')")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("from_big_endian_64", "from_hex('000000000000000011')").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("from_big_endian_64", "from_hex('000000000000000011')")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
     }
 
@@ -489,13 +492,13 @@ public class TestVarbinaryFunctions
                 .hasType(INTEGER)
                 .isEqualTo(-2147483647);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("from_big_endian_32", "from_hex('')").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("from_big_endian_32", "from_hex('')")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("from_big_endian_32", "from_hex('1111')").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("from_big_endian_32", "from_hex('1111')")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("from_big_endian_32", "from_hex('000000000000000011')").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("from_big_endian_32", "from_hex('000000000000000011')")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
     }
 
@@ -580,7 +583,7 @@ public class TestVarbinaryFunctions
                 .hasType(REAL)
                 .isEqualTo(-1.4E-45f);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("from_ieee754_32", "from_hex('0000')").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("from_ieee754_32", "from_hex('0000')")::evaluate)
                 .hasMessage("Input floating-point value must be exactly 4 bytes long");
     }
 
@@ -661,7 +664,7 @@ public class TestVarbinaryFunctions
                 .hasType(DOUBLE)
                 .isEqualTo(-4.9E-324);
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("from_ieee754_64", "from_hex('00000000')").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("from_ieee754_64", "from_hex('00000000')")::evaluate)
                 .hasMessage("Input floating-point value must be exactly 8 bytes long");
     }
 
@@ -684,10 +687,10 @@ public class TestVarbinaryFunctions
         assertThat(assertions.function("lpad", "x'1234'", "1", "x'4524'"))
                 .isEqualTo(sqlVarbinaryFromHex("12"));
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("lpad", "x'2312'", "-1", "x'4524'").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("lpad", "x'2312'", "-1", "x'4524'")::evaluate)
                 .hasMessage("Target length must be in the range [0.." + Integer.MAX_VALUE + "]");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("lpad", "x'2312'", "1", "x''").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("lpad", "x'2312'", "1", "x''")::evaluate)
                 .hasMessage("Padding bytes must not be empty");
     }
 
@@ -710,10 +713,10 @@ public class TestVarbinaryFunctions
         assertThat(assertions.function("rpad", "x'1234'", "1", "x'4524'"))
                 .isEqualTo(sqlVarbinaryFromHex("12"));
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("rpad", "x'1234'", "-1", "x'4524'").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("rpad", "x'1234'", "-1", "x'4524'")::evaluate)
                 .hasMessage("Target length must be in the range [0.." + Integer.MAX_VALUE + "]");
 
-        assertTrinoExceptionThrownBy(() -> assertions.function("rpad", "x'1234'", "1", "x''").evaluate())
+        assertTrinoExceptionThrownBy(assertions.function("rpad", "x'1234'", "1", "x''")::evaluate)
                 .hasMessage("Padding bytes must not be empty");
     }
 

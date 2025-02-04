@@ -19,21 +19,21 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import io.trino.Session;
 import io.trino.SystemSessionProperties;
-import io.trino.cost.TableStatsProvider;
-import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.TableProperties;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.DiscretePredicates;
+import io.trino.spi.function.CatalogSchemaFunctionName;
 import io.trino.spi.predicate.NullableValue;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.planner.LiteralEncoder;
+import io.trino.sql.ir.Constant;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.Row;
+import io.trino.sql.planner.DeterminismEvaluator;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
-import io.trino.sql.planner.SymbolAllocator;
-import io.trino.sql.planner.TypeProvider;
 import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.AggregationNode.Aggregation;
 import io.trino.sql.planner.plan.FilterNode;
@@ -46,15 +46,13 @@ import io.trino.sql.planner.plan.SortNode;
 import io.trino.sql.planner.plan.TableScanNode;
 import io.trino.sql.planner.plan.TopNNode;
 import io.trino.sql.planner.plan.ValuesNode;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.Row;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
-import static io.trino.sql.planner.DeterminismEvaluator.isDeterministic;
+import static io.trino.metadata.GlobalFunctionCatalog.builtinFunctionName;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -64,7 +62,11 @@ import static java.util.Objects.requireNonNull;
 public class MetadataQueryOptimizer
         implements PlanOptimizer
 {
-    private static final Set<String> ALLOWED_FUNCTIONS = ImmutableSet.of("max", "min", "approx_distinct");
+    private static final Set<CatalogSchemaFunctionName> ALLOWED_FUNCTIONS = ImmutableSet.<CatalogSchemaFunctionName>builder()
+            .add(builtinFunctionName("max"))
+            .add(builtinFunctionName("min"))
+            .add(builtinFunctionName("approx_distinct"))
+            .build();
 
     private final PlannerContext plannerContext;
 
@@ -74,12 +76,12 @@ public class MetadataQueryOptimizer
     }
 
     @Override
-    public PlanNode optimize(PlanNode plan, Session session, TypeProvider types, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator, WarningCollector warningCollector, TableStatsProvider tableStatsProvider)
+    public PlanNode optimize(PlanNode plan, Context context)
     {
-        if (!SystemSessionProperties.isOptimizeMetadataQueries(session)) {
+        if (!SystemSessionProperties.isOptimizeMetadataQueries(context.session())) {
             return plan;
         }
-        return SimplePlanRewriter.rewriteWith(new Optimizer(session, plannerContext, idAllocator), plan, null);
+        return SimplePlanRewriter.rewriteWith(new Optimizer(context.session(), plannerContext, context.idAllocator()), plan, null);
     }
 
     private static class Optimizer
@@ -88,13 +90,11 @@ public class MetadataQueryOptimizer
         private final PlanNodeIdAllocator idAllocator;
         private final Session session;
         private final PlannerContext plannerContext;
-        private final LiteralEncoder literalEncoder;
 
         private Optimizer(Session session, PlannerContext plannerContext, PlanNodeIdAllocator idAllocator)
         {
             this.session = session;
             this.plannerContext = plannerContext;
-            this.literalEncoder = new LiteralEncoder(plannerContext);
             this.idAllocator = idAllocator;
         }
 
@@ -103,7 +103,7 @@ public class MetadataQueryOptimizer
         {
             // supported functions are only MIN/MAX/APPROX_DISTINCT or distinct aggregates
             for (Aggregation aggregation : node.getAggregations().values()) {
-                if (!ALLOWED_FUNCTIONS.contains(aggregation.getResolvedFunction().getSignature().getName()) && !aggregation.isDistinct()) {
+                if (!ALLOWED_FUNCTIONS.contains(aggregation.getResolvedFunction().signature().getName()) && !aggregation.isDistinct()) {
                     return context.defaultRewrite(node);
                 }
             }
@@ -162,7 +162,7 @@ public class MetadataQueryOptimizer
                             // partition key does not have a single value, so bail out to be safe
                             return context.defaultRewrite(node);
                         }
-                        rowBuilder.add(literalEncoder.toExpression(session, value.getValue(), type));
+                        rowBuilder.add(new Constant(type, value.getValue()));
                     }
                     rowsBuilder.add(new Row(rowBuilder.build()));
                 }
@@ -186,7 +186,7 @@ public class MetadataQueryOptimizer
                 }
                 else if (source instanceof ProjectNode project) {
                     // verify projections are deterministic
-                    if (!Iterables.all(project.getAssignments().getExpressions(), expression -> isDeterministic(expression, plannerContext.getMetadata()))) {
+                    if (!Iterables.all(project.getAssignments().getExpressions(), DeterminismEvaluator::isDeterministic)) {
                         return Optional.empty();
                     }
                     source = project.getSource();

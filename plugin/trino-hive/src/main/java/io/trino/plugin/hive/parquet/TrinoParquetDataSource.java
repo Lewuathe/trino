@@ -19,7 +19,7 @@ import io.trino.filesystem.TrinoInputFile;
 import io.trino.parquet.AbstractParquetDataSource;
 import io.trino.parquet.ParquetDataSourceId;
 import io.trino.parquet.ParquetReaderOptions;
-import io.trino.plugin.hive.FileFormatDataSourceStats;
+import io.trino.plugin.base.metrics.FileFormatDataSourceStats;
 
 import java.io.IOException;
 
@@ -34,7 +34,7 @@ public class TrinoParquetDataSource
     public TrinoParquetDataSource(TrinoInputFile file, ParquetReaderOptions options, FileFormatDataSourceStats stats)
             throws IOException
     {
-        super(new ParquetDataSourceId(file.location()), file.length(), options);
+        super(new ParquetDataSourceId(file.location().toString()), file.length(), options);
         this.stats = requireNonNull(stats, "stats is null");
         this.input = file.newInput();
     }

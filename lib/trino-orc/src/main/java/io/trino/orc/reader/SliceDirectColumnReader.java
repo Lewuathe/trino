@@ -29,8 +29,7 @@ import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.RunLengthEncodedBlock;
 import io.trino.spi.block.VariableWidthBlock;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.io.IOException;
 import java.time.ZoneId;
@@ -288,9 +287,7 @@ public class SliceDirectColumnReader
     }
 
     @Override
-    public void close()
-    {
-    }
+    public void close() {}
 
     @Override
     public long getRetainedSizeInBytes()

@@ -19,12 +19,15 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestIntervalDayTime
 {
     protected QueryAssertions assertions;
@@ -135,20 +138,79 @@ public class TestIntervalDayTime
         assertThat(assertions.expression("INTERVAL '32' SECOND"))
                 .isEqualTo(interval(0, 0, 0, 32, 0));
 
-        assertThatThrownBy(() -> assertions.expression("INTERVAL '12X' DAY").evaluate())
-                .hasMessage("line 1:12: '12X' is not a valid interval literal");
+        // Invalid literals
+        assertThatThrownBy(assertions.expression("INTERVAL '12X' DAY")::evaluate)
+                .hasMessage("line 1:12: Invalid INTERVAL DAY value: 12X");
 
-        assertThatThrownBy(() -> assertions.expression("INTERVAL '12 10' DAY").evaluate())
-                .hasMessage("line 1:12: '12 10' is not a valid interval literal");
+        assertThatThrownBy(assertions.expression("INTERVAL '12 10' DAY")::evaluate)
+                .hasMessage("line 1:12: Invalid INTERVAL DAY value: 12 10");
 
-        assertThatThrownBy(() -> assertions.expression("INTERVAL '12 X' DAY TO HOUR").evaluate())
-                .hasMessage("line 1:12: '12 X' is not a valid interval literal");
+        assertThatThrownBy(assertions.expression("INTERVAL '12 X' DAY TO HOUR")::evaluate)
+                .hasMessage("line 1:12: Invalid INTERVAL DAY TO HOUR value: 12 X");
 
-        assertThatThrownBy(() -> assertions.expression("INTERVAL '12 -10' DAY TO HOUR").evaluate())
-                .hasMessage("line 1:12: '12 -10' is not a valid interval literal");
+        assertThatThrownBy(assertions.expression("INTERVAL '12 -10' DAY TO HOUR")::evaluate)
+                .hasMessage("line 1:12: Invalid INTERVAL DAY TO HOUR value: 12 -10");
 
-        assertThatThrownBy(() -> assertions.expression("INTERVAL '--12 -10' DAY TO HOUR").evaluate())
-                .hasMessage("line 1:12: '--12 -10' is not a valid interval literal");
+        assertThatThrownBy(assertions.expression("INTERVAL '--12 -10' DAY TO HOUR")::evaluate)
+                .hasMessage("line 1:12: Invalid INTERVAL DAY TO HOUR value: --12 -10");
+
+        // Invalid qualifiers (DAY TO xxx)
+        assertThatThrownBy(assertions.expression("INTERVAL '12' DAY TO DAY")::evaluate)
+                .hasMessage("line 1:12: Invalid interval qualifier: DAY TO DAY");
+
+        assertThatThrownBy(assertions.expression("INTERVAL '12-10' DAY TO YEAR")::evaluate)
+                .hasMessage("line 1:12: Invalid interval qualifier: DAY TO YEAR");
+
+        assertThatThrownBy(assertions.expression("INTERVAL '12-10' DAY TO MONTH")::evaluate)
+                .hasMessage("line 1:12: Invalid interval qualifier: DAY TO MONTH");
+
+        // Invalid qualifiers (HOUR TO xxx)
+        assertThatThrownBy(assertions.expression("INTERVAL '10' HOUR TO HOUR")::evaluate)
+                .hasMessage("line 1:12: Invalid interval qualifier: HOUR TO HOUR");
+
+        assertThatThrownBy(assertions.expression("INTERVAL '12-10' HOUR TO YEAR")::evaluate)
+                .hasMessage("line 1:12: Invalid interval qualifier: HOUR TO YEAR");
+
+        assertThatThrownBy(assertions.expression("INTERVAL '12-10' HOUR TO MONTH")::evaluate)
+                .hasMessage("line 1:12: Invalid interval qualifier: HOUR TO MONTH");
+
+        assertThatThrownBy(assertions.expression("INTERVAL '12-10' HOUR TO DAY")::evaluate)
+                .hasMessage("line 1:12: Invalid interval qualifier: HOUR TO DAY");
+
+        // Invalid qualifiers (MINUTE TO xxx)
+        assertThatThrownBy(assertions.expression("INTERVAL '45' MINUTE TO MINUTE")::evaluate)
+                .hasMessage("line 1:12: Invalid interval qualifier: MINUTE TO MINUTE");
+
+        assertThatThrownBy(assertions.expression("INTERVAL '12-10' MINUTE TO YEAR")::evaluate)
+                .hasMessage("line 1:12: Invalid interval qualifier: MINUTE TO YEAR");
+
+        assertThatThrownBy(assertions.expression("INTERVAL '12-10' MINUTE TO MONTH")::evaluate)
+                .hasMessage("line 1:12: Invalid interval qualifier: MINUTE TO MONTH");
+
+        assertThatThrownBy(assertions.expression("INTERVAL '12-10' MINUTE TO DAY")::evaluate)
+                .hasMessage("line 1:12: Invalid interval qualifier: MINUTE TO DAY");
+
+        assertThatThrownBy(assertions.expression("INTERVAL '12-10' MINUTE TO HOUR")::evaluate)
+                .hasMessage("line 1:12: Invalid interval qualifier: MINUTE TO HOUR");
+
+        // Invalid qualifiers (SECOND TO xxx)
+        assertThatThrownBy(assertions.expression("INTERVAL '32' SECOND TO SECOND")::evaluate)
+                .hasMessage("line 1:12: Invalid interval qualifier: SECOND TO SECOND");
+
+        assertThatThrownBy(assertions.expression("INTERVAL '12-10' SECOND TO YEAR")::evaluate)
+                .hasMessage("line 1:12: Invalid interval qualifier: SECOND TO YEAR");
+
+        assertThatThrownBy(assertions.expression("INTERVAL '12-10' SECOND TO MONTH")::evaluate)
+                .hasMessage("line 1:12: Invalid interval qualifier: SECOND TO MONTH");
+
+        assertThatThrownBy(assertions.expression("INTERVAL '12-10' SECOND TO DAY")::evaluate)
+                .hasMessage("line 1:12: Invalid interval qualifier: SECOND TO DAY");
+
+        assertThatThrownBy(assertions.expression("INTERVAL '12-10' SECOND TO HOUR")::evaluate)
+                .hasMessage("line 1:12: Invalid interval qualifier: SECOND TO HOUR");
+
+        assertThatThrownBy(assertions.expression("INTERVAL '12-10' SECOND TO MINUTE")::evaluate)
+                .hasMessage("line 1:12: Invalid interval qualifier: SECOND TO MINUTE");
     }
 
     private static SqlIntervalDayTime interval(int day, int hour, int minute, int second, int milliseconds)

@@ -14,7 +14,7 @@
 package io.trino.execution.scheduler;
 
 import com.google.common.base.Suppliers;
-import com.google.common.collect.HashMultimap;
+import com.google.common.collect.LinkedHashMultimap;
 import com.google.common.collect.Multimap;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.log.Logger;
@@ -27,8 +27,7 @@ import io.trino.metadata.Split;
 import io.trino.spi.HostAddress;
 import io.trino.spi.SplitWeight;
 import io.trino.spi.TrinoException;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.util.HashSet;
 import java.util.Iterator;
@@ -120,7 +119,7 @@ public class TopologyAwareNodeSelector
     public SplitPlacementResult computeAssignments(Set<Split> splits, List<RemoteTask> existingTasks)
     {
         NodeMap nodeMap = this.nodeMap.get().get();
-        Multimap<InternalNode, Split> assignment = HashMultimap.create();
+        Multimap<InternalNode, Split> assignment = LinkedHashMultimap.create();
         NodeAssignmentStats assignmentStats = new NodeAssignmentStats(nodeTaskMap, nodeMap, existingTasks);
 
         int[] topologicCounters = new int[topologicalSplitCounters.size()];

@@ -15,11 +15,12 @@ package io.trino.tests;
 
 import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
-import io.trino.plugin.tpch.TpchConnectorFactory;
+import io.trino.plugin.memory.MemoryPlugin;
+import io.trino.plugin.tpch.TpchPlugin;
 import io.trino.testing.AbstractTestQueries;
-import io.trino.testing.LocalQueryRunner;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.Test;
+import io.trino.testing.StandaloneQueryRunner;
+import org.junit.jupiter.api.Test;
 
 import static io.trino.SystemSessionProperties.PUSH_PARTIAL_AGGREGATION_THROUGH_JOIN;
 import static io.trino.plugin.tpch.TpchMetadata.TINY_SCHEMA_NAME;
@@ -35,10 +36,10 @@ public class TestLocalQueries
     @Override
     protected QueryRunner createQueryRunner()
     {
-        return createLocalQueryRunner();
+        return createTestQueryRunner();
     }
 
-    public static LocalQueryRunner createLocalQueryRunner()
+    public static QueryRunner createTestQueryRunner()
     {
         Session defaultSession = testSessionBuilder()
                 .setCatalog("local")
@@ -46,20 +47,23 @@ public class TestLocalQueries
                 .setSystemProperty(PUSH_PARTIAL_AGGREGATION_THROUGH_JOIN, "true")
                 .build();
 
-        LocalQueryRunner localQueryRunner = LocalQueryRunner.builder(defaultSession)
-                .withNodeCountForStats(1)
-                .build();
+        QueryRunner queryRunner = new StandaloneQueryRunner(defaultSession);
+        queryRunner.installPlugin(new TpchPlugin());
+        queryRunner.createCatalog(defaultSession.getCatalog().get(), "tpch", ImmutableMap.of("tpch.splits-per-node", "1"));
+        queryRunner.installPlugin(new MemoryPlugin());
+        queryRunner.createCatalog("memory", "memory");
 
-        // add the tpch catalog
-        // local queries run directly against the generator
-        localQueryRunner.createCatalog(
-                defaultSession.getCatalog().get(),
-                new TpchConnectorFactory(1),
-                ImmutableMap.of());
+        return queryRunner;
+    }
 
-        localQueryRunner.addFunctions(CUSTOM_FUNCTIONS);
-
-        return localQueryRunner;
+    @Test
+    public void testDDL()
+    {
+        assertQuerySucceeds("CREATE SCHEMA memory.test_schema");
+        assertQuerySucceeds("CREATE TABLE memory.test_schema.test_table (c) AS VALUES 1");
+        assertQuerySucceeds("SELECT count(*) FROM memory.test_schema.test_table");
+        assertQuerySucceeds("DROP TABLE memory.test_schema.test_table");
+        assertQuerySucceeds("DROP SCHEMA memory.test_schema");
     }
 
     @Test
@@ -67,7 +71,7 @@ public class TestLocalQueries
     {
         // FIXME Add tests for more complex scenario with more stats
         assertThat(query("SHOW STATS FOR nation"))
-                .matches(resultBuilder(getSession(), VARCHAR, DOUBLE, DOUBLE, DOUBLE, DOUBLE, VARCHAR, VARCHAR)
+                .result().matches(resultBuilder(getSession(), VARCHAR, DOUBLE, DOUBLE, DOUBLE, DOUBLE, VARCHAR, VARCHAR)
                         .row("nationkey", null, 25.0, 0.0, null, "0", "24")
                         .row("name", 177.0, 25.0, 0.0, null, null, null)
                         .row("regionkey", null, 5.0, 0.0, null, "0", "4")

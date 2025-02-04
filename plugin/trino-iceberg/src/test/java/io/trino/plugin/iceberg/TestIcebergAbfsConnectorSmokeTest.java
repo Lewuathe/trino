@@ -14,25 +14,13 @@
 package io.trino.plugin.iceberg;
 
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import com.google.common.io.Resources;
-import io.trino.filesystem.TrinoFileSystemFactory;
-import io.trino.filesystem.hdfs.HdfsFileSystemFactory;
-import io.trino.hdfs.ConfigurationInitializer;
-import io.trino.hdfs.DynamicHdfsConfiguration;
-import io.trino.hdfs.HdfsConfig;
-import io.trino.hdfs.HdfsConfiguration;
-import io.trino.hdfs.HdfsConfigurationInitializer;
-import io.trino.hdfs.HdfsEnvironment;
-import io.trino.hdfs.authentication.NoHdfsAuthentication;
-import io.trino.plugin.hive.azure.HiveAzureConfig;
-import io.trino.plugin.hive.azure.TrinoAzureConfigurationInitializer;
+import io.trino.filesystem.Location;
+import io.trino.metastore.HiveMetastore;
 import io.trino.plugin.hive.containers.HiveHadoop;
-import io.trino.plugin.hive.metastore.HiveMetastore;
 import io.trino.plugin.hive.metastore.thrift.BridgingHiveMetastore;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.Parameters;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
 import java.nio.file.attribute.FileAttribute;
@@ -44,10 +32,10 @@ import java.util.Set;
 import static io.trino.plugin.hive.TestingThriftHiveMetastoreBuilder.testingThriftHiveMetastoreBuilder;
 import static io.trino.plugin.iceberg.IcebergTestUtils.checkOrcFileSorting;
 import static io.trino.testing.TestingNames.randomNameSuffix;
+import static io.trino.testing.TestingProperties.requiredNonEmptySystemProperty;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Locale.ENGLISH;
-import static java.util.Objects.requireNonNull;
 import static org.apache.iceberg.FileFormat.ORC;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -61,18 +49,13 @@ public class TestIcebergAbfsConnectorSmokeTest
     private final String bucketName;
 
     private HiveHadoop hiveHadoop;
-    private TrinoFileSystemFactory fileSystemFactory;
 
-    @Parameters({
-            "hive.hadoop2.azure-abfs-container",
-            "hive.hadoop2.azure-abfs-account",
-            "hive.hadoop2.azure-abfs-access-key"})
-    public TestIcebergAbfsConnectorSmokeTest(String container, String account, String accessKey)
+    public TestIcebergAbfsConnectorSmokeTest()
     {
         super(ORC);
-        this.container = requireNonNull(container, "container is null");
-        this.account = requireNonNull(account, "account is null");
-        this.accessKey = requireNonNull(accessKey, "accessKey is null");
+        this.container = requiredNonEmptySystemProperty("testing.azure-abfs-container");
+        this.account = requiredNonEmptySystemProperty("testing.azure-abfs-account");
+        this.accessKey = requiredNonEmptySystemProperty("testing.azure-abfs-access-key");
         this.schemaName = "tpch_" + format.name().toLowerCase(ENGLISH);
         this.bucketName = "test-iceberg-smoke-test-" + randomNameSuffix();
     }
@@ -96,25 +79,20 @@ public class TestIcebergAbfsConnectorSmokeTest
                 .build());
         this.hiveHadoop.start();
 
-        HiveAzureConfig azureConfig = new HiveAzureConfig()
-                .setAbfsStorageAccount(account)
-                .setAbfsAccessKey(accessKey);
-        ConfigurationInitializer azureConfigurationInitializer = new TrinoAzureConfigurationInitializer(azureConfig);
-        HdfsConfigurationInitializer initializer = new HdfsConfigurationInitializer(new HdfsConfig(), ImmutableSet.of(azureConfigurationInitializer));
-        HdfsConfiguration hdfsConfiguration = new DynamicHdfsConfiguration(initializer, ImmutableSet.of());
-        this.fileSystemFactory = new HdfsFileSystemFactory(new HdfsEnvironment(hdfsConfiguration, new HdfsConfig(), new NoHdfsAuthentication()));
-
         return IcebergQueryRunner.builder()
                 .setIcebergProperties(
                         ImmutableMap.<String, String>builder()
                                 .put("iceberg.file-format", format.name())
                                 .put("iceberg.catalog.type", "HIVE_METASTORE")
-                                .put("hive.metastore.uri", "thrift://" + hiveHadoop.getHiveMetastoreEndpoint())
-                                .put("hive.metastore-timeout", "1m") // read timed out sometimes happens with the default timeout
-                                .put("hive.azure.abfs-storage-account", account)
-                                .put("hive.azure.abfs-access-key", accessKey)
+                                .put("hive.metastore.uri", hiveHadoop.getHiveMetastoreEndpoint().toString())
+                                .put("hive.metastore.thrift.client.read-timeout", "1m") // read timed out sometimes happens with the default timeout
+                                .put("fs.hadoop.enabled", "false")
+                                .put("fs.native-azure.enabled", "true")
+                                .put("azure.auth-type", "ACCESS_KEY")
+                                .put("azure.access-key", accessKey)
                                 .put("iceberg.register-table-procedure.enabled", "true")
                                 .put("iceberg.writer-sort-buffer-size", "1MB")
+                                .put("iceberg.allowed-extra-properties", "write.metadata.delete-after-commit.enabled,write.metadata.previous-versions-max")
                                 .buildOrThrow())
                 .setSchemaInitializer(
                         SchemaInitializer.builder()
@@ -146,7 +124,7 @@ public class TestIcebergAbfsConnectorSmokeTest
         HiveMetastore metastore = new BridgingHiveMetastore(
                 testingThriftHiveMetastoreBuilder()
                         .metastoreClient(hiveHadoop.getHiveMetastoreEndpoint())
-                        .build());
+                        .build(this::closeAfterClass));
         metastore.dropTable(schemaName, tableName, false);
         assertThat(metastore.getTable(schemaName, tableName)).isEmpty();
     }
@@ -157,7 +135,7 @@ public class TestIcebergAbfsConnectorSmokeTest
         HiveMetastore metastore = new BridgingHiveMetastore(
                 testingThriftHiveMetastoreBuilder()
                         .metastoreClient(hiveHadoop.getHiveMetastoreEndpoint())
-                        .build());
+                        .build(this::closeAfterClass));
         return metastore
                 .getTable(schemaName, tableName).orElseThrow()
                 .getParameters().get("metadata_location");
@@ -182,9 +160,9 @@ public class TestIcebergAbfsConnectorSmokeTest
     }
 
     @Override
-    protected boolean isFileSorted(String path, String sortColumnName)
+    protected boolean isFileSorted(Location path, String sortColumnName)
     {
-        return checkOrcFileSorting(fileSystemFactory, path, sortColumnName);
+        return checkOrcFileSorting(fileSystem, path, sortColumnName);
     }
 
     private static String formatAbfsUrl(String container, String account, String bucketName)

@@ -14,9 +14,7 @@
 package io.trino.execution.buffer;
 
 import com.google.common.base.VerifyException;
-import io.airlift.compress.Compressor;
-import io.airlift.compress.lz4.Lz4Compressor;
-import io.airlift.compress.lz4.Lz4RawCompressor;
+import io.airlift.compress.v3.Compressor;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceOutput;
 import io.airlift.slice.Slices;
@@ -33,12 +31,12 @@ import java.io.InputStream;
 import java.nio.charset.Charset;
 import java.security.GeneralSecurityException;
 import java.util.Optional;
+import java.util.OptionalInt;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static io.airlift.slice.SizeOf.instanceSize;
 import static io.airlift.slice.SizeOf.sizeOf;
 import static io.airlift.slice.SizeOf.sizeOfByteArray;
-import static io.airlift.slice.SizeOf.sizeOfIntArray;
 import static io.trino.execution.buffer.PageCodecMarker.COMPRESSED;
 import static io.trino.execution.buffer.PageCodecMarker.ENCRYPTED;
 import static io.trino.execution.buffer.PagesSerdeUtil.ESTIMATED_AES_CIPHER_RETAINED_SIZE;
@@ -65,17 +63,19 @@ public class PageSerializer
 
     public PageSerializer(
             BlockEncodingSerde blockEncodingSerde,
-            boolean compressionEnabled,
+            Optional<Compressor> compressor,
             Optional<SecretKey> encryptionKey,
-            int blockSizeInBytes)
+            int blockSizeInBytes,
+            OptionalInt maxCompressedBlockSize)
     {
         this.blockEncodingSerde = requireNonNull(blockEncodingSerde, "blockEncodingSerde is null");
         requireNonNull(encryptionKey, "encryptionKey is null");
         encryptionKey.ifPresent(secretKey -> checkArgument(is256BitSecretKeySpec(secretKey), "encryptionKey is expected to be an instance of SecretKeySpec containing a 256bit key"));
         output = new SerializedPageOutput(
-                compressionEnabled ? Optional.of(new Lz4Compressor()) : Optional.empty(),
+                requireNonNull(compressor, "compressor is null"),
                 encryptionKey,
-                blockSizeInBytes);
+                blockSizeInBytes,
+                maxCompressedBlockSize);
     }
 
     public Slice serialize(Page page)
@@ -94,13 +94,11 @@ public class PageSerializer
             extends SliceOutput
     {
         private static final int INSTANCE_SIZE = instanceSize(SerializedPageOutput.class);
-        // TODO: implement getRetainedSizeInBytes in Lz4Compressor
-        private static final int COMPRESSOR_RETAINED_SIZE = toIntExact(instanceSize(Lz4Compressor.class) + sizeOfIntArray(Lz4RawCompressor.MAX_TABLE_SIZE));
         private static final int ENCRYPTION_KEY_RETAINED_SIZE = toIntExact(instanceSize(SecretKeySpec.class) + sizeOfByteArray(256 / 8));
 
         private static final double MINIMUM_COMPRESSION_RATIO = 0.8;
 
-        private final Optional<Lz4Compressor> compressor;
+        private final Optional<Compressor> compressor;
         private final Optional<SecretKey> encryptionKey;
         private final int markers;
         private final Optional<Cipher> cipher;
@@ -109,9 +107,10 @@ public class PageSerializer
         private int uncompressedSize;
 
         private SerializedPageOutput(
-                Optional<Lz4Compressor> compressor,
+                Optional<Compressor> compressor,
                 Optional<SecretKey> encryptionKey,
-                int blockSizeInBytes)
+                int blockSizeInBytes,
+                OptionalInt maxCompressedBlockSize)
         {
             this.compressor = requireNonNull(compressor, "compressor is null");
             this.encryptionKey = requireNonNull(encryptionKey, "encryptionKey is null");
@@ -129,7 +128,7 @@ public class PageSerializer
             if (encryptionKey.isPresent()) {
                 int bufferSize = blockSizeInBytes;
                 if (compressor.isPresent()) {
-                    bufferSize = compressor.get().maxCompressedLength(blockSizeInBytes)
+                    bufferSize = maxCompressedBlockSize.orElseThrow()
                             // to store compressed block size
                             + Integer.BYTES;
                 }
@@ -243,6 +242,91 @@ public class PageSerializer
             uncompressedSize += length;
         }
 
+        @Override
+        public void writeShorts(short[] source, int sourceIndex, int length)
+        {
+            WriteBuffer buffer = buffers[0];
+            int currentIndex = sourceIndex;
+            int shortsRemaining = length;
+            while (shortsRemaining > 0) {
+                ensureCapacityFor(min(Long.BYTES, shortsRemaining * Short.BYTES));
+                int bufferCapacity = buffer.remainingCapacity();
+                int shortsToCopy = min(shortsRemaining, bufferCapacity / Short.BYTES);
+                buffer.writeShorts(source, currentIndex, shortsToCopy);
+                currentIndex += shortsToCopy;
+                shortsRemaining -= shortsToCopy;
+            }
+            uncompressedSize += length * Short.BYTES;
+        }
+
+        @Override
+        public void writeInts(int[] source, int sourceIndex, int length)
+        {
+            WriteBuffer buffer = buffers[0];
+            int currentIndex = sourceIndex;
+            int intsRemaining = length;
+            while (intsRemaining > 0) {
+                ensureCapacityFor(min(Long.BYTES, intsRemaining * Integer.BYTES));
+                int bufferCapacity = buffer.remainingCapacity();
+                int intsToCopy = min(intsRemaining, bufferCapacity / Integer.BYTES);
+                buffer.writeInts(source, currentIndex, intsToCopy);
+                currentIndex += intsToCopy;
+                intsRemaining -= intsToCopy;
+            }
+            uncompressedSize += length * Integer.BYTES;
+        }
+
+        @Override
+        public void writeLongs(long[] source, int sourceIndex, int length)
+        {
+            WriteBuffer buffer = buffers[0];
+            int currentIndex = sourceIndex;
+            int longsRemaining = length;
+            while (longsRemaining > 0) {
+                ensureCapacityFor(min(Long.BYTES, longsRemaining * Long.BYTES));
+                int bufferCapacity = buffer.remainingCapacity();
+                int longsToCopy = min(longsRemaining, bufferCapacity / Long.BYTES);
+                buffer.writeLongs(source, currentIndex, longsToCopy);
+                currentIndex += longsToCopy;
+                longsRemaining -= longsToCopy;
+            }
+            uncompressedSize += length * Long.BYTES;
+        }
+
+        @Override
+        public void writeFloats(float[] source, int sourceIndex, int length)
+        {
+            WriteBuffer buffer = buffers[0];
+            int currentIndex = sourceIndex;
+            int floatsRemaining = length;
+            while (floatsRemaining > 0) {
+                ensureCapacityFor(min(Long.BYTES, floatsRemaining * Float.BYTES));
+                int bufferCapacity = buffer.remainingCapacity();
+                int floatsToCopy = min(floatsRemaining, bufferCapacity / Float.BYTES);
+                buffer.writeFloats(source, currentIndex, floatsToCopy);
+                currentIndex += floatsToCopy;
+                floatsRemaining -= floatsToCopy;
+            }
+            uncompressedSize += length * Float.BYTES;
+        }
+
+        @Override
+        public void writeDoubles(double[] source, int sourceIndex, int length)
+        {
+            WriteBuffer buffer = buffers[0];
+            int currentIndex = sourceIndex;
+            int doublesRemaining = length;
+            while (doublesRemaining > 0) {
+                ensureCapacityFor(min(Long.BYTES, doublesRemaining * Double.BYTES));
+                int bufferCapacity = buffer.remainingCapacity();
+                int doublesToCopy = min(doublesRemaining, bufferCapacity / Double.BYTES);
+                buffer.writeDoubles(source, currentIndex, doublesToCopy);
+                currentIndex += doublesToCopy;
+                doublesRemaining -= doublesToCopy;
+            }
+            uncompressedSize += length * Double.BYTES;
+        }
+
         public Slice closePage()
         {
             compress();
@@ -257,7 +341,7 @@ public class PageSerializer
 
             Slice page;
             if (serializedPageSize < slice.length() / 2) {
-                page = Slices.copyOf(slice, 0, serializedPageSize);
+                page = slice.copy(0, serializedPageSize);
             }
             else {
                 page = slice.slice(0, serializedPageSize);
@@ -395,7 +479,8 @@ public class PageSerializer
         public long getRetainedSize()
         {
             long size = INSTANCE_SIZE;
-            size += sizeOf(compressor, compressor -> COMPRESSOR_RETAINED_SIZE);
+            size += sizeOf(compressor, compressor -> instanceSize(compressor.getClass())
+                    + compressor.getRetainedSizeInBytes(uncompressedSize));
             size += sizeOf(encryptionKey, encryptionKey -> ENCRYPTION_KEY_RETAINED_SIZE);
             size += sizeOf(cipher, cipher -> ESTIMATED_AES_CIPHER_RETAINED_SIZE);
             for (WriteBuffer buffer : buffers) {
@@ -587,6 +672,36 @@ public class PageSerializer
         {
             slice.setBytes(position, source, sourceIndex, length);
             position += length;
+        }
+
+        public void writeShorts(short[] source, int sourceIndex, int length)
+        {
+            slice.setShorts(position, source, sourceIndex, length);
+            position += length * Short.BYTES;
+        }
+
+        public void writeInts(int[] source, int sourceIndex, int length)
+        {
+            slice.setInts(position, source, sourceIndex, length);
+            position += length * Integer.BYTES;
+        }
+
+        public void writeLongs(long[] source, int sourceIndex, int length)
+        {
+            slice.setLongs(position, source, sourceIndex, length);
+            position += length * Long.BYTES;
+        }
+
+        public void writeFloats(float[] source, int sourceIndex, int length)
+        {
+            slice.setFloats(position, source, sourceIndex, length);
+            position += length * Float.BYTES;
+        }
+
+        public void writeDoubles(double[] source, int sourceIndex, int length)
+        {
+            slice.setDoubles(position, source, sourceIndex, length);
+            position += length * Double.BYTES;
         }
 
         public void skip(int length)

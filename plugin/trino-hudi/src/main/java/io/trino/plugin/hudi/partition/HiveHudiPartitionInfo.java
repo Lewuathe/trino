@@ -13,23 +13,24 @@
  */
 package io.trino.plugin.hudi.partition;
 
+import com.google.common.collect.ImmutableList;
+import io.trino.filesystem.Location;
+import io.trino.metastore.Column;
+import io.trino.metastore.HiveMetastore;
+import io.trino.metastore.Partition;
+import io.trino.metastore.Table;
 import io.trino.plugin.hive.HiveColumnHandle;
 import io.trino.plugin.hive.HivePartitionKey;
-import io.trino.plugin.hive.metastore.Column;
-import io.trino.plugin.hive.metastore.HiveMetastore;
-import io.trino.plugin.hive.metastore.Partition;
-import io.trino.plugin.hive.metastore.Table;
-import io.trino.plugin.hive.util.HiveUtil;
+import io.trino.spi.TrinoException;
 import io.trino.spi.predicate.TupleDomain;
-import org.apache.hadoop.fs.Path;
-import org.apache.hudi.common.fs.FSUtils;
-import org.apache.hudi.exception.HoodieIOException;
 
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
+import static io.trino.metastore.Partitions.toPartitionValues;
+import static io.trino.plugin.hudi.HudiErrorCode.HUDI_PARTITION_NOT_FOUND;
 import static io.trino.plugin.hudi.HudiUtil.buildPartitionKeys;
 import static io.trino.plugin.hudi.HudiUtil.partitionMatchesPredicates;
 import static java.lang.String.format;
@@ -37,6 +38,8 @@ import static java.lang.String.format;
 public class HiveHudiPartitionInfo
         implements HudiPartitionInfo
 {
+    public static final String NON_PARTITION = "";
+
     private final Table table;
     private final List<HiveColumnHandle> partitionColumnHandles;
     private final TupleDomain<HiveColumnHandle> constraintSummary;
@@ -60,7 +63,7 @@ public class HiveHudiPartitionInfo
         this.hivePartitionName = hivePartitionName;
         this.partitionColumns = partitionColumns;
         if (partitionColumns.isEmpty()) {
-            this.relativePartitionPath = "";
+            this.relativePartitionPath = NON_PARTITION;
             this.hivePartitionKeys = Collections.emptyList();
         }
         this.hiveMetastore = hiveMetastore;
@@ -70,22 +73,16 @@ public class HiveHudiPartitionInfo
     public String getRelativePartitionPath()
     {
         if (relativePartitionPath == null) {
-            loadPartitionInfo(hiveMetastore.getPartition(table, HiveUtil.toPartitionValues(hivePartitionName)));
+            loadPartitionInfo(hiveMetastore.getPartition(table, toPartitionValues(hivePartitionName)));
         }
         return relativePartitionPath;
-    }
-
-    @Override
-    public String getHivePartitionName()
-    {
-        return hivePartitionName;
     }
 
     @Override
     public List<HivePartitionKey> getHivePartitionKeys()
     {
         if (hivePartitionKeys == null) {
-            loadPartitionInfo(hiveMetastore.getPartition(table, HiveUtil.toPartitionValues(hivePartitionName)));
+            loadPartitionInfo(hiveMetastore.getPartition(table, toPartitionValues(hivePartitionName)));
         }
         return hivePartitionKeys;
     }
@@ -93,25 +90,42 @@ public class HiveHudiPartitionInfo
     @Override
     public boolean doesMatchPredicates()
     {
+        if (hivePartitionName.equals(NON_PARTITION)) {
+            hivePartitionKeys = ImmutableList.of();
+            return true;
+        }
         return partitionMatchesPredicates(table.getSchemaTableName(), hivePartitionName, partitionColumnHandles, constraintSummary);
-    }
-
-    @Override
-    public String getComparingKey()
-    {
-        return hivePartitionName;
     }
 
     @Override
     public void loadPartitionInfo(Optional<Partition> partition)
     {
         if (partition.isEmpty()) {
-            throw new HoodieIOException(format("Cannot find partition in Hive Metastore: %s", hivePartitionName));
+            throw new TrinoException(HUDI_PARTITION_NOT_FOUND, format("Cannot find partition in Hive Metastore: %s", hivePartitionName));
         }
-        this.relativePartitionPath = FSUtils.getRelativePartitionPath(
-                new Path(table.getStorage().getLocation()),
-                new Path(partition.get().getStorage().getLocation()));
+        this.relativePartitionPath = getRelativePartitionPath(
+                Location.of(table.getStorage().getLocation()),
+                Location.of(partition.get().getStorage().getLocation()));
         this.hivePartitionKeys = buildPartitionKeys(partitionColumns, partition.get().getValues());
+    }
+
+    private static String getRelativePartitionPath(Location baseLocation, Location fullPartitionLocation)
+    {
+        String basePath = baseLocation.path();
+        String fullPartitionPath = fullPartitionLocation.path();
+
+        if (!fullPartitionPath.startsWith(basePath)) {
+            throw new IllegalArgumentException("Partition location does not belong to base-location");
+        }
+
+        String baseLocationParent = baseLocation.parentDirectory().path();
+        String baseLocationName = baseLocation.fileName();
+        int partitionStartIndex = fullPartitionPath.indexOf(
+                baseLocationName,
+                baseLocationParent == null ? 0 : baseLocationParent.length());
+        // Partition-Path could be empty for non-partitioned tables
+        boolean isNonPartitionedTable = partitionStartIndex + baseLocationName.length() == fullPartitionPath.length();
+        return isNonPartitionedTable ? NON_PARTITION : fullPartitionPath.substring(partitionStartIndex + baseLocationName.length() + 1);
     }
 
     @Override

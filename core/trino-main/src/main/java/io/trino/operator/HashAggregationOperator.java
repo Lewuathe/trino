@@ -29,20 +29,21 @@ import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
 import io.trino.spi.type.BigintType;
 import io.trino.spi.type.Type;
+import io.trino.spi.type.TypeOperators;
 import io.trino.spiller.SpillerFactory;
-import io.trino.sql.gen.JoinCompiler;
 import io.trino.sql.planner.plan.AggregationNode.Step;
 import io.trino.sql.planner.plan.PlanNodeId;
-import io.trino.type.BlockTypeOperators;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalLong;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
+import static io.trino.operator.HashGenerator.INITIAL_HASH_VALUE;
 import static io.trino.operator.aggregation.builder.InMemoryHashAggregationBuilder.toTypes;
-import static io.trino.sql.planner.optimizations.HashGenerationOptimizer.INITIAL_HASH_VALUE;
+import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.type.TypeUtils.NULL_HASH_CODE;
 import static java.util.Objects.requireNonNull;
 
@@ -71,8 +72,8 @@ public class HashAggregationOperator
         private final DataSize memoryLimitForMerge;
         private final DataSize memoryLimitForMergeWithMemory;
         private final SpillerFactory spillerFactory;
-        private final JoinCompiler joinCompiler;
-        private final BlockTypeOperators blockTypeOperators;
+        private final FlatHashStrategyCompiler hashStrategyCompiler;
+        private final TypeOperators typeOperators;
         private final Optional<PartialAggregationController> partialAggregationController;
 
         private boolean closed;
@@ -90,8 +91,8 @@ public class HashAggregationOperator
                 Optional<Integer> groupIdChannel,
                 int expectedGroups,
                 Optional<DataSize> maxPartialMemory,
-                JoinCompiler joinCompiler,
-                BlockTypeOperators blockTypeOperators,
+                FlatHashStrategyCompiler hashStrategyCompiler,
+                TypeOperators typeOperators,
                 Optional<PartialAggregationController> partialAggregationController)
         {
             this(operatorId,
@@ -112,8 +113,8 @@ public class HashAggregationOperator
                     (types, spillContext, memoryContext) -> {
                         throw new UnsupportedOperationException();
                     },
-                    joinCompiler,
-                    blockTypeOperators,
+                    hashStrategyCompiler,
+                    typeOperators,
                     partialAggregationController);
         }
 
@@ -133,8 +134,8 @@ public class HashAggregationOperator
                 boolean spillEnabled,
                 DataSize unspillMemoryLimit,
                 SpillerFactory spillerFactory,
-                JoinCompiler joinCompiler,
-                BlockTypeOperators blockTypeOperators,
+                FlatHashStrategyCompiler hashStrategyCompiler,
+                TypeOperators typeOperators,
                 Optional<PartialAggregationController> partialAggregationController)
         {
             this(operatorId,
@@ -153,8 +154,8 @@ public class HashAggregationOperator
                     unspillMemoryLimit,
                     DataSize.succinctBytes((long) (unspillMemoryLimit.toBytes() * MERGE_WITH_MEMORY_RATIO)),
                     spillerFactory,
-                    joinCompiler,
-                    blockTypeOperators,
+                    hashStrategyCompiler,
+                    typeOperators,
                     partialAggregationController);
         }
 
@@ -176,8 +177,8 @@ public class HashAggregationOperator
                 DataSize memoryLimitForMerge,
                 DataSize memoryLimitForMergeWithMemory,
                 SpillerFactory spillerFactory,
-                JoinCompiler joinCompiler,
-                BlockTypeOperators blockTypeOperators,
+                FlatHashStrategyCompiler hashStrategyCompiler,
+                TypeOperators typeOperators,
                 Optional<PartialAggregationController> partialAggregationController)
         {
             this.operatorId = operatorId;
@@ -196,8 +197,8 @@ public class HashAggregationOperator
             this.memoryLimitForMerge = requireNonNull(memoryLimitForMerge, "memoryLimitForMerge is null");
             this.memoryLimitForMergeWithMemory = requireNonNull(memoryLimitForMergeWithMemory, "memoryLimitForMergeWithMemory is null");
             this.spillerFactory = requireNonNull(spillerFactory, "spillerFactory is null");
-            this.joinCompiler = requireNonNull(joinCompiler, "joinCompiler is null");
-            this.blockTypeOperators = requireNonNull(blockTypeOperators, "blockTypeOperators is null");
+            this.hashStrategyCompiler = requireNonNull(hashStrategyCompiler, "hashStrategyCompiler is null");
+            this.typeOperators = requireNonNull(typeOperators, "typeOperators is null");
             this.partialAggregationController = requireNonNull(partialAggregationController, "partialAggregationController is null");
         }
 
@@ -223,8 +224,8 @@ public class HashAggregationOperator
                     memoryLimitForMerge,
                     memoryLimitForMergeWithMemory,
                     spillerFactory,
-                    joinCompiler,
-                    blockTypeOperators,
+                    hashStrategyCompiler,
+                    typeOperators,
                     partialAggregationController);
             return hashAggregationOperator;
         }
@@ -255,8 +256,8 @@ public class HashAggregationOperator
                     memoryLimitForMerge,
                     memoryLimitForMergeWithMemory,
                     spillerFactory,
-                    joinCompiler,
-                    blockTypeOperators,
+                    hashStrategyCompiler,
+                    typeOperators,
                     partialAggregationController.map(PartialAggregationController::duplicate));
         }
     }
@@ -277,22 +278,24 @@ public class HashAggregationOperator
     private final DataSize memoryLimitForMerge;
     private final DataSize memoryLimitForMergeWithMemory;
     private final SpillerFactory spillerFactory;
-    private final JoinCompiler joinCompiler;
-    private final BlockTypeOperators blockTypeOperators;
+    private final FlatHashStrategyCompiler flatHashStrategyCompiler;
+    private final TypeOperators typeOperators;
+    private final AggregationMetrics aggregationMetrics = new AggregationMetrics();
 
     private final List<Type> types;
 
     private HashAggregationBuilder aggregationBuilder;
     private final LocalMemoryContext memoryContext;
     private WorkProcessor<Page> outputPages;
-    private boolean inputProcessed;
+    private long totalInputRowsProcessed;
     private boolean finishing;
     private boolean finished;
 
     // for yield when memory is not available
     private Work<?> unfinishedWork;
-    private long numberOfInputRowsProcessed;
-    private long numberOfUniqueRowsProduced;
+    private long aggregationInputBytesProcessed;
+    private long aggregationInputRowsProcessed;
+    private long aggregationUniqueRowsProduced;
 
     private HashAggregationOperator(
             OperatorContext operatorContext,
@@ -310,8 +313,8 @@ public class HashAggregationOperator
             DataSize memoryLimitForMerge,
             DataSize memoryLimitForMergeWithMemory,
             SpillerFactory spillerFactory,
-            JoinCompiler joinCompiler,
-            BlockTypeOperators blockTypeOperators,
+            FlatHashStrategyCompiler flatHashStrategyCompiler,
+            TypeOperators typeOperators,
             Optional<PartialAggregationController> partialAggregationController)
     {
         this.operatorContext = requireNonNull(operatorContext, "operatorContext is null");
@@ -336,8 +339,8 @@ public class HashAggregationOperator
         this.memoryLimitForMerge = requireNonNull(memoryLimitForMerge, "memoryLimitForMerge is null");
         this.memoryLimitForMergeWithMemory = requireNonNull(memoryLimitForMergeWithMemory, "memoryLimitForMergeWithMemory is null");
         this.spillerFactory = requireNonNull(spillerFactory, "spillerFactory is null");
-        this.joinCompiler = requireNonNull(joinCompiler, "joinCompiler is null");
-        this.blockTypeOperators = requireNonNull(blockTypeOperators, "blockTypeOperators is null");
+        this.flatHashStrategyCompiler = requireNonNull(flatHashStrategyCompiler, "hashStrategyCompiler is null");
+        this.typeOperators = requireNonNull(typeOperators, "typeOperators is null");
 
         this.memoryContext = operatorContext.localUserMemoryContext();
     }
@@ -378,14 +381,14 @@ public class HashAggregationOperator
         checkState(unfinishedWork == null, "Operator has unfinished work");
         checkState(!finishing, "Operator is already finishing");
         requireNonNull(page, "page is null");
-        inputProcessed = true;
+        totalInputRowsProcessed += page.getPositionCount();
 
         if (aggregationBuilder == null) {
             boolean partialAggregationDisabled = partialAggregationController
                     .map(PartialAggregationController::isPartialAggregationDisabled)
                     .orElse(false);
             if (step.isOutputPartial() && partialAggregationDisabled) {
-                aggregationBuilder = new SkipAggregationBuilder(groupByChannels, hashChannel, aggregatorFactories, memoryContext);
+                aggregationBuilder = new SkipAggregationBuilder(groupByChannels, hashChannel, aggregatorFactories, memoryContext, aggregationMetrics);
             }
             else if (step.isOutputPartial() || !spillEnabled || !isSpillable()) {
                 // TODO: We ignore spillEnabled here if any aggregate has ORDER BY clause or DISTINCT because they are not yet implemented for spilling.
@@ -398,8 +401,7 @@ public class HashAggregationOperator
                         hashChannel,
                         operatorContext,
                         maxPartialMemory,
-                        joinCompiler,
-                        blockTypeOperators,
+                        flatHashStrategyCompiler,
                         () -> {
                             memoryContext.setBytes(((InMemoryHashAggregationBuilder) aggregationBuilder).getSizeInMemory());
                             if (step.isOutputPartial() && maxPartialMemory.isPresent()) {
@@ -407,7 +409,8 @@ public class HashAggregationOperator
                                 return true;
                             }
                             return operatorContext.isWaitingForMemory().isDone();
-                        });
+                        },
+                        aggregationMetrics);
             }
             else {
                 aggregationBuilder = new SpillableHashAggregationBuilder(
@@ -421,8 +424,9 @@ public class HashAggregationOperator
                         memoryLimitForMerge,
                         memoryLimitForMergeWithMemory,
                         spillerFactory,
-                        joinCompiler,
-                        blockTypeOperators);
+                        flatHashStrategyCompiler,
+                        typeOperators,
+                        aggregationMetrics);
             }
 
             // assume initial aggregationBuilder is not full
@@ -437,7 +441,8 @@ public class HashAggregationOperator
             unfinishedWork = null;
         }
         aggregationBuilder.updateMemory();
-        numberOfInputRowsProcessed += page.getPositionCount();
+        aggregationInputBytesProcessed += page.getSizeInBytes();
+        aggregationInputRowsProcessed += page.getPositionCount();
     }
 
     private boolean isSpillable()
@@ -481,7 +486,7 @@ public class HashAggregationOperator
 
         if (outputPages == null) {
             if (finishing) {
-                if (!inputProcessed && produceDefaultOutput) {
+                if (totalInputRowsProcessed == 0 && produceDefaultOutput) {
                     // global aggregations always generate an output row with the default aggregation output (e.g. 0 for COUNT, NULL for SUM)
                     finished = true;
                     return getGlobalAggregationOutput();
@@ -511,7 +516,7 @@ public class HashAggregationOperator
         }
 
         Page result = outputPages.getResult();
-        numberOfUniqueRowsProduced += result.getPositionCount();
+        aggregationUniqueRowsProduced += result.getPositionCount();
         return result;
     }
 
@@ -529,6 +534,19 @@ public class HashAggregationOperator
 
     private void closeAggregationBuilder()
     {
+        if (aggregationBuilder instanceof SkipAggregationBuilder) {
+            aggregationMetrics.recordInputRowsProcessedWithPartialAggregationDisabled(aggregationInputRowsProcessed);
+            partialAggregationController.ifPresent(controller -> controller.onFlush(aggregationInputBytesProcessed, aggregationInputRowsProcessed, OptionalLong.empty()));
+        }
+        else {
+            partialAggregationController.ifPresent(controller -> controller.onFlush(aggregationInputBytesProcessed, aggregationInputRowsProcessed, OptionalLong.of(aggregationUniqueRowsProduced)));
+        }
+        aggregationInputBytesProcessed = 0;
+        aggregationInputRowsProcessed = 0;
+        aggregationUniqueRowsProduced = 0;
+
+        operatorContext.setLatestMetrics(aggregationMetrics.getMetrics());
+
         outputPages = null;
         if (aggregationBuilder != null) {
             aggregationBuilder.close();
@@ -537,10 +555,6 @@ public class HashAggregationOperator
             aggregationBuilder = null;
         }
         memoryContext.setBytes(0);
-        partialAggregationController.ifPresent(
-                controller -> controller.onFlush(numberOfInputRowsProcessed, numberOfUniqueRowsProduced));
-        numberOfInputRowsProcessed = 0;
-        numberOfUniqueRowsProduced = 0;
     }
 
     private Page getGlobalAggregationOutput()
@@ -555,7 +569,7 @@ public class HashAggregationOperator
 
             while (channel < groupByTypes.size()) {
                 if (channel == groupIdChannel.orElseThrow()) {
-                    output.getBlockBuilder(channel).writeLong(groupId);
+                    BIGINT.writeLong(output.getBlockBuilder(channel), groupId);
                 }
                 else {
                     output.getBlockBuilder(channel).appendNull();
@@ -565,12 +579,12 @@ public class HashAggregationOperator
 
             if (hashChannel.isPresent()) {
                 long hashValue = calculateDefaultOutputHash(groupByTypes, groupIdChannel.orElseThrow(), groupId);
-                output.getBlockBuilder(channel).writeLong(hashValue);
+                BIGINT.writeLong(output.getBlockBuilder(channel), hashValue);
                 channel++;
             }
 
             for (AggregatorFactory aggregatorFactory : aggregatorFactories) {
-                aggregatorFactory.createAggregator().evaluate(output.getBlockBuilder(channel));
+                aggregatorFactory.createAggregator(aggregationMetrics).evaluate(output.getBlockBuilder(channel));
                 channel++;
             }
         }

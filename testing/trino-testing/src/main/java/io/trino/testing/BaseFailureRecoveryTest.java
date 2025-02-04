@@ -17,18 +17,25 @@ import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.graph.Traverser;
+import com.google.inject.Binder;
+import com.google.inject.Module;
+import com.google.inject.Scopes;
+import io.airlift.configuration.AbstractConfigurationAwareModule;
 import io.airlift.units.Duration;
 import io.trino.Session;
 import io.trino.client.StageStats;
 import io.trino.client.StatementStats;
+import io.trino.execution.FailureInjector;
 import io.trino.execution.FailureInjector.InjectedFailureType;
+import io.trino.execution.TestingFailureInjectionConfig;
+import io.trino.execution.TestingFailureInjector;
 import io.trino.operator.RetryPolicy;
 import io.trino.spi.ErrorType;
 import io.trino.spi.QueryId;
+import io.trino.testing.QueryRunner.MaterializedResultWithPlan;
 import io.trino.tpch.TpchTable;
 import org.assertj.core.api.AbstractThrowableAssert;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.HashMap;
@@ -39,7 +46,6 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -50,6 +56,8 @@ import static com.google.common.base.Functions.identity;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Streams.stream;
+import static com.google.inject.multibindings.OptionalBinder.newOptionalBinder;
+import static io.airlift.configuration.ConfigBinder.configBinder;
 import static io.trino.execution.FailureInjector.FAILURE_INJECTION_MESSAGE;
 import static io.trino.execution.FailureInjector.InjectedFailureType.TASK_FAILURE;
 import static io.trino.execution.FailureInjector.InjectedFailureType.TASK_GET_RESULTS_REQUEST_FAILURE;
@@ -73,28 +81,18 @@ import static java.util.stream.Collectors.toMap;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.data.Percentage.withPercentage;
-import static org.testng.Assert.assertEquals;
 
 public abstract class BaseFailureRecoveryTest
         extends AbstractTestQueryFramework
 {
-    protected static final int INVOCATION_COUNT = 1;
     private static final Duration MAX_ERROR_DURATION = new Duration(5, SECONDS);
     private static final Duration REQUEST_TIMEOUT = new Duration(5, SECONDS);
-    private static final int DEFAULT_MAX_PARALLEL_TEST_CONCURRENCY = 4;
 
     private final RetryPolicy retryPolicy;
-    private final Semaphore parallelTestsSemaphore;
 
     protected BaseFailureRecoveryTest(RetryPolicy retryPolicy)
     {
-        this(retryPolicy, DEFAULT_MAX_PARALLEL_TEST_CONCURRENCY);
-    }
-
-    protected BaseFailureRecoveryTest(RetryPolicy retryPolicy, int maxParallelTestConcurrency)
-    {
         this.retryPolicy = requireNonNull(retryPolicy, "retryPolicy is null");
-        this.parallelTestsSemaphore = new Semaphore(maxParallelTestConcurrency);
     }
 
     protected RetryPolicy getRetryPolicy()
@@ -117,20 +115,32 @@ public abstract class BaseFailureRecoveryTest
                         .put("failure-injection.request-timeout", new Duration(REQUEST_TIMEOUT.toMillis() * 2, MILLISECONDS).toString())
                         // making http timeouts shorter so tests which simulate communication timeouts finish in reasonable amount of time
                         .put("exchange.http-client.idle-timeout", REQUEST_TIMEOUT.toString())
-                        .put("fault-tolerant-execution-partition-count", "5")
+                        .put("fault-tolerant-execution-max-partition-count", "5")
                         // to trigger spilling
                         .put("exchange.deduplication-buffer-size", "1kB")
                         .put("fault-tolerant-execution-task-memory", "1GB")
+                        // test task compression aggressively
+                        .put("fault-tolerant-execution-task-descriptor-storage-high-water-mark", "1kB")
+                        .put("fault-tolerant-execution-task-descriptor-storage-low-water-mark", "200B")
                         .buildOrThrow(),
                 ImmutableMap.of(
                         // making http timeouts shorter so tests which simulate communication timeouts finish in reasonable amount of time
-                        "scheduler.http-client.idle-timeout", REQUEST_TIMEOUT.toString()));
+                        "scheduler.http-client.idle-timeout", REQUEST_TIMEOUT.toString()),
+                new AbstractConfigurationAwareModule() {
+                    @Override
+                    protected void setup(Binder binder)
+                    {
+                        configBinder(binder).bindConfig(TestingFailureInjectionConfig.class);
+                        newOptionalBinder(binder, FailureInjector.class).setBinding().to(TestingFailureInjector.class).in(Scopes.SINGLETON);
+                    }
+                });
     }
 
     protected abstract QueryRunner createQueryRunner(
             List<TpchTable<?>> requiredTpchTables,
             Map<String, String> configProperties,
-            Map<String, String> coordinatorProperties)
+            Map<String, String> coordinatorProperties,
+            Module failureInjectionModule)
             throws Exception;
 
     protected abstract boolean areWriteRetriesSupported();
@@ -191,47 +201,7 @@ public abstract class BaseFailureRecoveryTest
         }
     }
 
-    @DataProvider(name = "parallelTests", parallel = true)
-    public Object[][] parallelTests()
-    {
-        return new Object[][] {
-                parallelTest("testCreateTable", this::testCreateTable),
-                parallelTest("testInsert", this::testInsert),
-                parallelTest("testDelete", this::testDelete),
-                parallelTest("testDeleteWithSubquery", this::testDeleteWithSubquery),
-                parallelTest("testUpdate", this::testUpdate),
-                parallelTest("testUpdateWithSubquery", this::testUpdateWithSubquery),
-                parallelTest("testMerge", this::testMerge),
-                parallelTest("testRefreshMaterializedView", this::testRefreshMaterializedView),
-                parallelTest("testAnalyzeTable", this::testAnalyzeTable),
-                parallelTest("testExplainAnalyze", this::testExplainAnalyze),
-                parallelTest("testRequestTimeouts", this::testRequestTimeouts)
-        };
-    }
-
-    @Test(invocationCount = INVOCATION_COUNT, dataProvider = "parallelTests")
-    public final void testParallel(Runnable runnable)
-    {
-        try {
-            // By default, a test method using a @DataProvider with parallel attribute is run in 10 threads (org.testng.xml.XmlSuite#DEFAULT_DATA_PROVIDER_THREAD_COUNT).
-            // We limit number of concurrent test executions to prevent excessive resource usage.
-            //
-            // Note: the downside of this approach is that individual test runtimes will not be representative anymore
-            //       as those will include time spent waiting for semaphore.
-            parallelTestsSemaphore.acquire();
-        }
-        catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException(e);
-        }
-        try {
-            runnable.run();
-        }
-        finally {
-            parallelTestsSemaphore.release();
-        }
-    }
-
+    @Test
     protected void testCreateTable()
     {
         testTableModification(
@@ -240,6 +210,7 @@ public abstract class BaseFailureRecoveryTest
                 Optional.of("DROP TABLE <table>"));
     }
 
+    @Test
     protected void testInsert()
     {
         testTableModification(
@@ -248,6 +219,7 @@ public abstract class BaseFailureRecoveryTest
                 Optional.of("DROP TABLE <table>"));
     }
 
+    @Test
     protected void testDelete()
     {
         testTableModification(
@@ -256,14 +228,19 @@ public abstract class BaseFailureRecoveryTest
                 Optional.of("DROP TABLE <table>"));
     }
 
+    @Test
     protected void testDeleteWithSubquery()
     {
-        testTableModification(
+        testNonSelect(
+                Optional.empty(),
                 Optional.of("CREATE TABLE <table> AS SELECT * FROM orders"),
                 "DELETE FROM <table> WHERE custkey IN (SELECT custkey FROM customer WHERE nationkey = 1)",
-                Optional.of("DROP TABLE <table>"));
+                Optional.of("DROP TABLE <table>"),
+                true,
+                Optional.of("orderkey"));
     }
 
+    @Test
     protected void testUpdate()
     {
         testTableModification(
@@ -272,6 +249,7 @@ public abstract class BaseFailureRecoveryTest
                 Optional.of("DROP TABLE <table>"));
     }
 
+    @Test
     protected void testUpdateWithSubquery()
     {
         testTableModification(
@@ -280,6 +258,7 @@ public abstract class BaseFailureRecoveryTest
                 Optional.of("DROP TABLE <table>"));
     }
 
+    @Test
     protected void testAnalyzeTable()
     {
         testNonSelect(
@@ -290,9 +269,11 @@ public abstract class BaseFailureRecoveryTest
                 false);
     }
 
+    @Test
     protected void testMerge()
     {
-        testTableModification(
+        testNonSelect(
+                Optional.empty(),
                 Optional.of("CREATE TABLE <table> AS SELECT * FROM orders"),
                 """
                         MERGE INTO <table> t
@@ -303,9 +284,12 @@ public abstract class BaseFailureRecoveryTest
                         WHEN MATCHED AND s.orderkey <= 1000
                             THEN DELETE
                         """,
-                Optional.of("DROP TABLE <table>"));
+                Optional.of("DROP TABLE <table>"),
+                true,
+                Optional.of("orderkey"));
     }
 
+    @Test
     protected void testRefreshMaterializedView()
     {
         testTableModification(
@@ -314,6 +298,7 @@ public abstract class BaseFailureRecoveryTest
                 Optional.of("DROP MATERIALIZED VIEW <table>"));
     }
 
+    @Test
     protected void testExplainAnalyze()
     {
         testSelect("EXPLAIN ANALYZE SELECT orderStatus, count(*) FROM orders GROUP BY orderStatus");
@@ -324,6 +309,7 @@ public abstract class BaseFailureRecoveryTest
                 Optional.of("DROP TABLE <table>"));
     }
 
+    @Test
     protected void testRequestTimeouts()
     {
         if (areWriteRetriesSupported()) {
@@ -350,39 +336,74 @@ public abstract class BaseFailureRecoveryTest
 
     protected void testNonSelect(Optional<Session> session, Optional<String> setupQuery, String query, Optional<String> cleanupQuery, boolean writesData)
     {
+        testNonSelect(session, setupQuery, query, cleanupQuery, writesData, Optional.empty());
+    }
+
+    protected void testNonSelect(Optional<Session> session, Optional<String> setupQuery, String query, Optional<String> cleanupQuery, boolean writesData, Optional<String> primaryKey)
+    {
         if (writesData && !areWriteRetriesSupported()) {
             // if retries are not supported assert on that and skip actual failures simulation
             assertThatQuery(query)
                     .withSession(session)
                     .withSetupQuery(setupQuery)
                     .withCleanupQuery(cleanupQuery)
+                    .withPrimaryKey(primaryKey)
                     .failsDespiteRetries(failure -> failure.hasMessageMatching("This connector does not support query retries"))
                     .cleansUpTemporaryTables();
             return;
+        }
+
+        if (retryPolicy == RetryPolicy.TASK) {
+            assertThatQuery(query)
+                    .withSession(session)
+                    .withSetupQuery(setupQuery)
+                    .withCleanupQuery(cleanupQuery)
+                    .withPrimaryKey(primaryKey)
+                    .experiencing(TASK_FAILURE, Optional.of(ErrorType.INTERNAL_ERROR))
+                    .at(boundaryCoordinatorStage())
+                    .finishesSuccessfully()
+                    .cleansUpTemporaryTables();
+        }
+        else {
+            assertThatQuery(query)
+                    .withSession(session)
+                    .withSetupQuery(setupQuery)
+                    .withCleanupQuery(cleanupQuery)
+                    .withPrimaryKey(primaryKey)
+                    .experiencing(TASK_FAILURE, Optional.of(ErrorType.INTERNAL_ERROR))
+                    .at(boundaryCoordinatorStage())
+                    .failsAlways(failure -> failure.hasMessageContaining(FAILURE_INJECTION_MESSAGE))
+                    .cleansUpTemporaryTables();
+        }
+
+        if (retryPolicy == RetryPolicy.TASK) {
+            assertThatQuery(query)
+                    .withSession(session)
+                    .withSetupQuery(setupQuery)
+                    .withCleanupQuery(cleanupQuery)
+                    .withPrimaryKey(primaryKey)
+                    .experiencing(TASK_FAILURE, Optional.of(ErrorType.INTERNAL_ERROR))
+                    .at(rootStage())
+                    .finishesSuccessfully()
+                    .cleansUpTemporaryTables();
+        }
+        else {
+            assertThatQuery(query)
+                    .withSession(session)
+                    .withSetupQuery(setupQuery)
+                    .withCleanupQuery(cleanupQuery)
+                    .withPrimaryKey(primaryKey)
+                    .experiencing(TASK_FAILURE, Optional.of(ErrorType.INTERNAL_ERROR))
+                    .at(rootStage())
+                    .failsAlways(failure -> failure.hasMessageContaining(FAILURE_INJECTION_MESSAGE))
+                    .cleansUpTemporaryTables();
         }
 
         assertThatQuery(query)
                 .withSession(session)
                 .withSetupQuery(setupQuery)
                 .withCleanupQuery(cleanupQuery)
-                .experiencing(TASK_FAILURE, Optional.of(ErrorType.INTERNAL_ERROR))
-                .at(boundaryCoordinatorStage())
-                .failsAlways(failure -> failure.hasMessageContaining(FAILURE_INJECTION_MESSAGE))
-                .cleansUpTemporaryTables();
-
-        assertThatQuery(query)
-                .withSession(session)
-                .withSetupQuery(setupQuery)
-                .withCleanupQuery(cleanupQuery)
-                .experiencing(TASK_FAILURE, Optional.of(ErrorType.INTERNAL_ERROR))
-                .at(rootStage())
-                .failsAlways(failure -> failure.hasMessageContaining(FAILURE_INJECTION_MESSAGE))
-                .cleansUpTemporaryTables();
-
-        assertThatQuery(query)
-                .withSession(session)
-                .withSetupQuery(setupQuery)
-                .withCleanupQuery(cleanupQuery)
+                .withPrimaryKey(primaryKey)
                 .experiencing(TASK_FAILURE, Optional.of(ErrorType.INTERNAL_ERROR))
                 .at(boundaryDistributedStage())
                 .failsWithoutRetries(failure -> failure.hasMessageContaining(FAILURE_INJECTION_MESSAGE))
@@ -392,6 +413,7 @@ public abstract class BaseFailureRecoveryTest
         assertThatQuery(query)
                 .withSetupQuery(setupQuery)
                 .withCleanupQuery(cleanupQuery)
+                .withPrimaryKey(primaryKey)
                 .experiencing(TASK_MANAGEMENT_REQUEST_TIMEOUT)
                 .at(boundaryDistributedStage())
                 .failsWithoutRetries(failure -> failure.hasMessageContaining("Encountered too many errors talking to a worker node"))
@@ -403,6 +425,7 @@ public abstract class BaseFailureRecoveryTest
                     .withSession(session)
                     .withSetupQuery(setupQuery)
                     .withCleanupQuery(cleanupQuery)
+                    .withPrimaryKey(primaryKey)
                     .experiencing(TASK_GET_RESULTS_REQUEST_FAILURE)
                     .at(boundaryDistributedStage())
                     .failsWithoutRetries(failure -> failure.hasMessageFindingMatch("Error 500 Internal Server Error|Error closing remote buffer, expected 204 got 500"))
@@ -412,6 +435,7 @@ public abstract class BaseFailureRecoveryTest
             assertThatQuery(query)
                     .withSetupQuery(setupQuery)
                     .withCleanupQuery(cleanupQuery)
+                    .withPrimaryKey(primaryKey)
                     .experiencing(TASK_GET_RESULTS_REQUEST_TIMEOUT)
                     .at(boundaryDistributedStage())
                     .failsWithoutRetries(failure -> failure.hasMessageFindingMatch("Encountered too many errors talking to a worker node|Error closing remote buffer"))
@@ -443,25 +467,36 @@ public abstract class BaseFailureRecoveryTest
                 String temporaryTableName = (String) temporaryTableRow.getField(0);
                 try {
                     assertThatThrownBy(() -> getQueryRunner().execute("SELECT 1 FROM %s WHERE 1 = 0".formatted(temporaryTableName)))
-                            .hasMessageContaining("Table '%s' does not exist", temporaryTableName);
+                            .hasMessageContaining(".%s' does not exist", temporaryTableName);
                 }
                 catch (AssertionError e) {
-                    remainingTemporaryTables.computeIfAbsent(queryId, ignored -> new HashSet<>()).add(temporaryTableName);
-                    assertionErrorMessages.computeIfAbsent(queryId, ignored -> new HashSet<>()).add(e.getMessage());
+                    remainingTemporaryTables.computeIfAbsent(queryId, _ -> new HashSet<>()).add(temporaryTableName);
+                    assertionErrorMessages.computeIfAbsent(queryId, _ -> new HashSet<>()).add(e.getMessage());
                 }
             }
         }
 
-        assertThat(remainingTemporaryTables.isEmpty())
-                .as("There should be no remaining tmp_trino tables that are queryable. They are:\n%s",
-                        remainingTemporaryTables.entrySet().stream()
-                                .map(entry -> "\tFor queryId [%s] (prefix [%s]) remaining tables: [%s]\n\t\tWith errors: [%s]".formatted(
-                                        entry.getKey(),
-                                        temporaryTableNamePrefix(entry.getKey()),
-                                        Joiner.on(",").join(entry.getValue()),
-                                        Joiner.on("],\n[").join(assertionErrorMessages.get(entry.getKey())).replace("\n", "\n\t\t\t")))
-                                .collect(joining("\n")))
-                .isTrue();
+        if (checkNoRemainingTmpTables()) {
+            assertThat(remainingTemporaryTables.isEmpty())
+                    .as("There should be no remaining tmp_trino tables that are queryable. They are:\n%s",
+                            remainingTemporaryTables.entrySet().stream()
+                                    .map(entry -> "\tFor queryId [%s] (prefix [%s]) remaining tables: [%s]\n\t\tWith errors: [%s]".formatted(
+                                            entry.getKey(),
+                                            temporaryTableNamePrefix(entry.getKey()),
+                                            Joiner.on(",").join(entry.getValue()),
+                                            Joiner.on("],\n[").join(assertionErrorMessages.get(entry.getKey())).replace("\n", "\n\t\t\t")))
+                                    .collect(joining("\n")))
+                    .isTrue();
+        }
+    }
+
+    protected boolean checkNoRemainingTmpTables()
+    {
+        return true;
+    }
+
+    protected void addPrimaryKeyForMergeTarget(Session session, String tableName, String primaryKey)
+    {
     }
 
     protected class FailureRecoveryAssert
@@ -474,6 +509,7 @@ public abstract class BaseFailureRecoveryTest
         private Optional<String> setup = Optional.empty();
         private Optional<String> cleanup = Optional.empty();
         private Set<String> queryIds = new HashSet<>();
+        private Optional<String> primaryKey = Optional.empty();
 
         public FailureRecoveryAssert(String query)
         {
@@ -496,6 +532,12 @@ public abstract class BaseFailureRecoveryTest
         public FailureRecoveryAssert withCleanupQuery(Optional<String> query)
         {
             cleanup = requireNonNull(query, "query is null");
+            return this;
+        }
+
+        public FailureRecoveryAssert withPrimaryKey(Optional<String> primaryKey)
+        {
+            this.primaryKey = requireNonNull(primaryKey, "primaryKey is null");
             return this;
         }
 
@@ -561,12 +603,14 @@ public abstract class BaseFailureRecoveryTest
             String tableName = "table_" + randomNameSuffix();
             setup.ifPresent(sql -> getQueryRunner().execute(noRetries(session), resolveTableName(sql, tableName)));
 
-            MaterializedResultWithQueryId resultWithQueryId = null;
+            primaryKey.ifPresent(key -> addPrimaryKeyForMergeTarget(session, tableName, key));
+
+            MaterializedResultWithPlan resultWithPlan = null;
             RuntimeException failure = null;
             String queryId = null;
             try {
-                resultWithQueryId = getDistributedQueryRunner().executeWithQueryId(withTraceToken(session, traceToken), resolveTableName(query, tableName));
-                queryId = resultWithQueryId.getQueryId().getId();
+                resultWithPlan = getDistributedQueryRunner().executeWithPlan(withTraceToken(session, traceToken), resolveTableName(query, tableName));
+                queryId = resultWithPlan.queryId().getId();
             }
             catch (RuntimeException e) {
                 failure = e;
@@ -579,7 +623,7 @@ public abstract class BaseFailureRecoveryTest
                 queryIds.add(queryId);
             }
 
-            MaterializedResult result = resultWithQueryId == null ? null : resultWithQueryId.getResult();
+            MaterializedResult result = resultWithPlan == null ? null : resultWithPlan.result();
             Optional<MaterializedResult> updatedTableContent = Optional.empty();
             if (result != null && result.getUpdateCount().isPresent()) {
                 updatedTableContent = Optional.of(getQueryRunner().execute(noRetries(session), "SELECT * FROM " + tableName));
@@ -606,7 +650,7 @@ public abstract class BaseFailureRecoveryTest
                 throw failure;
             }
 
-            return new ExecutionResult(resultWithQueryId, updatedTableContent, updatedTableStatistics);
+            return new ExecutionResult(resultWithPlan, updatedTableContent, updatedTableStatistics);
         }
 
         public void isCoordinatorOnly()
@@ -648,29 +692,43 @@ public abstract class BaseFailureRecoveryTest
             MaterializedResult expectedQueryResult = expected.getQueryResult();
             OptionalInt failureStageId = getFailureStageId(() -> expectedQueryResult);
             ExecutionResult actual = executeActual(failureStageId);
-            assertEquals(getStageStats(actual.getQueryResult(), failureStageId.getAsInt()).getFailedTasks(), expectTaskFailures ? 1 : 0);
+            int failedTasksCount = getStageStats(actual.getQueryResult(), failureStageId.getAsInt()).getFailedTasks();
+            if (expectTaskFailures) {
+                assertThat(failedTasksCount).withFailMessage("expected some task failures").isGreaterThan(0);
+            }
+            else {
+                assertThat(failedTasksCount).withFailMessage("expected no task failures; got %s", failedTasksCount).isEqualTo(0);
+            }
             MaterializedResult actualQueryResult = actual.getQueryResult();
 
             boolean isAnalyze = expectedQueryResult.getUpdateType().isPresent() && expectedQueryResult.getUpdateType().get().equals("ANALYZE");
             boolean isUpdate = expectedQueryResult.getUpdateCount().isPresent();
             boolean isExplain = query.trim().toUpperCase(ENGLISH).startsWith("EXPLAIN");
             if (isAnalyze) {
-                assertEquals(actualQueryResult.getUpdateCount(), expectedQueryResult.getUpdateCount());
+                assertThat(actualQueryResult.getUpdateCount()).isEqualTo(expectedQueryResult.getUpdateCount());
                 assertThat(expected.getUpdatedTableStatistics()).isPresent();
                 assertThat(actual.getUpdatedTableStatistics()).isPresent();
 
                 MaterializedResult expectedUpdatedTableStatisticsResult = expected.getUpdatedTableStatistics().get();
                 MaterializedResult actualUpdatedTableStatisticsResult = actual.getUpdatedTableStatistics().get();
-                assertEquals(actualUpdatedTableStatisticsResult.getTypes(), expectedUpdatedTableStatisticsResult.getTypes(), "Column types");
-                assertEquals(actualUpdatedTableStatisticsResult.getColumnNames(), expectedUpdatedTableStatisticsResult.getColumnNames(), "Column names");
+                assertThat(actualUpdatedTableStatisticsResult.getTypes())
+                        .describedAs("Column types")
+                        .isEqualTo(expectedUpdatedTableStatisticsResult.getTypes());
+                assertThat(actualUpdatedTableStatisticsResult.getColumnNames())
+                        .describedAs("Column names")
+                        .isEqualTo(expectedUpdatedTableStatisticsResult.getColumnNames());
                 Map<String, MaterializedRow> expectedUpdatedTableStatistics = expectedUpdatedTableStatisticsResult.getMaterializedRows().stream()
                         .collect(toMap(row -> (String) row.getField(0), identity()));
                 Map<String, MaterializedRow> actualUpdatedTableStatistics = actualUpdatedTableStatisticsResult.getMaterializedRows().stream()
                         .collect(toMap(row -> (String) row.getField(0), identity()));
-                assertEquals(actualUpdatedTableStatistics.keySet(), expectedUpdatedTableStatistics.keySet(), "Table columns");
+                assertThat(actualUpdatedTableStatistics.keySet())
+                        .describedAs("Table columns")
+                        .isEqualTo(expectedUpdatedTableStatistics.keySet());
                 expectedUpdatedTableStatistics.forEach((key, expectedRow) -> {
                     MaterializedRow actualRow = actualUpdatedTableStatistics.get(key);
-                    assertEquals(actualRow.getFieldCount(), expectedRow.getFieldCount(), "Unexpected layout of stats");
+                    assertThat(actualRow.getFieldCount())
+                            .describedAs("Unexpected layout of stats")
+                            .isEqualTo(expectedRow.getFieldCount());
                     for (int statsColumnIndex = 0; statsColumnIndex < expectedRow.getFieldCount(); statsColumnIndex++) {
                         String statsColumnName = actualUpdatedTableStatisticsResult.getColumnNames().get(statsColumnIndex);
                         String testedFieldDescription = "Field %d '%s' in %s".formatted(statsColumnIndex, statsColumnName, actualRow);
@@ -696,7 +754,7 @@ public abstract class BaseFailureRecoveryTest
                 });
             }
             else if (isUpdate) {
-                assertEquals(actualQueryResult.getUpdateCount(), expectedQueryResult.getUpdateCount());
+                assertThat(actualQueryResult.getUpdateCount()).isEqualTo(expectedQueryResult.getUpdateCount());
                 assertThat(expected.getUpdatedTableContent()).isPresent();
                 assertThat(actual.getUpdatedTableContent()).isPresent();
                 MaterializedResult expectedUpdatedTableContent = expected.getUpdatedTableContent().get();
@@ -704,7 +762,7 @@ public abstract class BaseFailureRecoveryTest
                 assertEqualsIgnoreOrder(actualUpdatedTableContent, expectedUpdatedTableContent, "For query: \n " + query);
             }
             else if (isExplain) {
-                assertEquals(actualQueryResult.getRowCount(), expectedQueryResult.getRowCount());
+                assertThat(actualQueryResult.getRowCount()).isEqualTo(expectedQueryResult.getRowCount());
             }
             else {
                 assertEqualsIgnoreOrder(actualQueryResult, expectedQueryResult, "For query: \n " + query);
@@ -779,13 +837,12 @@ public abstract class BaseFailureRecoveryTest
         private final Optional<MaterializedResult> updatedTableStatistics;
 
         private ExecutionResult(
-                MaterializedResultWithQueryId resultWithQueryId,
+                MaterializedResultWithPlan result,
                 Optional<MaterializedResult> updatedTableContent,
                 Optional<MaterializedResult> updatedTableStatistics)
         {
-            requireNonNull(resultWithQueryId, "resultWithQueryId is null");
-            this.queryResult = resultWithQueryId.getResult();
-            this.queryId = resultWithQueryId.getQueryId();
+            this.queryResult = result.result();
+            this.queryId = result.queryId();
             this.updatedTableContent = requireNonNull(updatedTableContent, "updatedTableContent is null");
             this.updatedTableStatistics = requireNonNull(updatedTableStatistics, "updatedTableStatistics is null");
         }

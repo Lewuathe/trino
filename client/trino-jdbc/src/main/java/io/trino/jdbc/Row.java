@@ -14,8 +14,7 @@
 package io.trino.jdbc;
 
 import com.google.common.collect.ImmutableList;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.util.List;
 import java.util.Objects;
@@ -108,10 +107,9 @@ public final class Row
         Builder addField(Optional<String> name, @Nullable Object value)
         {
             requireNonNull(name, "name is null");
-            if (name.isPresent()) {
-                return addField(name.get(), value);
-            }
-            return addUnnamedField(value);
+            return name
+                    .map(fieldName -> addField(fieldName, value))
+                    .orElseGet(() -> addUnnamedField(value));
         }
 
         public Row build()

@@ -19,7 +19,6 @@ import com.google.common.util.concurrent.Futures;
 import dev.failsafe.Failsafe;
 import dev.failsafe.RetryPolicy;
 import io.airlift.log.Logger;
-import io.trino.testing.ResourcePresence;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -58,7 +57,7 @@ public final class TestingKafka
 {
     private static final Logger log = Logger.get(TestingKafka.class);
 
-    private static final String DEFAULT_CONFLUENT_PLATFORM_VERSION = "5.5.2";
+    private static final String DEFAULT_CONFLUENT_PLATFORM_VERSION = "7.3.1";
     private static final int SCHEMA_REGISTRY_PORT = 8081;
 
     private static final DockerImageName KAFKA_IMAGE_NAME = DockerImageName.parse("confluentinc/cp-kafka");
@@ -148,12 +147,6 @@ public final class TestingKafka
         stopped = true;
     }
 
-    @ResourcePresence
-    public boolean isNotStopped()
-    {
-        return !stopped;
-    }
-
     public void createTopic(String topic)
     {
         createTopic(2, 1, topic);
@@ -190,8 +183,8 @@ public final class TestingKafka
             command.add(Integer.toString(partitions));
             command.add("--replication-factor");
             command.add(Integer.toString(replication));
-            command.add("--zookeeper");
-            command.add("localhost:2181");
+            command.add("--bootstrap-server");
+            command.add("localhost:9092");
             if (enableLogAppendTime) {
                 command.add("--config");
                 command.add("message.timestamp.type=LogAppendTime");

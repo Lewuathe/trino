@@ -18,12 +18,11 @@ import com.google.common.base.Suppliers;
 import com.google.common.base.Ticker;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.stats.TDigest;
 import io.trino.memory.context.LocalMemoryContext;
-
-import javax.annotation.Nullable;
-import javax.annotation.concurrent.GuardedBy;
-import javax.annotation.concurrent.ThreadSafe;
+import jakarta.annotation.Nullable;
 
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -50,11 +49,11 @@ class OutputBufferMemoryManager
 
     @GuardedBy("this")
     private boolean closed;
+    // guarded by "this" for updates
     @Nullable
-    @GuardedBy("this")
-    private SettableFuture<Void> bufferBlockedFuture;
-    @GuardedBy("this")
-    private ListenableFuture<Void> blockedOnMemory = NOT_BLOCKED;
+    private volatile SettableFuture<Void> bufferBlockedFuture;
+    // guarded by "this" for updates
+    private volatile ListenableFuture<Void> blockedOnMemory = NOT_BLOCKED;
 
     private final Ticker ticker = Ticker.systemTicker();
 
@@ -146,13 +145,22 @@ class OutputBufferMemoryManager
         }
     }
 
-    public synchronized ListenableFuture<Void> getBufferBlockedFuture()
+    public ListenableFuture<Void> getBufferBlockedFuture()
     {
+        ListenableFuture<Void> bufferBlockedFuture = this.bufferBlockedFuture;
         if (bufferBlockedFuture == null) {
             if (blockedOnMemory.isDone() && !isBufferFull()) {
                 return NOT_BLOCKED;
             }
-            bufferBlockedFuture = SettableFuture.create();
+            synchronized (this) {
+                if (this.bufferBlockedFuture == null) {
+                    if (blockedOnMemory.isDone() && !isBufferFull()) {
+                        return NOT_BLOCKED;
+                    }
+                    this.bufferBlockedFuture = SettableFuture.create();
+                }
+                return this.bufferBlockedFuture;
+            }
         }
         return bufferBlockedFuture;
     }
@@ -248,7 +256,7 @@ class OutputBufferMemoryManager
         try {
             return memoryContextSupplier.get();
         }
-        catch (RuntimeException ignored) {
+        catch (RuntimeException _) {
             // This is possible with races, e.g., a task is created and then immediately aborted,
             // so that the task context hasn't been created yet (as a result there's no memory context available).
             return null;

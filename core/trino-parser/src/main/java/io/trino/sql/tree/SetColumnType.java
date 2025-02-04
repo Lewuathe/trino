@@ -17,7 +17,6 @@ import com.google.common.collect.ImmutableList;
 
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
@@ -26,13 +25,13 @@ public class SetColumnType
         extends Statement
 {
     private final QualifiedName tableName;
-    private final Identifier columnName;
+    private final QualifiedName columnName;
     private final DataType type;
     private final boolean tableExists;
 
-    public SetColumnType(NodeLocation location, QualifiedName tableName, Identifier columnName, DataType type, boolean tableExists)
+    public SetColumnType(NodeLocation location, QualifiedName tableName, QualifiedName columnName, DataType type, boolean tableExists)
     {
-        super(Optional.of(location));
+        super(location);
         this.tableName = requireNonNull(tableName, "tableName is null");
         this.columnName = requireNonNull(columnName, "columnName is null");
         this.type = requireNonNull(type, "type is null");
@@ -44,7 +43,7 @@ public class SetColumnType
         return tableName;
     }
 
-    public Identifier getColumnName()
+    public QualifiedName getColumnName()
     {
         return columnName;
     }
@@ -68,7 +67,7 @@ public class SetColumnType
     @Override
     public List<Node> getChildren()
     {
-        return ImmutableList.of(columnName, type);
+        return ImmutableList.of(type);
     }
 
     @Override
@@ -90,7 +89,7 @@ public class SetColumnType
         return Objects.equals(tableName, o.tableName) &&
                 Objects.equals(columnName, o.columnName) &&
                 Objects.equals(type, o.type) &&
-                Objects.equals(tableExists, o.tableExists);
+                tableExists == o.tableExists;
     }
 
     @Override

@@ -17,6 +17,7 @@ import io.trino.plugin.pinot.PinotColumnHandle;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.predicate.TupleDomain;
 
+import java.util.Map;
 import java.util.Optional;
 
 import static io.trino.plugin.pinot.query.PinotQueryBuilder.getFilterClause;
@@ -26,62 +27,68 @@ import static java.util.stream.Collectors.joining;
 
 public final class DynamicTablePqlExtractor
 {
-    private DynamicTablePqlExtractor()
-    {
-    }
+    private DynamicTablePqlExtractor() {}
 
     public static String extractPql(DynamicTable table, TupleDomain<ColumnHandle> tupleDomain)
     {
         StringBuilder builder = new StringBuilder();
-        builder.append("select ");
-        if (!table.getProjections().isEmpty()) {
-            builder.append(table.getProjections().stream()
+        Map<String, String> queryOptions = table.queryOptions();
+        queryOptions.keySet().stream().sorted().forEach(
+                key -> builder
+                        .append("SET ")
+                        .append(key)
+                        .append(" = ")
+                        .append(format("'%s'", queryOptions.get(key)))
+                        .append(";\n"));
+        builder.append("SELECT ");
+        if (!table.projections().isEmpty()) {
+            builder.append(table.projections().stream()
                     .map(DynamicTablePqlExtractor::formatExpression)
                     .collect(joining(", ")));
         }
 
-        if (!table.getAggregateColumns().isEmpty()) {
+        if (!table.aggregateColumns().isEmpty()) {
             // If there are only pushed down aggregate expressions
-            if (!table.getProjections().isEmpty()) {
+            if (!table.projections().isEmpty()) {
                 builder.append(", ");
             }
-            builder.append(table.getAggregateColumns().stream()
+            builder.append(table.aggregateColumns().stream()
                     .map(DynamicTablePqlExtractor::formatExpression)
                     .collect(joining(", ")));
         }
-        builder.append(" from ");
-        builder.append(table.getTableName());
-        builder.append(table.getSuffix().orElse(""));
+        builder.append(" FROM ");
+        builder.append(table.tableName());
+        builder.append(table.suffix().orElse(""));
 
-        Optional<String> filter = getFilter(table.getFilter(), tupleDomain, false);
+        Optional<String> filter = getFilter(table.filter(), tupleDomain, false);
         if (filter.isPresent()) {
-            builder.append(" where ")
+            builder.append(" WHERE ")
                     .append(filter.get());
         }
-        if (!table.getGroupingColumns().isEmpty()) {
-            builder.append(" group by ");
-            builder.append(table.getGroupingColumns().stream()
+        if (!table.groupingColumns().isEmpty()) {
+            builder.append(" GROUP BY ");
+            builder.append(table.groupingColumns().stream()
                     .map(PinotColumnHandle::getExpression)
                     .collect(joining(", ")));
         }
-        Optional<String> havingClause = getFilter(table.getHavingExpression(), tupleDomain, true);
+        Optional<String> havingClause = getFilter(table.havingExpression(), tupleDomain, true);
         if (havingClause.isPresent()) {
-            builder.append(" having ")
+            builder.append(" HAVING ")
                     .append(havingClause.get());
         }
-        if (!table.getOrderBy().isEmpty()) {
-            builder.append(" order by ")
-                    .append(table.getOrderBy().stream()
+        if (!table.orderBy().isEmpty()) {
+            builder.append(" ORDER BY ")
+                    .append(table.orderBy().stream()
                             .map(DynamicTablePqlExtractor::convertOrderByExpressionToPql)
                             .collect(joining(", ")));
         }
-        if (table.getLimit().isPresent()) {
-            builder.append(" limit ");
-            if (table.getOffset().isPresent()) {
-                builder.append(table.getOffset().getAsLong())
+        if (table.limit().isPresent()) {
+            builder.append(" LIMIT ");
+            if (table.offset().isPresent()) {
+                builder.append(table.offset().getAsLong())
                         .append(", ");
             }
-            builder.append(table.getLimit().getAsLong());
+            builder.append(table.limit().getAsLong());
         }
         return builder.toString();
     }
@@ -106,9 +113,9 @@ public final class DynamicTablePqlExtractor
     {
         requireNonNull(orderByExpression, "orderByExpression is null");
         StringBuilder builder = new StringBuilder()
-                .append(orderByExpression.getExpression());
-        if (!orderByExpression.isAsc()) {
-            builder.append(" desc");
+                .append(orderByExpression.expression());
+        if (!orderByExpression.asc()) {
+            builder.append(" DESC");
         }
         return builder.toString();
     }

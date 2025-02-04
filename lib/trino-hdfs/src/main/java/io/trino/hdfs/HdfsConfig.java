@@ -13,7 +13,6 @@
  */
 package io.trino.hdfs;
 
-import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.net.HostAndPort;
 import com.google.common.primitives.Shorts;
@@ -22,11 +21,10 @@ import io.airlift.configuration.ConfigDescription;
 import io.airlift.configuration.validation.FileExists;
 import io.airlift.units.Duration;
 import io.airlift.units.MinDuration;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import org.apache.hadoop.fs.permission.FsPermission;
-
-import javax.validation.constraints.Min;
-import javax.validation.constraints.NotNull;
-import javax.validation.constraints.Pattern;
 
 import java.io.File;
 import java.util.List;
@@ -40,8 +38,6 @@ import static java.util.Objects.requireNonNull;
 public class HdfsConfig
 {
     public static final String SKIP_DIR_PERMISSIONS = "skip";
-    private static final Splitter SPLITTER = Splitter.on(',').trimResults().omitEmptyStrings();
-
     private List<File> resourceConfigFiles = ImmutableList.of();
     private String newDirectoryPermissions = "0777";
     private boolean newFileInheritOwnership;
@@ -64,17 +60,11 @@ public class HdfsConfig
     }
 
     @Config("hive.config.resources")
-    public HdfsConfig setResourceConfigFiles(String files)
+    public HdfsConfig setResourceConfigFiles(List<String> files)
     {
-        this.resourceConfigFiles = SPLITTER.splitToList(files).stream()
+        this.resourceConfigFiles = files.stream()
                 .map(File::new)
                 .collect(toImmutableList());
-        return this;
-    }
-
-    public HdfsConfig setResourceConfigFiles(List<File> files)
-    {
-        this.resourceConfigFiles = ImmutableList.copyOf(files);
         return this;
     }
 
@@ -106,7 +96,7 @@ public class HdfsConfig
     }
 
     @Config("hive.fs.new-file-inherit-ownership")
-    @ConfigDescription("File system permissions for new directories")
+    @ConfigDescription("Flag to determine if new files inherit the ownership information from the directory.")
     public HdfsConfig setNewFileInheritOwnership(boolean newFileInheritOwnership)
     {
         this.newFileInheritOwnership = newFileInheritOwnership;
@@ -231,6 +221,7 @@ public class HdfsConfig
         return this;
     }
 
+    @Min(1)
     public int getFileSystemMaxCacheSize()
     {
         return fileSystemMaxCacheSize;

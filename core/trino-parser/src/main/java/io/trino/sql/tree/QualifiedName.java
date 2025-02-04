@@ -60,7 +60,7 @@ public class QualifiedName
     {
         this.originalParts = originalParts;
         // Iteration instead of stream for performance reasons
-        ImmutableList.Builder partsBuilder = ImmutableList.builderWithExpectedSize(originalParts.size());
+        ImmutableList.Builder<String> partsBuilder = ImmutableList.builderWithExpectedSize(originalParts.size());
         for (Identifier identifier : originalParts) {
             partsBuilder.add(mapIdentifier(identifier));
         }
@@ -74,7 +74,7 @@ public class QualifiedName
         else {
             List<Identifier> subList = originalParts.subList(0, originalParts.size() - 1);
             this.prefix = Optional.of(new QualifiedName(subList));
-            this.suffix = mapIdentifier(originalParts.get(originalParts.size() - 1));
+            this.suffix = mapIdentifier(originalParts.getLast());
         }
     }
 

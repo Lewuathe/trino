@@ -13,7 +13,7 @@
  */
 package io.trino.tests.product.hive;
 
-import io.trino.tempto.BeforeTestWithContext;
+import io.trino.tempto.BeforeMethodWithContext;
 import io.trino.tempto.ProductTest;
 import io.trino.tempto.assertions.QueryAssert;
 import io.trino.tempto.query.QueryResult;
@@ -23,13 +23,13 @@ import org.testng.annotations.Test;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.tempto.assertions.QueryAssert.Row.row;
 import static io.trino.tempto.assertions.QueryAssert.assertQueryFailure;
-import static io.trino.tempto.assertions.QueryAssert.assertThat;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.tests.product.TestGroups.HIVE_HUDI_REDIRECTIONS;
 import static io.trino.tests.product.TestGroups.PROFILE_SPECIFIC_TESTS;
 import static io.trino.tests.product.utils.QueryExecutors.onHudi;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
 import static java.lang.String.format;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestHiveRedirectionToHudi
         extends ProductTest
@@ -38,10 +38,10 @@ public class TestHiveRedirectionToHudi
     private static final String HUDI_TABLE_TYPE_COPY_ON_WRITE = "cow";
     private static final String HUDI_TABLE_TYPE_MERGE_ON_READ = "mor";
 
-    @BeforeTestWithContext
+    @BeforeMethodWithContext
     public void setUp()
     {
-        bucketName = System.getenv().getOrDefault("S3_BUCKET", "trino-ci-test");
+        bucketName = System.getenv().getOrDefault("S3_BUCKET", "test-bucket");
     }
 
     @DataProvider
@@ -192,7 +192,7 @@ public class TestHiveRedirectionToHudi
         createHudiCowTable(schemaTableName, false);
 
         assertQueryFailure(() -> onTrino().executeQuery("INSERT INTO " + hiveTableName + " VALUES (3, 'a3', 60, 3000)"))
-                .hasMessageMatching("\\QQuery failed (#\\E\\S+\\Q): Insert query has mismatched column types: Table: [varchar, varchar, varchar, varchar, varchar, bigint, varchar, integer, bigint], Query: [integer, varchar(2), integer, integer]");
+                .hasMessageMatching("\\QQuery failed (#\\E\\S+\\Q): line 1:1: Insert query has mismatched column types: Table: [varchar, varchar, varchar, varchar, varchar, bigint, varchar, integer, bigint], Query: [integer, varchar(2), integer, integer]");
 
         onHudi().executeQuery("DROP TABLE " + schemaTableName);
     }
@@ -241,11 +241,11 @@ public class TestHiveRedirectionToHudi
         createHudiCowTable(sourceSchemaTableName, false);
         createHudiMorTable(targetSchemaTableName, false);
 
-        assertQueryFailure(() -> (onTrino().executeQuery("" +
+        assertQueryFailure(() -> onTrino().executeQuery("" +
                 "MERGE INTO " + hiveTargetTableName + " t USING " + hiveSourceTableName + " s ON t.id = s.id " +
                 "WHEN NOT MATCHED " +
                 "    THEN INSERT (id, name, price, ts) " +
-                "            VALUES (s.id, s.name, s.price, s.ts)")))
+                "            VALUES (s.id, s.name, s.price, s.ts)"))
                 .hasMessageMatching("\\QQuery failed (#\\E\\S+\\Q): This connector does not support modifying table rows");
 
         onHudi().executeQuery("DROP TABLE " + sourceSchemaTableName);
@@ -412,17 +412,18 @@ public class TestHiveRedirectionToHudi
     {
         onHudi().executeQuery(format(
                 """
-                        CREATE TABLE %s (
-                          id bigint,
-                          name string,
-                          price int,
-                          ts bigint)
-                        USING hudi
-                        TBLPROPERTIES (
-                          type = '%s',
-                          primaryKey = 'id',
-                          preCombineField = 'ts')
-                        LOCATION 's3://%s/%s'""",
+                CREATE TABLE %s (
+                  id bigint,
+                  name string,
+                  price int,
+                  ts bigint)
+                USING hudi
+                TBLPROPERTIES (
+                  type = '%s',
+                  primaryKey = 'id',
+                  preCombineField = 'ts')
+                LOCATION 's3://%s/%s'
+                """,
                 tableName,
                 tableType,
                 bucketName,
@@ -435,19 +436,20 @@ public class TestHiveRedirectionToHudi
     {
         onHudi().executeQuery(format(
                 """
-                        CREATE TABLE %s (
-                          id bigint,
-                          name string,
-                          ts bigint,
-                          dt string,
-                          hh string)
-                        USING hudi
-                        TBLPROPERTIES (
-                          type = '%s',
-                          primaryKey = 'id',
-                          preCombineField = 'ts')
-                        PARTITIONED BY (dt, hh)
-                        LOCATION 's3://%s/%s'""",
+                CREATE TABLE %s (
+                  id bigint,
+                  name string,
+                  ts bigint,
+                  dt string,
+                  hh string)
+                USING hudi
+                TBLPROPERTIES (
+                  type = '%s',
+                  primaryKey = 'id',
+                  preCombineField = 'ts')
+                PARTITIONED BY (dt, hh)
+                LOCATION 's3://%s/%s'
+                """,
                 tableName,
                 tableType,
                 bucketName,

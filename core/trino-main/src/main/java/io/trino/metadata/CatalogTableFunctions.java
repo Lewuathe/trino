@@ -14,10 +14,9 @@
 package io.trino.metadata;
 
 import com.google.common.collect.Maps;
+import com.google.errorprone.annotations.ThreadSafe;
 import io.trino.spi.function.SchemaFunctionName;
-import io.trino.spi.ptf.ConnectorTableFunction;
-
-import javax.annotation.concurrent.ThreadSafe;
+import io.trino.spi.function.table.ConnectorTableFunction;
 
 import java.util.Collection;
 import java.util.Map;
@@ -36,6 +35,11 @@ public class CatalogTableFunctions
     {
         requireNonNull(functions, "functions is null");
         this.functions = Maps.uniqueIndex(functions, function -> lowerCaseSchemaFunctionName(new SchemaFunctionName(function.getSchema(), function.getName())));
+    }
+
+    public Map<SchemaFunctionName, ConnectorTableFunction> listTableFunctions()
+    {
+        return functions;
     }
 
     public Optional<ConnectorTableFunction> getTableFunction(SchemaFunctionName schemaFunctionName)

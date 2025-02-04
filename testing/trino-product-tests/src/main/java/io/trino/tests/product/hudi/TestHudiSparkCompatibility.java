@@ -14,24 +14,24 @@
 package io.trino.tests.product.hudi;
 
 import com.google.common.collect.ImmutableList;
-import io.trino.tempto.BeforeTestWithContext;
+import io.trino.tempto.BeforeMethodWithContext;
 import io.trino.tempto.ProductTest;
 import io.trino.tempto.assertions.QueryAssert;
-import org.assertj.core.api.Assertions;
 import org.testng.annotations.Test;
 
 import java.util.List;
 
 import static io.trino.tempto.assertions.QueryAssert.Row.row;
 import static io.trino.tempto.assertions.QueryAssert.assertQueryFailure;
-import static io.trino.tempto.assertions.QueryAssert.assertThat;
+import static io.trino.testing.SystemEnvironmentUtils.requireEnv;
 import static io.trino.testing.TestingNames.randomNameSuffix;
+import static io.trino.tests.product.TestGroups.HIVE_HUDI_REDIRECTIONS;
 import static io.trino.tests.product.TestGroups.HUDI;
 import static io.trino.tests.product.TestGroups.PROFILE_SPECIFIC_TESTS;
 import static io.trino.tests.product.utils.QueryExecutors.onHudi;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
 import static java.lang.String.format;
-import static java.util.Objects.requireNonNull;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestHudiSparkCompatibility
         extends ProductTest
@@ -41,10 +41,10 @@ public class TestHudiSparkCompatibility
 
     private String bucketName;
 
-    @BeforeTestWithContext
+    @BeforeMethodWithContext
     public void setUp()
     {
-        bucketName = requireNonNull(System.getenv("S3_BUCKET"), "Environment variable not set: S3_BUCKET");
+        bucketName = requireEnv("S3_BUCKET");
     }
 
     @Test(groups = {HUDI, PROFILE_SPECIFIC_TESTS})
@@ -55,7 +55,7 @@ public class TestHudiSparkCompatibility
         createNonPartitionedTable(tableName, COW_TABLE_TYPE);
 
         try {
-            Assertions.assertThat((String) onTrino().executeQuery("SHOW CREATE TABLE hudi.default." + tableName).getOnlyValue())
+            assertThat((String) onTrino().executeQuery("SHOW CREATE TABLE hudi.default." + tableName).getOnlyValue())
                     .isEqualTo(format(
                             "CREATE TABLE hudi.default.%s (\n" +
                                     "   _hoodie_commit_time varchar,\n" +
@@ -75,26 +75,27 @@ public class TestHudiSparkCompatibility
                             bucketName,
                             tableName));
             String lastCommitTimeSync = (String) onHudi().executeQuery("show TBLPROPERTIES " + tableName + " ('last_commit_time_sync')").project(2).getOnlyValue();
-            Assertions.assertThat((String) onHudi().executeQuery("SHOW CREATE TABLE default." + tableName).getOnlyValue())
-                    .isEqualTo(format("""
-                                    CREATE TABLE default.%s (
-                                      _hoodie_commit_time STRING,
-                                      _hoodie_commit_seqno STRING,
-                                      _hoodie_record_key STRING,
-                                      _hoodie_partition_path STRING,
-                                      _hoodie_file_name STRING,
-                                      id BIGINT,
-                                      name STRING,
-                                      price INT,
-                                      ts BIGINT)
-                                    USING hudi
-                                    LOCATION 's3://%s/%s'
-                                    TBLPROPERTIES (
-                                      'last_commit_time_sync' = '%s',
-                                      'preCombineField' = 'ts',
-                                      'primaryKey' = 'id',
-                                      'type' = 'cow')
-                                    """,
+            assertThat((String) onHudi().executeQuery("SHOW CREATE TABLE default." + tableName).getOnlyValue())
+                    .isEqualTo(format(
+                            """
+                            CREATE TABLE default.%s (
+                              _hoodie_commit_time STRING,
+                              _hoodie_commit_seqno STRING,
+                              _hoodie_record_key STRING,
+                              _hoodie_partition_path STRING,
+                              _hoodie_file_name STRING,
+                              id BIGINT,
+                              name STRING,
+                              price INT,
+                              ts BIGINT)
+                            USING hudi
+                            LOCATION 's3://%s/%s'
+                            TBLPROPERTIES (
+                              'last_commit_time_sync' = '%s',
+                              'preCombineField' = 'ts',
+                              'primaryKey' = 'id',
+                              'type' = 'cow')
+                            """,
                             tableName,
                             bucketName,
                             tableName,
@@ -303,7 +304,7 @@ public class TestHudiSparkCompatibility
         }
     }
 
-    @Test(groups = {HUDI, PROFILE_SPECIFIC_TESTS})
+    @Test(groups = {HIVE_HUDI_REDIRECTIONS, PROFILE_SPECIFIC_TESTS})
     public void testTimelineTableRedirect()
     {
         String tableName = "test_hudi_timeline_system_table_redirect_" + randomNameSuffix();
@@ -313,10 +314,36 @@ public class TestHudiSparkCompatibility
             assertThat(onTrino().executeQuery(format("SELECT action, state FROM hive.default.\"%s$timeline\"", tableName)))
                     .containsOnly(row("commit", "COMPLETED"));
             assertQueryFailure(() -> onTrino().executeQuery(format("SELECT * FROM hive.default.\"%s$timeline\"", nonExistingTableName)))
-                    .hasMessageMatching(".*Table 'hive.default.test_hudi_timeline_system_table_redirect_.*_non_existing\\$timeline' does not exist");
+                    .hasMessageMatching(".*Table 'hive.default.\"test_hudi_timeline_system_table_redirect_.*_non_existing\\$timeline\"' does not exist");
         }
         finally {
             onHudi().executeQuery("DROP TABLE " + tableName);
+        }
+    }
+
+    @Test(groups = {HUDI, PROFILE_SPECIFIC_TESTS})
+    public void testReadCopyOnWriteTableWithReplaceCommits()
+    {
+        String tableName = "test_hudi_cow_replace_commits_select_" + randomNameSuffix();
+
+        onHudi().executeQuery("CREATE TABLE default." + tableName +
+                "(id bigint, name string, ts bigint)" +
+                "USING hudi " +
+                "TBLPROPERTIES (" +
+                " type = 'cow'," +
+                " primaryKey = 'id'," +
+                " preCombineField = 'ts'," +
+                " hoodie.clustering.inline = 'true'," +
+                " hoodie.clustering.inline.max.commits = '1')" +
+                "LOCATION 's3://" + bucketName + "/" + tableName + "'");
+
+        try {
+            onHudi().executeQuery("INSERT INTO default." + tableName + " VALUES (1, 'a1', 1000), (2, 'a2', 2000)");
+            assertThat(onTrino().executeQuery("SELECT id, name FROM hudi.default." + tableName))
+                    .containsOnly(row(1, "a1"), row(2, "a2"));
+        }
+        finally {
+            onHudi().executeQuery("DROP TABLE default." + tableName);
         }
     }
 
@@ -324,17 +351,18 @@ public class TestHudiSparkCompatibility
     {
         onHudi().executeQuery(format(
                 """
-                        CREATE TABLE default.%s (
-                          id bigint,
-                          name string,
-                          price int,
-                          ts bigint)
-                        USING hudi
-                        TBLPROPERTIES (
-                          type = '%s',
-                          primaryKey = 'id',
-                          preCombineField = 'ts')
-                        LOCATION 's3://%s/%s'""",
+                CREATE TABLE default.%s (
+                  id bigint,
+                  name string,
+                  price int,
+                  ts bigint)
+                USING hudi
+                TBLPROPERTIES (
+                  type = '%s',
+                  primaryKey = 'id',
+                  preCombineField = 'ts')
+                LOCATION 's3://%s/%s'
+                """,
                 tableName,
                 tableType,
                 bucketName,
@@ -347,19 +375,20 @@ public class TestHudiSparkCompatibility
     {
         onHudi().executeQuery(format(
                 """
-                        CREATE TABLE default.%s (
-                          id bigint,
-                          name string,
-                          ts bigint,
-                          dt string,
-                          hh string)
-                        USING hudi
-                        TBLPROPERTIES (
-                          type = '%s',
-                          primaryKey = 'id',
-                          preCombineField = 'ts')
-                        PARTITIONED BY (dt, hh)
-                        LOCATION 's3://%s/%s'""",
+                CREATE TABLE default.%s (
+                  id bigint,
+                  name string,
+                  ts bigint,
+                  dt string,
+                  hh string)
+                USING hudi
+                TBLPROPERTIES (
+                  type = '%s',
+                  primaryKey = 'id',
+                  preCombineField = 'ts')
+                PARTITIONED BY (dt, hh)
+                LOCATION 's3://%s/%s'
+                """,
                 tableName,
                 tableType,
                 bucketName,

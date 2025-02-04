@@ -30,7 +30,6 @@ import org.apache.hadoop.util.Progressable;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -43,7 +42,6 @@ import java.util.TreeSet;
 import static java.lang.Math.toIntExact;
 
 // copied from org.apache.hadoop.hive.ql.io.orc.TestInputOutputFormat
-@SuppressWarnings("AccessingNonPublicFieldOfAnotherObject")
 public class FileSystemTesting
 {
     public static class MockBlock
@@ -285,12 +283,7 @@ public class FileSystemTesting
         @Override
         public URI getUri()
         {
-            try {
-                return new URI("mock:///");
-            }
-            catch (URISyntaxException err) {
-                throw new IllegalArgumentException("huh?", err);
-            }
+            return URI.create("mock:///");
         }
 
         @Override
@@ -388,7 +381,6 @@ public class FileSystemTesting
 
         @Override
         public RemoteIterator<LocatedFileStatus> listLocatedStatus(Path f)
-                throws IOException
         {
             return new RemoteIterator<>()
             {

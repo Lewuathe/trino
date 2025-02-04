@@ -13,14 +13,13 @@
  */
 package io.trino.tests.product.launcher.env.environment;
 
+import com.google.inject.Inject;
 import io.trino.tests.product.launcher.docker.DockerFiles;
 import io.trino.tests.product.launcher.docker.DockerFiles.ResourceProvider;
 import io.trino.tests.product.launcher.env.Environment;
 import io.trino.tests.product.launcher.env.EnvironmentProvider;
 import io.trino.tests.product.launcher.env.common.StandardMultinode;
 import io.trino.tests.product.launcher.env.common.TestsEnvironment;
-
-import javax.inject.Inject;
 
 import java.util.List;
 
@@ -47,40 +46,40 @@ public final class EnvMultinodeAllConnectors
     {
         // blackhole, jmx, tpch are already configured in Standard base env
         List.of(
-                        // TODO accumulo needs to connect to ZooKeeper, it won't start otherwise
-                        //"accumulo",
-                        "atop",
                         "bigquery",
                         "cassandra",
                         "clickhouse",
-                        "druid",
                         "delta_lake",
+                        "druid",
+                        "duckdb",
                         "elasticsearch",
+                        "faker",
                         "gsheets",
                         "hive",
                         "hudi",
                         "iceberg",
                         "ignite",
                         "kafka",
-                        "kinesis",
                         "kudu",
-                        "localfile",
+                        "loki",
                         "mariadb",
                         "memory",
-                        "singlestore",
                         "mongodb",
                         "mysql",
+                        "opensearch",
                         "oracle",
                         "phoenix5",
                         "pinot",
                         "postgresql",
                         "prometheus",
-                        "raptor_legacy",
                         "redis",
                         "redshift",
+                        "singlestore",
+                        "snowflake",
                         "sqlserver",
+                        "tpcds",
                         "trino_thrift",
-                        "tpcds")
+                        "vertica")
                 .forEach(connector -> builder.addConnector(
                         connector,
                         forHostPath(configDir.getPath(connector + ".properties"))));

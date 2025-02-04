@@ -14,8 +14,8 @@
 package io.trino.sql.jsonpath;
 
 import com.google.common.collect.ImmutableList;
-import io.trino.jsonpath.JsonPathBaseVisitor;
-import io.trino.jsonpath.JsonPathParser;
+import io.trino.grammar.jsonpath.JsonPathBaseVisitor;
+import io.trino.grammar.jsonpath.JsonPathParser;
 import io.trino.sql.jsonpath.tree.AbsMethod;
 import io.trino.sql.jsonpath.tree.ArithmeticBinary;
 import io.trino.sql.jsonpath.tree.ArithmeticBinary.Operator;
@@ -27,6 +27,7 @@ import io.trino.sql.jsonpath.tree.ComparisonPredicate;
 import io.trino.sql.jsonpath.tree.ConjunctionPredicate;
 import io.trino.sql.jsonpath.tree.ContextVariable;
 import io.trino.sql.jsonpath.tree.DatetimeMethod;
+import io.trino.sql.jsonpath.tree.DescendantMemberAccessor;
 import io.trino.sql.jsonpath.tree.DisjunctionPredicate;
 import io.trino.sql.jsonpath.tree.DoubleMethod;
 import io.trino.sql.jsonpath.tree.ExistsPredicate;
@@ -169,6 +170,20 @@ public class PathTreeBuilder
     }
 
     @Override
+    public PathNode visitDescendantMemberAccessor(JsonPathParser.DescendantMemberAccessorContext context)
+    {
+        PathNode base = visit(context.accessorExpression());
+        String key;
+        if (context.stringLiteral() != null) {
+            key = unquote(context.stringLiteral().getText());
+        }
+        else {
+            key = context.identifier().getText();
+        }
+        return new DescendantMemberAccessor(base, key);
+    }
+
+    @Override
     public PathNode visitArrayAccessor(JsonPathParser.ArrayAccessorContext context)
     {
         PathNode base = visit(context.accessorExpression());
@@ -268,14 +283,11 @@ public class PathTreeBuilder
 
     private static Sign getSign(String operator)
     {
-        switch (operator) {
-            case "+":
-                return Sign.PLUS;
-            case "-":
-                return Sign.MINUS;
-            default:
-                throw new UnsupportedOperationException("unexpected unary operator: " + operator);
-        }
+        return switch (operator) {
+            case "+" -> Sign.PLUS;
+            case "-" -> Sign.MINUS;
+            default -> throw new UnsupportedOperationException("unexpected unary operator: " + operator);
+        };
     }
 
     @Override
@@ -288,20 +300,14 @@ public class PathTreeBuilder
 
     private static Operator getOperator(String operator)
     {
-        switch (operator) {
-            case "+":
-                return Operator.ADD;
-            case "-":
-                return Operator.SUBTRACT;
-            case "*":
-                return Operator.MULTIPLY;
-            case "/":
-                return Operator.DIVIDE;
-            case "%":
-                return Operator.MODULUS;
-            default:
-                throw new UnsupportedOperationException("unexpected binary operator: " + operator);
-        }
+        return switch (operator) {
+            case "+" -> Operator.ADD;
+            case "-" -> Operator.SUBTRACT;
+            case "*" -> Operator.MULTIPLY;
+            case "/" -> Operator.DIVIDE;
+            case "%" -> Operator.MODULUS;
+            default -> throw new UnsupportedOperationException("unexpected binary operator: " + operator);
+        };
     }
 
     // predicate
@@ -316,23 +322,15 @@ public class PathTreeBuilder
 
     private static ComparisonPredicate.Operator getComparisonOperator(String operator)
     {
-        switch (operator) {
-            case "==":
-                return ComparisonPredicate.Operator.EQUAL;
-            case "<>":
-            case "!=":
-                return ComparisonPredicate.Operator.NOT_EQUAL;
-            case "<":
-                return ComparisonPredicate.Operator.LESS_THAN;
-            case ">":
-                return ComparisonPredicate.Operator.GREATER_THAN;
-            case "<=":
-                return ComparisonPredicate.Operator.LESS_THAN_OR_EQUAL;
-            case ">=":
-                return ComparisonPredicate.Operator.GREATER_THAN_OR_EQUAL;
-            default:
-                throw new UnsupportedOperationException("unexpected comparison operator: " + operator);
-        }
+        return switch (operator) {
+            case "==" -> ComparisonPredicate.Operator.EQUAL;
+            case "<>", "!=" -> ComparisonPredicate.Operator.NOT_EQUAL;
+            case "<" -> ComparisonPredicate.Operator.LESS_THAN;
+            case ">" -> ComparisonPredicate.Operator.GREATER_THAN;
+            case "<=" -> ComparisonPredicate.Operator.LESS_THAN_OR_EQUAL;
+            case ">=" -> ComparisonPredicate.Operator.GREATER_THAN_OR_EQUAL;
+            default -> throw new UnsupportedOperationException("unexpected comparison operator: " + operator);
+        };
     }
 
     @Override

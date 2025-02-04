@@ -21,7 +21,6 @@ import io.trino.cost.PlanCostEstimate;
 import io.trino.cost.PlanNodeStatsEstimate;
 import io.trino.cost.StatsAndCosts;
 import io.trino.metadata.TableHandle;
-import io.trino.metadata.TableMetadata;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
@@ -192,7 +191,7 @@ public class IoPlanPrinter
                 PlanCostEstimate costEstimate = statsAndCosts.getCosts().get(root.getId());
                 return new EstimatedStatsAndCost(
                         statsEstimate.getOutputRowCount(),
-                        statsEstimate.getOutputSizeInBytes(root.getOutputSymbols(), plan.getTypes()),
+                        statsEstimate.getOutputSizeInBytes(root.getOutputSymbols()),
                         costEstimate.getCpuCost(),
                         costEstimate.getMaxMemory(),
                         costEstimate.getNetworkCost());
@@ -303,7 +302,7 @@ public class IoPlanPrinter
                 return false;
             }
             Constraint o = (Constraint) obj;
-            return Objects.equals(isNone, o.isNone) &&
+            return isNone == o.isNone &&
                     Objects.equals(columnConstraints, o.columnConstraints);
         }
 
@@ -453,11 +452,11 @@ public class IoPlanPrinter
                 return false;
             }
             EstimatedStatsAndCost o = (EstimatedStatsAndCost) obj;
-            return Objects.equals(outputRowCount, o.outputRowCount) &&
-                    Objects.equals(outputSizeInBytes, o.outputSizeInBytes) &&
-                    Objects.equals(cpuCost, o.cpuCost) &&
-                    Objects.equals(maxMemory, o.maxMemory) &&
-                    Objects.equals(networkCost, o.networkCost);
+            return Double.compare(outputRowCount, o.outputRowCount) == 0 &&
+                    Double.compare(outputSizeInBytes, o.outputSizeInBytes) == 0 &&
+                    Double.compare(cpuCost, o.cpuCost) == 0 &&
+                    Double.compare(maxMemory, o.maxMemory) == 0 &&
+                    Double.compare(networkCost, o.networkCost) == 0;
         }
 
         @Override
@@ -515,7 +514,7 @@ public class IoPlanPrinter
                 return false;
             }
             FormattedDomain o = (FormattedDomain) obj;
-            return Objects.equals(nullsAllowed, o.nullsAllowed) &&
+            return nullsAllowed == o.nullsAllowed &&
                     Objects.equals(ranges, o.ranges);
         }
 
@@ -671,8 +670,7 @@ public class IoPlanPrinter
                 DomainTranslator.ExtractionResult decomposedPredicate = DomainTranslator.getExtractionResult(
                         plannerContext,
                         session,
-                        node.getPredicate(),
-                        plan.getTypes());
+                        node.getPredicate());
                 TupleDomain<ColumnHandle> filterDomain = decomposedPredicate.getTupleDomain()
                         .transformKeys(tableScanNode.getAssignments()::get);
                 addInputTableConstraints(filterDomain, tableScanNode, context);
@@ -695,25 +693,25 @@ public class IoPlanPrinter
             WriterTarget writerTarget = node.getTarget();
             if (writerTarget instanceof CreateTarget target) {
                 context.setOutputTable(new CatalogSchemaTableName(
-                        target.getHandle().getCatalogHandle().getCatalogName(),
+                        target.getHandle().catalogHandle().getCatalogName().toString(),
                         target.getSchemaTableName().getSchemaName(),
                         target.getSchemaTableName().getTableName()));
             }
             else if (writerTarget instanceof InsertTarget target) {
                 context.setOutputTable(new CatalogSchemaTableName(
-                        target.getHandle().getCatalogHandle().getCatalogName(),
+                        target.getHandle().catalogHandle().getCatalogName().toString(),
                         target.getSchemaTableName().getSchemaName(),
                         target.getSchemaTableName().getTableName()));
             }
             else if (writerTarget instanceof MergeTarget target) {
                 context.setOutputTable(new CatalogSchemaTableName(
-                        target.getHandle().getCatalogHandle().getCatalogName(),
+                        target.getHandle().catalogHandle().getCatalogName().toString(),
                         target.getSchemaTableName().getSchemaName(),
                         target.getSchemaTableName().getTableName()));
             }
             else if (writerTarget instanceof TableWriterNode.RefreshMaterializedViewTarget target) {
                 context.setOutputTable(new CatalogSchemaTableName(
-                        target.getInsertHandle().getCatalogHandle().getCatalogName(),
+                        target.getInsertHandle().catalogHandle().getCatalogName().toString(),
                         target.getSchemaTableName().getSchemaName(),
                         target.getSchemaTableName().getTableName()));
             }
@@ -729,15 +727,15 @@ public class IoPlanPrinter
         private void addInputTableConstraints(TupleDomain<ColumnHandle> filterDomain, TableScanNode tableScan, IoPlanBuilder context)
         {
             TableHandle table = tableScan.getTable();
-            TableMetadata tableMetadata = plannerContext.getMetadata().getTableMetadata(session, table);
+            CatalogSchemaTableName tableName = plannerContext.getMetadata().getTableName(session, table);
             TupleDomain<ColumnHandle> predicateDomain = plannerContext.getMetadata().getTableProperties(session, table).getPredicate();
             EstimatedStatsAndCost estimatedStatsAndCost = getEstimatedStatsAndCost(tableScan);
             context.addInputTableColumnInfo(
                     new IoPlan.TableColumnInfo(
                             new CatalogSchemaTableName(
-                                    tableMetadata.getCatalogName(),
-                                    tableMetadata.getTable().getSchemaName(),
-                                    tableMetadata.getTable().getTableName()),
+                                    tableName.getCatalogName(),
+                                    tableName.getSchemaTableName().getSchemaName(),
+                                    tableName.getSchemaTableName().getTableName()),
                             parseConstraint(table, predicateDomain.intersect(filterDomain)),
                             estimatedStatsAndCost));
         }
@@ -750,7 +748,7 @@ public class IoPlanPrinter
 
             EstimatedStatsAndCost estimatedStatsAndCost = new EstimatedStatsAndCost(
                     stats.getOutputRowCount(),
-                    stats.getOutputSizeInBytes(node.getOutputSymbols(), plan.getTypes()),
+                    stats.getOutputSizeInBytes(node.getOutputSymbols()),
                     cost.getCpuCost(),
                     cost.getMaxMemory(),
                     cost.getNetworkCost());

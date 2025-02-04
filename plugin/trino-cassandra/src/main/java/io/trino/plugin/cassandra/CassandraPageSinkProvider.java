@@ -13,6 +13,7 @@
  */
 package io.trino.plugin.cassandra;
 
+import com.google.inject.Inject;
 import io.trino.spi.connector.ConnectorInsertTableHandle;
 import io.trino.spi.connector.ConnectorOutputTableHandle;
 import io.trino.spi.connector.ConnectorPageSink;
@@ -20,8 +21,6 @@ import io.trino.spi.connector.ConnectorPageSinkId;
 import io.trino.spi.connector.ConnectorPageSinkProvider;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTransactionHandle;
-
-import javax.inject.Inject;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
@@ -55,10 +54,10 @@ public class CassandraPageSinkProvider
                 cassandraTypeManager,
                 cassandraSession,
                 cassandraSession.getProtocolVersion(),
-                handle.getSchemaName(),
-                handle.getTableName(),
-                handle.getColumnNames(),
-                handle.getColumnTypes(),
+                handle.schemaName(),
+                handle.tableName(),
+                handle.columnNames(),
+                handle.columnTypes(),
                 true,
                 batchSize);
     }
@@ -74,11 +73,11 @@ public class CassandraPageSinkProvider
                 cassandraTypeManager,
                 cassandraSession,
                 cassandraSession.getProtocolVersion(),
-                handle.getSchemaName(),
-                handle.getTableName(),
-                handle.getColumnNames(),
-                handle.getColumnTypes(),
-                handle.isGenerateUuid(),
+                handle.schemaName(),
+                handle.tableName(),
+                handle.columnNames(),
+                handle.columnTypes(),
+                handle.generateUuid(),
                 batchSize);
     }
 }

@@ -26,8 +26,7 @@ import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.Int128ArrayBlock;
 import io.trino.spi.block.RunLengthEncodedBlock;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.io.IOException;
 import java.lang.invoke.MethodHandles;
@@ -43,6 +42,7 @@ import static io.trino.orc.metadata.Stream.StreamKind.DATA;
 import static io.trino.orc.metadata.Stream.StreamKind.PRESENT;
 import static io.trino.orc.stream.MissingInputStreamSource.missingStreamSource;
 import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
+import static io.trino.spi.type.UuidType.UUID;
 import static java.lang.Math.toIntExact;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
@@ -187,9 +187,7 @@ public class UuidColumnReader
     }
 
     @Override
-    public void close()
-    {
-    }
+    public void close() {}
 
     @Override
     public long getRetainedSizeInBytes()
@@ -257,7 +255,7 @@ public class UuidColumnReader
 
     private Block createAllNullsBlock()
     {
-        return RunLengthEncodedBlock.create(new Int128ArrayBlock(1, Optional.of(new boolean[] {true}), new long[2]), nextBatchSize);
+        return RunLengthEncodedBlock.create(UUID, null, nextBatchSize);
     }
 
     private void openRowGroup()

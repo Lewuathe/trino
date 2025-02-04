@@ -20,7 +20,7 @@ import com.google.common.io.Resources;
 import com.google.inject.Inject;
 import com.google.inject.name.Named;
 import io.airlift.testing.TempFile;
-import io.trino.tempto.AfterTestWithContext;
+import io.trino.tempto.AfterMethodWithContext;
 import io.trino.tempto.Requirement;
 import io.trino.tempto.RequirementsProvider;
 import io.trino.tempto.configuration.Configuration;
@@ -49,53 +49,52 @@ import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toList;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertTrue;
 
 public class TestTrinoCli
         extends TrinoCliLauncher
         implements RequirementsProvider
 {
     @Inject(optional = true)
-    @Named("databases.presto.cli_kerberos_authentication")
+    @Named("databases.trino.cli_kerberos_authentication")
     private boolean kerberosAuthentication;
 
     @Inject(optional = true)
-    @Named("databases.presto.cli_kerberos_principal")
+    @Named("databases.trino.cli_kerberos_principal")
     private String kerberosPrincipal;
 
     @Inject(optional = true)
-    @Named("databases.presto.cli_kerberos_keytab")
+    @Named("databases.trino.cli_kerberos_keytab")
     private String kerberosKeytab;
 
     @Inject(optional = true)
-    @Named("databases.presto.cli_kerberos_config_path")
+    @Named("databases.trino.cli_kerberos_config_path")
     private String kerberosConfigPath;
 
     @Inject(optional = true)
-    @Named("databases.presto.cli_kerberos_service_name")
+    @Named("databases.trino.cli_kerberos_service_name")
     private String kerberosServiceName;
 
     @Inject(optional = true)
-    @Named("databases.presto.https_keystore_path")
+    @Named("databases.trino.https_keystore_path")
     private String keystorePath;
 
     @Inject(optional = true)
-    @Named("databases.presto.https_keystore_password")
+    @Named("databases.trino.https_keystore_password")
     private String keystorePassword;
 
     @Inject(optional = true)
-    @Named("databases.presto.cli_kerberos_use_canonical_hostname")
+    @Named("databases.trino.cli_kerberos_use_canonical_hostname")
     private boolean kerberosUseCanonicalHostname;
 
     @Inject
-    @Named("databases.presto.jdbc_user")
+    @Named("databases.trino.jdbc_user")
     private String jdbcUser;
 
     public TestTrinoCli()
             throws IOException
     {}
 
-    @AfterTestWithContext
+    @AfterMethodWithContext
     @Override
     public void stopCli()
             throws InterruptedException
@@ -114,10 +113,10 @@ public class TestTrinoCli
             throws IOException
     {
         launchTrinoCli("--version");
-        assertThat(trino.readRemainingOutputLines()).containsExactly("Trino CLI " + readPrestoCliVersion());
+        assertThat(trino.readRemainingOutputLines()).containsExactly("Trino CLI " + readTrinoCliVersion());
     }
 
-    private static String readPrestoCliVersion()
+    private static String readTrinoCliVersion()
     {
         try {
             String version = Resources.toString(Resources.getResource("trino-cli-version.txt"), UTF_8).trim();
@@ -185,7 +184,7 @@ public class TestTrinoCli
             throws Exception
     {
         launchTrinoCliWithServerArgument("--execute", "");
-        assertTrue(trimLines(trino.readRemainingOutputLines()).isEmpty());
+        assertThat(trimLines(trino.readRemainingOutputLines())).isEmpty();
         trino.waitForWithTimeoutAndKill();
     }
 

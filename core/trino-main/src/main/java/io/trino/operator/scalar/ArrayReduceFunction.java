@@ -47,9 +47,8 @@ public final class ArrayReduceFunction
 
     private ArrayReduceFunction()
     {
-        super(FunctionMetadata.scalarBuilder()
+        super(FunctionMetadata.scalarBuilder("reduce")
                 .signature(Signature.builder()
-                        .name("reduce")
                         .typeVariable("T")
                         .typeVariable("S")
                         .typeVariable("R")
@@ -61,7 +60,6 @@ public final class ArrayReduceFunction
                         .build())
                 .nullable()
                 .argumentNullability(false, true, false, false)
-                .nondeterministic()
                 .description("Reduce elements of the array into a single value")
                 .build());
     }

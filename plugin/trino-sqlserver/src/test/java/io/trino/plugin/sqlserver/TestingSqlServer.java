@@ -17,7 +17,6 @@ import dev.failsafe.Failsafe;
 import dev.failsafe.RetryPolicy;
 import dev.failsafe.Timeout;
 import io.airlift.log.Logger;
-import io.trino.testing.ResourcePresence;
 import io.trino.testing.sql.SqlExecutor;
 import org.testcontainers.containers.MSSQLServerContainer;
 import org.testcontainers.containers.wait.strategy.LogMessageWaitStrategy;
@@ -64,8 +63,7 @@ public final class TestingSqlServer
             .build();
 
     private static final DockerImageName IMAGE_NAME = DockerImageName.parse("mcr.microsoft.com/mssql/server");
-    public static final String DEFAULT_VERSION = "2017-CU13";
-    public static final String LATEST_VERSION = "2019-CU13-ubuntu-20.04";
+    public static final String LATEST_VERSION = "2019-CU28-ubuntu-20.04";
 
     private final MSSQLServerContainer<?> container;
     private final String databaseName;
@@ -73,7 +71,7 @@ public final class TestingSqlServer
 
     public TestingSqlServer()
     {
-        this(DEFAULT_VERSION, DEFAULT_DATABASE_SETUP);
+        this(LATEST_VERSION, DEFAULT_DATABASE_SETUP);
     }
 
     public TestingSqlServer(String version)
@@ -83,7 +81,7 @@ public final class TestingSqlServer
 
     public TestingSqlServer(BiConsumer<SqlExecutor, String> databaseSetUp)
     {
-        this(DEFAULT_VERSION, databaseSetUp);
+        this(LATEST_VERSION, databaseSetUp);
     }
 
     public TestingSqlServer(String version, BiConsumer<SqlExecutor, String> databaseSetUp)
@@ -141,16 +139,23 @@ public final class TestingSqlServer
         // to be disabled for tests.
         container.withUrlParam("encrypt", "false");
 
-        Closeable cleanup = startOrReuse(container);
         try {
-            setUpDatabase(sqlExecutorForContainer(container), databaseName, databaseSetUp);
-        }
-        catch (Exception e) {
-            closeAllSuppress(e, cleanup);
-            throw e;
-        }
+            Closeable cleanup = startOrReuse(container);
+            try {
+                setUpDatabase(sqlExecutorForContainer(container), databaseName, databaseSetUp);
+            }
+            catch (Exception e) {
+                closeAllSuppress(e, cleanup);
+                throw e;
+            }
 
-        return new InitializedState(container, databaseName, cleanup);
+            return new InitializedState(container, databaseName, cleanup);
+        }
+        catch (Throwable e) {
+            try (container) {
+                throw e;
+            }
+        }
     }
 
     private static void setUpDatabase(SqlExecutor executor, String databaseName, BiConsumer<SqlExecutor, String> databaseSetUp)
@@ -213,12 +218,6 @@ public final class TestingSqlServer
         catch (IOException e) {
             throw new UncheckedIOException(e);
         }
-    }
-
-    @ResourcePresence
-    public boolean isRunning()
-    {
-        return container.getContainerId() != null;
     }
 
     private static class InitializedState

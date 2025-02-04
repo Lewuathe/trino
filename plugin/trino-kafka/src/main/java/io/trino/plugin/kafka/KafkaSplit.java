@@ -16,11 +16,13 @@ package io.trino.plugin.kafka;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.SizeOf;
 import io.trino.spi.HostAddress;
 import io.trino.spi.connector.ConnectorSplit;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
@@ -57,8 +59,8 @@ public class KafkaSplit
         this.topicName = requireNonNull(topicName, "topicName is null");
         this.keyDataFormat = requireNonNull(keyDataFormat, "keyDataFormat is null");
         this.messageDataFormat = requireNonNull(messageDataFormat, "messageDataFormat is null");
-        this.keyDataSchemaContents = keyDataSchemaContents;
-        this.messageDataSchemaContents = messageDataSchemaContents;
+        this.keyDataSchemaContents = requireNonNull(keyDataSchemaContents, "keyDataSchemaContents is null");
+        this.messageDataSchemaContents = requireNonNull(messageDataSchemaContents, "messageDataSchemaContents is null");
         this.partitionId = partitionId;
         this.messagesRange = requireNonNull(messagesRange, "messagesRange is null");
         this.leader = requireNonNull(leader, "leader is null");
@@ -113,21 +115,15 @@ public class KafkaSplit
     }
 
     @Override
-    public boolean isRemotelyAccessible()
-    {
-        return true;
-    }
-
-    @Override
     public List<HostAddress> getAddresses()
     {
         return ImmutableList.of(leader);
     }
 
     @Override
-    public Object getInfo()
+    public Map<String, String> getSplitInfo()
     {
-        return this;
+        return ImmutableMap.of("topicName", topicName, "partitionId", String.valueOf(partitionId), "leader", leader.toString());
     }
 
     @Override
@@ -139,7 +135,7 @@ public class KafkaSplit
                 + estimatedSizeOf(messageDataFormat)
                 + sizeOf(keyDataSchemaContents, SizeOf::estimatedSizeOf)
                 + sizeOf(messageDataSchemaContents, SizeOf::estimatedSizeOf)
-                + messagesRange.getRetainedSizeInBytes()
+                + messagesRange.retainedSizeInBytes()
                 + leader.getRetainedSizeInBytes();
     }
 

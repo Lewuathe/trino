@@ -21,13 +21,13 @@ import io.trino.spi.connector.ConnectorFactory;
 import io.trino.spi.connector.ConnectorPageSourceProvider;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.testing.TestingConnectorContext;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
-import static io.airlift.testing.Assertions.assertInstanceOf;
 import static io.trino.spi.transaction.IsolationLevel.READ_UNCOMMITTED;
 import static io.trino.testing.TestingConnectorSession.SESSION;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class TestHudiConnectorFactory
@@ -48,14 +48,16 @@ public class TestHudiConnectorFactory
 
     private static void assertCreateConnector(String metastoreUri)
     {
-        Map<String, String> config = ImmutableMap.of("hive.metastore.uri", metastoreUri);
+        Map<String, String> config = ImmutableMap.of(
+                "hive.metastore.uri", metastoreUri,
+                "bootstrap.quiet", "true");
 
         ConnectorFactory factory = new HudiConnectorFactory();
         Connector connector = factory.create("test", config, new TestingConnectorContext());
         ConnectorTransactionHandle transaction = connector.beginTransaction(READ_UNCOMMITTED, true, true);
-        assertInstanceOf(connector.getMetadata(SESSION, transaction), ClassLoaderSafeConnectorMetadata.class);
-        assertInstanceOf(connector.getSplitManager(), ClassLoaderSafeConnectorSplitManager.class);
-        assertInstanceOf(connector.getPageSourceProvider(), ConnectorPageSourceProvider.class);
+        assertThat(connector.getMetadata(SESSION, transaction)).isInstanceOf(ClassLoaderSafeConnectorMetadata.class);
+        assertThat(connector.getSplitManager()).isInstanceOf(ClassLoaderSafeConnectorSplitManager.class);
+        assertThat(connector.getPageSourceProvider()).isInstanceOf(ConnectorPageSourceProvider.class);
         connector.commit(transaction);
     }
 

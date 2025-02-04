@@ -13,7 +13,6 @@
  */
 package io.trino.server.security.oauth2;
 
-import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.configuration.Config;
@@ -23,8 +22,7 @@ import io.airlift.configuration.LegacyConfig;
 import io.airlift.configuration.validation.FileExists;
 import io.airlift.units.Duration;
 import io.airlift.units.MinDuration;
-
-import javax.validation.constraints.NotNull;
+import jakarta.validation.constraints.NotNull;
 
 import java.io.File;
 import java.util.Collections;
@@ -33,7 +31,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
-import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.server.security.oauth2.OAuth2Service.OPENID_SCOPE;
 
 public class OAuth2Config
@@ -48,6 +45,7 @@ public class OAuth2Config
     private List<String> additionalAudiences = Collections.emptyList();
     private Duration challengeTimeout = new Duration(15, TimeUnit.MINUTES);
     private Duration maxClockSkew = new Duration(1, TimeUnit.MINUTES);
+    private Optional<String> jwtType = Optional.empty();
     private Optional<String> userMappingPattern = Optional.empty();
     private Optional<File> userMappingFile = Optional.empty();
     private boolean enableRefreshTokens;
@@ -132,9 +130,9 @@ public class OAuth2Config
 
     @Config("http-server.authentication.oauth2.scopes")
     @ConfigDescription("Scopes requested by the server during OAuth2 authorization challenge")
-    public OAuth2Config setScopes(String scopes)
+    public OAuth2Config setScopes(Set<String> scopes)
     {
-        this.scopes = Splitter.on(',').trimResults().omitEmptyStrings().splitToStream(scopes).collect(toImmutableSet());
+        this.scopes = ImmutableSet.copyOf(scopes);
         return this;
     }
 
@@ -192,6 +190,19 @@ public class OAuth2Config
     public OAuth2Config setMaxClockSkew(Duration maxClockSkew)
     {
         this.maxClockSkew = maxClockSkew;
+        return this;
+    }
+
+    public Optional<String> getJwtType()
+    {
+        return jwtType;
+    }
+
+    @Config("http-server.authentication.oauth2.jwt-type")
+    @ConfigDescription("Custom JWT type for server to use")
+    public OAuth2Config setJwtType(String jwtType)
+    {
+        this.jwtType = Optional.ofNullable(jwtType);
         return this;
     }
 

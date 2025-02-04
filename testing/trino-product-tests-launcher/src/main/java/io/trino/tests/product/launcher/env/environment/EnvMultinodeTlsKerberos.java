@@ -14,19 +14,20 @@
 package io.trino.tests.product.launcher.env.environment;
 
 import com.google.common.collect.ImmutableList;
+import com.google.inject.Inject;
 import io.trino.tests.product.launcher.docker.DockerFiles;
 import io.trino.tests.product.launcher.env.Debug;
 import io.trino.tests.product.launcher.env.DockerContainer;
 import io.trino.tests.product.launcher.env.Environment;
 import io.trino.tests.product.launcher.env.EnvironmentConfig;
 import io.trino.tests.product.launcher.env.EnvironmentProvider;
+import io.trino.tests.product.launcher.env.Ipv6;
 import io.trino.tests.product.launcher.env.ServerPackage;
-import io.trino.tests.product.launcher.env.SupportedTrinoJdk;
+import io.trino.tests.product.launcher.env.Tracing;
 import io.trino.tests.product.launcher.env.common.HadoopKerberos;
 import io.trino.tests.product.launcher.env.common.Standard;
 import io.trino.tests.product.launcher.env.common.TestsEnvironment;
-
-import javax.inject.Inject;
+import io.trino.tests.product.launcher.env.jdk.JdkProvider;
 
 import java.io.File;
 import java.util.Objects;
@@ -48,9 +49,11 @@ public final class EnvMultinodeTlsKerberos
     private final DockerFiles dockerFiles;
 
     private final String trinoDockerImageName;
-    private final SupportedTrinoJdk jdkVersion;
+    private final JdkProvider jdkProvider;
     private final File serverPackage;
     private final boolean debug;
+    private final boolean tracing;
+    private final boolean ipv6;
 
     @Inject
     public EnvMultinodeTlsKerberos(
@@ -59,17 +62,21 @@ public final class EnvMultinodeTlsKerberos
             HadoopKerberos hadoopKerberos,
             EnvironmentConfig config,
             @ServerPackage File serverPackage,
-            SupportedTrinoJdk jdkVersion,
-            @Debug boolean debug)
+            JdkProvider jdkProvider,
+            @Debug boolean debug,
+            @Tracing boolean tracing,
+            @Ipv6 boolean ipv6)
     {
         super(ImmutableList.of(standard, hadoopKerberos));
         this.dockerFiles = requireNonNull(dockerFiles, "dockerFiles is null");
+        this.ipv6 = ipv6;
         String hadoopBaseImage = config.getHadoopBaseImage();
         String hadoopImagesVersion = config.getHadoopImagesVersion();
         this.trinoDockerImageName = hadoopBaseImage + "-kerberized:" + hadoopImagesVersion;
-        this.jdkVersion = requireNonNull(jdkVersion, "jdkVersion is null");
+        this.jdkProvider = requireNonNull(jdkProvider, "jdkProvider is null");
         this.serverPackage = requireNonNull(serverPackage, "serverPackage is null");
         this.debug = debug;
+        this.tracing = tracing;
     }
 
     @Override
@@ -90,7 +97,7 @@ public final class EnvMultinodeTlsKerberos
     @SuppressWarnings("resource")
     private DockerContainer createTrinoWorker(String workerName)
     {
-        return createTrinoContainer(dockerFiles, serverPackage, jdkVersion, debug, trinoDockerImageName, workerName)
+        return createTrinoContainer(dockerFiles, serverPackage, jdkProvider, debug, tracing, ipv6, trinoDockerImageName, workerName)
                 .withCreateContainerCmdModifier(createContainerCmd -> createContainerCmd.withDomainName("docker.cluster"))
                 .withCopyFileToContainer(forHostPath(dockerFiles.getDockerFilesHostPath("conf/environment/multinode-tls-kerberos/config-worker.properties")), CONTAINER_TRINO_CONFIG_PROPERTIES)
                 .withCopyFileToContainer(forHostPath(dockerFiles.getDockerFilesHostPath("conf/environment/multinode-tls-kerberos/hive.properties")), CONTAINER_TRINO_HIVE_PROPERTIES)

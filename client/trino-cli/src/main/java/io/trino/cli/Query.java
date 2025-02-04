@@ -86,9 +86,19 @@ public class Query
         return client.getSetSchema();
     }
 
-    public Optional<String> getSetPath()
+    public Optional<List<String>> getSetPath()
     {
         return client.getSetPath();
+    }
+
+    public Optional<String> getSetAuthorizationUser()
+    {
+        return client.getSetAuthorizationUser();
+    }
+
+    public boolean isResetAuthorizationUser()
+    {
+        return client.isResetAuthorizationUser();
     }
 
     public Map<String, String> getSetSessionProperties()
@@ -126,7 +136,7 @@ public class Query
         return client.isClearTransactionId();
     }
 
-    public boolean renderOutput(Terminal terminal, PrintStream out, PrintStream errorChannel, OutputFormat outputFormat, Optional<String> pager, boolean showProgress)
+    public boolean renderOutput(Terminal terminal, PrintStream out, PrintStream errorChannel, OutputFormat outputFormat, Optional<String> pager, boolean showProgress, boolean decimalDataSize)
     {
         Thread clientThread = Thread.currentThread();
         SignalHandler oldHandler = terminal.handle(Signal.INT, signal -> {
@@ -137,7 +147,7 @@ public class Query
             clientThread.interrupt();
         });
         try {
-            return renderQueryOutput(terminal, out, errorChannel, outputFormat, pager, showProgress);
+            return renderQueryOutput(terminal, out, errorChannel, outputFormat, pager, showProgress, decimalDataSize);
         }
         finally {
             terminal.handle(Signal.INT, oldHandler);
@@ -145,13 +155,13 @@ public class Query
         }
     }
 
-    private boolean renderQueryOutput(Terminal terminal, PrintStream out, PrintStream errorChannel, OutputFormat outputFormat, Optional<String> pager, boolean showProgress)
+    private boolean renderQueryOutput(Terminal terminal, PrintStream out, PrintStream errorChannel, OutputFormat outputFormat, Optional<String> pager, boolean showProgress, boolean decimalDataSize)
     {
         StatusPrinter statusPrinter = null;
         WarningsPrinter warningsPrinter = new PrintStreamWarningsPrinter(errorChannel);
 
         if (showProgress) {
-            statusPrinter = new StatusPrinter(client, errorChannel, debug, isInteractive(pager));
+            statusPrinter = new StatusPrinter(client, errorChannel, debug, isInteractive(pager), decimalDataSize);
             statusPrinter.printInitialStatusUpdates(terminal);
         }
         else {
@@ -205,12 +215,12 @@ public class Query
 
     private boolean isInteractive(Optional<String> pager)
     {
-        return pager.map(name -> name.trim().length() != 0).orElse(true);
+        return pager.map(name -> !name.trim().isEmpty()).orElse(true);
     }
 
     private void processInitialStatusUpdates(WarningsPrinter warningsPrinter)
     {
-        while (client.isRunning() && (client.currentData().getData() == null)) {
+        while (client.isRunning() && client.currentRows().isNull()) {
             warningsPrinter.print(client.currentStatusInfo().getWarnings(), true, false);
             try {
                 client.advance();
@@ -347,6 +357,8 @@ public class Query
                 return new TsvPrinter(fieldNames, writer, true);
             case JSON:
                 return new JsonPrinter(fieldNames, writer);
+            case MARKDOWN:
+                return new MarkdownTablePrinter(columns, writer);
             case NULL:
                 return new NullPrinter();
         }

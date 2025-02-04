@@ -15,6 +15,7 @@ package io.trino.server;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.hash.Hashing;
+import com.google.inject.Inject;
 import io.airlift.http.client.HttpRequestFilter;
 import io.airlift.http.client.Request;
 import io.airlift.log.Logger;
@@ -24,12 +25,11 @@ import io.jsonwebtoken.JwtParser;
 import io.trino.server.security.InternalPrincipal;
 import io.trino.server.security.SecurityConfig;
 import io.trino.spi.security.Identity;
+import jakarta.ws.rs.container.ContainerRequestContext;
+import jakarta.ws.rs.core.Response;
 
-import javax.inject.Inject;
-import javax.ws.rs.container.ContainerRequestContext;
-import javax.ws.rs.core.Response;
+import javax.crypto.SecretKey;
 
-import java.security.Key;
 import java.time.ZonedDateTime;
 import java.util.Date;
 
@@ -38,10 +38,10 @@ import static io.jsonwebtoken.security.Keys.hmacShaKeyFor;
 import static io.trino.server.ServletSecurityUtils.setAuthenticatedIdentity;
 import static io.trino.server.security.jwt.JwtUtil.newJwtBuilder;
 import static io.trino.server.security.jwt.JwtUtil.newJwtParserBuilder;
+import static jakarta.ws.rs.core.MediaType.TEXT_PLAIN_TYPE;
+import static jakarta.ws.rs.core.Response.Status.UNAUTHORIZED;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
-import static javax.ws.rs.core.MediaType.TEXT_PLAIN_TYPE;
-import static javax.ws.rs.core.Response.Status.UNAUTHORIZED;
 
 public class InternalAuthenticationManager
         implements HttpRequestFilter
@@ -50,7 +50,7 @@ public class InternalAuthenticationManager
 
     private static final String TRINO_INTERNAL_BEARER = "X-Trino-Internal-Bearer";
 
-    private final Key hmac;
+    private final SecretKey hmac;
     private final String nodeId;
     private final JwtParser jwtParser;
 
@@ -83,7 +83,7 @@ public class InternalAuthenticationManager
         requireNonNull(nodeId, "nodeId is null");
         this.hmac = hmacShaKeyFor(Hashing.sha256().hashString(sharedSecret, UTF_8).asBytes());
         this.nodeId = nodeId;
-        this.jwtParser = newJwtParserBuilder().setSigningKey(hmac).build();
+        this.jwtParser = newJwtParserBuilder().verifyWith(hmac).build();
     }
 
     public static boolean isInternalRequest(ContainerRequestContext request)
@@ -126,16 +126,16 @@ public class InternalAuthenticationManager
     {
         return newJwtBuilder()
                 .signWith(hmac)
-                .setSubject(nodeId)
-                .setExpiration(Date.from(ZonedDateTime.now().plusMinutes(5).toInstant()))
+                .subject(nodeId)
+                .expiration(Date.from(ZonedDateTime.now().plusMinutes(5).toInstant()))
                 .compact();
     }
 
     private String parseJwt(String jwt)
     {
         return jwtParser
-                .parseClaimsJws(jwt)
-                .getBody()
+                .parseSignedClaims(jwt)
+                .getPayload()
                 .getSubject();
     }
 }

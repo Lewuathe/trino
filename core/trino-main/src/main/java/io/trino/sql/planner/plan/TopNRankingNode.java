@@ -17,10 +17,9 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
+import com.google.errorprone.annotations.Immutable;
 import io.trino.sql.planner.OrderingScheme;
 import io.trino.sql.planner.Symbol;
-
-import javax.annotation.concurrent.Immutable;
 
 import java.util.List;
 import java.util.Optional;
@@ -63,7 +62,7 @@ public final class TopNRankingNode
 
         requireNonNull(source, "source is null");
         requireNonNull(specification, "specification is null");
-        checkArgument(specification.getOrderingScheme().isPresent(), "specification orderingScheme is absent");
+        checkArgument(specification.orderingScheme().isPresent(), "specification orderingScheme is absent");
         requireNonNull(rankingType, "rankingType is null");
         requireNonNull(rankingSymbol, "rankingSymbol is null");
         checkArgument(maxRankingPerPartition > 0, "maxRankingPerPartition must be > 0");
@@ -107,12 +106,12 @@ public final class TopNRankingNode
 
     public List<Symbol> getPartitionBy()
     {
-        return specification.getPartitionBy();
+        return specification.partitionBy();
     }
 
     public OrderingScheme getOrderingScheme()
     {
-        return specification.getOrderingScheme().get();
+        return specification.orderingScheme().get();
     }
 
     @JsonProperty

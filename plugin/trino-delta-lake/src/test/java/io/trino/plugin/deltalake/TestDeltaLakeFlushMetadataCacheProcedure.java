@@ -13,51 +13,48 @@
  */
 package io.trino.plugin.deltalake;
 
-import com.google.common.collect.ImmutableMap;
-import io.trino.plugin.hive.containers.HiveMinioDataLake;
-import io.trino.plugin.hive.metastore.HiveMetastore;
+import io.trino.metastore.HiveMetastore;
+import io.trino.plugin.hive.containers.Hive3MinioDataLake;
 import io.trino.plugin.hive.metastore.thrift.BridgingHiveMetastore;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
-import java.io.IOException;
-
-import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
-import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.createS3DeltaLakeQueryRunner;
 import static io.trino.plugin.hive.TestingThriftHiveMetastoreBuilder.testingThriftHiveMetastoreBuilder;
 import static io.trino.plugin.hive.containers.HiveHadoop.HIVE3_IMAGE;
+import static io.trino.testing.TestingNames.randomNameSuffix;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public class TestDeltaLakeFlushMetadataCacheProcedure
         extends AbstractTestQueryFramework
 {
-    private static final String BUCKET_NAME = "delta-lake-test-flush-metadata-cache";
-
+    private final String bucketName = "delta-lake-test-flush-metadata-cache-" + randomNameSuffix();
     private HiveMetastore metastore;
 
     @Override
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        HiveMinioDataLake hiveMinioDataLake = new HiveMinioDataLake(BUCKET_NAME, HIVE3_IMAGE);
+        Hive3MinioDataLake hiveMinioDataLake = closeAfterClass(new Hive3MinioDataLake(bucketName, HIVE3_IMAGE));
         hiveMinioDataLake.start();
         metastore = new BridgingHiveMetastore(
                 testingThriftHiveMetastoreBuilder()
-                        .metastoreClient(hiveMinioDataLake.getHiveHadoop().getHiveMetastoreEndpoint())
-                        .build());
+                        .metastoreClient(hiveMinioDataLake.getHiveMetastoreEndpoint())
+                        .build(this::closeAfterClass));
 
-        return createS3DeltaLakeQueryRunner(
-                DELTA_CATALOG,
-                "default",
-                ImmutableMap.of("hive.metastore-cache-ttl", "10m"),
-                hiveMinioDataLake.getMinio().getMinioAddress(),
-                hiveMinioDataLake.getHiveHadoop());
+        return DeltaLakeQueryRunner.builder("default")
+                .addMetastoreProperties(hiveMinioDataLake.getHiveHadoop())
+                .addS3Properties(hiveMinioDataLake.getMinio(), bucketName)
+                .addDeltaProperty("hive.metastore-cache-ttl", "10m")
+                .build();
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void tearDown()
-            throws IOException
     {
         metastore = null;
     }
@@ -65,7 +62,7 @@ public class TestDeltaLakeFlushMetadataCacheProcedure
     @Test
     public void testFlushMetadataCache()
     {
-        assertUpdate("CREATE SCHEMA cached WITH (location = 's3://" + BUCKET_NAME + "/cached')");
+        assertUpdate("CREATE SCHEMA cached WITH (location = 's3://" + bucketName + "/cached')");
         assertUpdate("CREATE TABLE cached.cached AS SELECT * FROM tpch.tiny.nation", 25);
 
         // Verify that column cache is flushed
@@ -88,7 +85,7 @@ public class TestDeltaLakeFlushMetadataCacheProcedure
         assertQuery(showTablesSql, "VALUES 'renamed'");
 
         // Verify that schema cache is flushed
-        String showSchemasSql = "SHOW SCHEMAS FROM delta_lake";
+        String showSchemasSql = "SHOW SCHEMAS FROM delta";
         // Fill caches
         assertQuery(showSchemasSql, "VALUES ('cached'), ('information_schema'), ('default')");
 
@@ -105,10 +102,32 @@ public class TestDeltaLakeFlushMetadataCacheProcedure
     }
 
     @Test
-    public void testFlushMetadataCacheTableNotFound()
+    public void testFlushMetadataCacheAfterTableCreated()
     {
-        assertQueryFails(
-                "CALL system.flush_metadata_cache(schema_name => 'test_not_existing_schema', table_name => 'test_not_existing_table')",
-                "Table 'test_not_existing_schema.test_not_existing_table' not found");
+        String schema = getSession().getSchema().orElseThrow();
+
+        String location = "s3://%s/test_flush_intermediate_tmp_table".formatted(bucketName);
+        assertUpdate("CREATE TABLE test_flush_intermediate_tmp_table WITH (location = '" + location + "') AS TABLE tpch.tiny.region", 5);
+
+        // This may cause the connector to cache the fact that the table does not exist
+        assertQueryFails("TABLE flush_metadata_after_table_created", "\\Qline 1:1: Table 'delta.default.flush_metadata_after_table_created' does not exist");
+
+        metastore.renameTable(schema, "test_flush_intermediate_tmp_table", schema, "flush_metadata_after_table_created");
+
+        // Verify cached state (we currently cache missing objects in CachingMetastore)
+        assertQueryFails("TABLE flush_metadata_after_table_created", "\\Qline 1:1: Table 'delta.default.flush_metadata_after_table_created' does not exist");
+
+        assertUpdate("CALL system.flush_metadata_cache(schema_name => CURRENT_SCHEMA, table_name => 'flush_metadata_after_table_created')");
+        assertThat(query("TABLE flush_metadata_after_table_created"))
+                .skippingTypesCheck() // Delta has no parametric varchar
+                .matches("TABLE tpch.tiny.region");
+
+        assertUpdate("DROP TABLE flush_metadata_after_table_created");
+    }
+
+    @Test
+    public void testFlushMetadataCacheNonExistentTable()
+    {
+        assertUpdate("CALL system.flush_metadata_cache(schema_name => 'test_not_existing_schema', table_name => 'test_not_existing_table')");
     }
 }

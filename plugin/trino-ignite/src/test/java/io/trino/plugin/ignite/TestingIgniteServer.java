@@ -13,10 +13,7 @@
  */
 package io.trino.plugin.ignite;
 
-import io.trino.testing.ResourcePresence;
 import io.trino.testing.SharedResource;
-
-import javax.annotation.concurrent.GuardedBy;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -28,7 +25,6 @@ public class TestingIgniteServer
     // When doing the test, we may get multiple clusters on the same machine, they might (due to the overlap in some ports)
     // be considered as one cluster, "Data Rebalancing" between Ignite instances would happen immediately, the use of shared resources
     // here is to prevent "Data Rebalancing" in Ignite from causing test errors.
-    @GuardedBy("this")
     private static final SharedResource<TestingIgniteServer> sharedResource = new SharedResource<>(TestingIgniteServer::new);
 
     private final TestingIgniteContainer dockerContainer;
@@ -66,11 +62,5 @@ public class TestingIgniteServer
     public void close()
     {
         dockerContainer.stop();
-    }
-
-    @ResourcePresence
-    public boolean isRunning()
-    {
-        return dockerContainer.getContainerId() != null;
     }
 }

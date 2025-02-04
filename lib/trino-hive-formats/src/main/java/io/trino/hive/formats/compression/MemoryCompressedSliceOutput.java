@@ -13,8 +13,9 @@
  */
 package io.trino.hive.formats.compression;
 
-import io.airlift.compress.hadoop.HadoopStreams;
+import io.airlift.compress.v3.hadoop.HadoopStreams;
 import io.airlift.slice.Slice;
+import io.trino.plugin.base.io.ChunkedSliceOutput;
 
 import java.io.IOException;
 import java.util.List;

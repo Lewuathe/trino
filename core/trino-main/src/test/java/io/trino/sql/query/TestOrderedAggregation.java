@@ -14,30 +14,24 @@
 package io.trino.sql.query;
 
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestOrderedAggregation
 {
-    private QueryAssertions assertions;
-
-    @BeforeAll
-    public void init()
-    {
-        assertions = new QueryAssertions();
-    }
+    private final QueryAssertions assertions = new QueryAssertions();
 
     @AfterAll
     public void teardown()
     {
         assertions.close();
-        assertions = null;
     }
 
     @Test
@@ -109,25 +103,33 @@ public class TestOrderedAggregation
                 "SELECT x, y, array_agg(z ORDER BY z) FROM (VALUES (1, 2, 3), (1, 2, 1), (2, 1, 3), (2, 1, 4)) t(x, y, z) GROUP BY GROUPING SETS ((x), (x, y))"))
                 .matches("VALUES (1, NULL, ARRAY[1, 3]), (2, NULL, ARRAY[3, 4]), (1, 2, ARRAY[1, 3]), (2, 1, ARRAY[3, 4])");
 
-        assertThatThrownBy(() -> assertions.query(
+        assertThat(assertions.query(
+                "SELECT abs(z ORDER BY z) OVER (PARTITION BY x) FROM (VALUES (1, 2, 3), (1, 2, 1), (2, 1, 3), (2, 1, 4)) t(x, y, z) GROUP BY x, z"))
+                .failure().hasMessageMatching(".* ORDER BY is only valid for aggregation functions");
+
+        assertThat(assertions.query(
                 "SELECT array_agg(z ORDER BY z) OVER (PARTITION BY x) FROM (VALUES (1, 2, 3), (1, 2, 1), (2, 1, 3), (2, 1, 4)) t(x, y, z) GROUP BY x, z"))
-                .hasMessageMatching(".* Window function with ORDER BY is not supported");
+                .matches("VALUES ARRAY[1, 3], ARRAY[1, 3], ARRAY[3, 4], ARRAY[3, 4]");
 
-        assertThatThrownBy(() -> assertions.query(
+        assertThat(assertions.query(
                 "SELECT array_agg(DISTINCT x ORDER BY y) FROM (VALUES (1, 2), (3, 5), (4, 1)) t(x, y)"))
-                .hasMessageMatching(".* For aggregate function with DISTINCT, ORDER BY expressions must appear in arguments");
+                .failure().hasMessageMatching(".* For aggregate function with DISTINCT, ORDER BY expressions must appear in arguments");
 
-        assertThatThrownBy(() -> assertions.query(
+        assertThat(assertions.query(
                 "SELECT array_agg(DISTINCT x+y ORDER BY y) FROM (VALUES (1, 2), (3, 5), (4, 1)) t(x, y)"))
-                .hasMessageMatching(".* For aggregate function with DISTINCT, ORDER BY expressions must appear in arguments");
+                .failure().hasMessageMatching(".* For aggregate function with DISTINCT, ORDER BY expressions must appear in arguments");
 
-        assertThatThrownBy(() -> assertions.query(
+        assertThat(assertions.query(
                 "SELECT x, array_agg(DISTINCT y ORDER BY z + y DESC) FROM (VALUES (1, 2, 2), (2, 2, 3), (2, 4, 5), (3, 4, 4), (3, 2, 1), (1, 1, 1)) t(x, y, z) GROUP BY x"))
-                .hasMessageMatching(".* For aggregate function with DISTINCT, ORDER BY expressions must appear in arguments");
+                .failure().hasMessageMatching(".* For aggregate function with DISTINCT, ORDER BY expressions must appear in arguments");
 
         assertThat(assertions.query(
                 "SELECT multimap_agg(x, y ORDER BY z) FROM (VALUES (1, 2, 2), (1, 5, 5), (2, 1, 5), (3, 4, 4), (2, 5, 1), (1, 1, 1)) t(x, y, z)"))
                 .matches("VALUES map_from_entries(ARRAY[row(1, ARRAY[1, 2, 5]), row(2, ARRAY[5, 1]), row(3, ARRAY[4])])");
+
+        assertThat(assertions.query(
+                "select array_agg(a ORDER BY last_value(b) OVER()) OVER (partition by c) FROM (VALUES (1, 2, 3)) t(a, b, c)"))
+                .failure().hasMessageMatching(".* Cannot nest window functions or row pattern measures inside window function arguments");
     }
 
     @Test

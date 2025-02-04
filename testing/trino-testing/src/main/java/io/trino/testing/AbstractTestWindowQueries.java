@@ -15,7 +15,10 @@ package io.trino.testing;
 
 import com.google.common.collect.ImmutableMap;
 import io.trino.spi.type.VarcharType;
-import org.testng.annotations.Test;
+import io.trino.tpch.TpchTable;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DoubleType.DOUBLE;
@@ -24,12 +27,16 @@ import static io.trino.spi.type.VarcharType.createVarcharType;
 import static io.trino.testing.MaterializedResult.resultBuilder;
 import static io.trino.testing.QueryAssertions.assertEqualsIgnoreOrder;
 import static io.trino.testing.StructuralTestUtil.mapType;
+import static io.trino.tpch.TpchTable.LINE_ITEM;
+import static io.trino.tpch.TpchTable.ORDERS;
+import static io.trino.tpch.TpchTable.PART;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.testng.Assert.assertEquals;
 
 public abstract class AbstractTestWindowQueries
         extends AbstractTestQueryFramework
 {
+    protected static final List<TpchTable<?>> REQUIRED_TPCH_TABLES = List.of(LINE_ITEM, ORDERS, PART);
+
     @Test
     public void testDistinctWindowPartitionAndPeerGroups()
     {
@@ -91,7 +98,7 @@ public abstract class AbstractTestWindowQueries
                 .row(null, null, "b", 5L)
                 .build();
 
-        assertEquals(actual.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(actual.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -166,14 +173,16 @@ public abstract class AbstractTestWindowQueries
     @Test
     public void testWindowsSameOrdering()
     {
-        assertThat(query("""
+        assertThat(query(
+                """
                 SELECT
                 sum(quantity) OVER(PARTITION BY suppkey ORDER BY orderkey),
                 min(tax) OVER(PARTITION BY suppkey ORDER BY shipdate)
                 FROM lineitem
                 ORDER BY 1
-                LIMIT 10"""))
-                .matches(resultBuilder(getSession(), DOUBLE, DOUBLE)
+                LIMIT 10
+                """))
+                .result().matches(resultBuilder(getSession(), DOUBLE, DOUBLE)
                         .row(1.0, 0.0)
                         .row(2.0, 0.0)
                         .row(2.0, 0.0)
@@ -190,14 +199,16 @@ public abstract class AbstractTestWindowQueries
     @Test
     public void testWindowsPrefixPartitioning()
     {
-        assertThat(query("""
+        assertThat(query(
+                """
                 SELECT
                 max(tax) OVER (PARTITION BY suppkey, tax ORDER BY receiptdate),
                 sum(quantity) OVER(PARTITION BY suppkey ORDER BY orderkey)
                 FROM lineitem
                 ORDER BY 2, 1
-                LIMIT 10"""))
-                .matches(resultBuilder(getSession(), DOUBLE, DOUBLE)
+                LIMIT 10
+                """))
+                .result().matches(resultBuilder(getSession(), DOUBLE, DOUBLE)
                         .row(0.06, 1.0)
                         .row(0.02, 2.0)
                         .row(0.06, 2.0)
@@ -214,7 +225,8 @@ public abstract class AbstractTestWindowQueries
     @Test
     public void testWindowsDifferentPartitions()
     {
-        assertThat(query("""
+        assertThat(query(
+                """
                 SELECT
                 sum(quantity) OVER (PARTITION BY suppkey ORDER BY orderkey),
                 count(discount) OVER (PARTITION BY partkey ORDER BY receiptdate),
@@ -223,7 +235,7 @@ public abstract class AbstractTestWindowQueries
                 ORDER BY 1, 2
                 LIMIT 10
                 """))
-                .matches(resultBuilder(getSession(), DOUBLE, BIGINT, DOUBLE)
+                .result().matches(resultBuilder(getSession(), DOUBLE, BIGINT, DOUBLE)
                         .row(1.0, 10L, 0.06)
                         .row(2.0, 4L, 0.06)
                         .row(2.0, 16L, 0.02)
@@ -290,7 +302,6 @@ public abstract class AbstractTestWindowQueries
         assertQuery("SELECT *, 1.0 * sum(x) OVER () FROM (VALUES 1) t(x)", "SELECT 1, 1.0");
     }
 
-    @SuppressWarnings("PointlessArithmeticExpression")
     @Test
     public void testWindowFunctionsExpressions()
     {
@@ -311,7 +322,8 @@ public abstract class AbstractTestWindowQueries
     @Test
     public void testWindowFunctionsFromAggregate()
     {
-        assertThat(query("""
+        assertThat(query(
+                """
                 SELECT * FROM (
                   SELECT orderstatus, clerk, sales
                   , rank() OVER (PARTITION BY x.orderstatus ORDER BY sales DESC) rnk
@@ -324,7 +336,7 @@ public abstract class AbstractTestWindowQueries
                 WHERE rnk <= 2
                 ORDER BY orderstatus, rnk
                 """))
-                .matches(resultBuilder(getSession(), createVarcharType(1), createVarcharType(15), DOUBLE, BIGINT)
+                .result().matches(resultBuilder(getSession(), createVarcharType(1), createVarcharType(15), DOUBLE, BIGINT)
                         .row("F", "Clerk#000000090", 2784836.61, 1L)
                         .row("F", "Clerk#000000084", 2674447.15, 2L)
                         .row("O", "Clerk#000000500", 2569878.29, 1L)
@@ -352,7 +364,8 @@ public abstract class AbstractTestWindowQueries
     @Test
     public void testSameWindowFunctionsTwoCoerces()
     {
-        assertThat(query("""
+        assertThat(query(
+                """
                 SELECT
                   12.0E0 * row_number() OVER ()/row_number() OVER(),
                   row_number() OVER()
@@ -360,7 +373,7 @@ public abstract class AbstractTestWindowQueries
                 ORDER BY 2 DESC
                 LIMIT 5
                 """))
-                .matches(resultBuilder(getSession(), DOUBLE, BIGINT)
+                .result().matches(resultBuilder(getSession(), DOUBLE, BIGINT)
                         .row(12.0, 10L)
                         .row(12.0, 9L)
                         .row(12.0, 8L)
@@ -368,7 +381,8 @@ public abstract class AbstractTestWindowQueries
                         .row(12.0, 6L)
                         .build());
 
-        assertThat(query("""
+        assertThat(query(
+                """
                 SELECT (MAX(x.a) OVER () - x.a) * 100.0E0 / MAX(x.a) OVER ()
                 FROM (VALUES 1, 2, 3, 4) x(a)
                 """))
@@ -422,7 +436,8 @@ public abstract class AbstractTestWindowQueries
     @Test
     public void testWindowFunctionWithGroupBy()
     {
-        assertThat(query("""
+        assertThat(query(
+                """
                 SELECT *, rank() OVER (PARTITION BY x)
                 FROM (SELECT 'foo' x)
                 GROUP BY 1
@@ -566,7 +581,8 @@ public abstract class AbstractTestWindowQueries
     @Test
     public void testWindowFrames()
     {
-        assertThat(query("""
+        assertThat(query(
+                """
                 SELECT * FROM (
                   SELECT orderkey, orderstatus
                     , sum(orderkey + 1000) OVER (PARTITION BY orderstatus ORDER BY orderkey
@@ -576,7 +592,7 @@ public abstract class AbstractTestWindowQueries
                 ORDER BY orderkey
                 LIMIT 5
                 """))
-                .matches(resultBuilder(getSession(), BIGINT, createVarcharType(1), BIGINT)
+                .result().matches(resultBuilder(getSession(), BIGINT, createVarcharType(1), BIGINT)
                         .row(1L, "O", 1001L)
                         .row(2L, "O", 3007L)
                         .row(3L, "F", 3014L)
@@ -588,7 +604,8 @@ public abstract class AbstractTestWindowQueries
     @Test
     public void testWindowNoChannels()
     {
-        assertThat(query("""
+        assertThat(query(
+                """
                 SELECT rank() OVER ()
                 FROM (SELECT * FROM orders LIMIT 10)
                 LIMIT 3

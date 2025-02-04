@@ -14,14 +14,14 @@
 package io.trino.execution.buffer;
 
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.errorprone.annotations.ThreadSafe;
 import io.airlift.log.Logger;
 import io.airlift.slice.Slice;
 import io.airlift.units.DataSize;
 import io.trino.execution.StateMachine;
 import io.trino.memory.context.LocalMemoryContext;
 import io.trino.spi.exchange.ExchangeSink;
-
-import javax.annotation.concurrent.ThreadSafe;
+import io.trino.spi.metrics.Metrics;
 
 import java.util.List;
 import java.util.Optional;
@@ -32,6 +32,7 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.util.concurrent.Futures.immediateVoidFuture;
 import static io.airlift.concurrent.MoreFutures.toListenableFuture;
 import static io.trino.execution.buffer.PagesSerdeUtil.getSerializedPagePositionCount;
+import static io.trino.execution.buffer.PagesSerdeUtil.getSerializedPageUncompressedSizeInBytes;
 import static java.util.Objects.requireNonNull;
 
 @ThreadSafe
@@ -44,9 +45,8 @@ public class SpoolingExchangeOutputBuffer
     private volatile SpoolingOutputBuffers outputBuffers;
     // This field is not final to allow releasing the memory retained by the ExchangeSink instance.
     // It is modified (assigned to null) when the OutputBuffer is destroyed (either finished or aborted).
-    // It doesn't have to be declared as volatile as the nullification of this variable doesn't have to be immediately visible to other threads.
-    // However since the abort can be triggered at any moment of time this variable has to be accessed in a safe way (avoiding "check-then-use").
-    private ExchangeSink exchangeSink;
+    private volatile ExchangeSink exchangeSink;
+    private Optional<Metrics> finalSinkMetrics;
     private final Supplier<LocalMemoryContext> memoryContextSupplier;
 
     private final AtomicLong peakMemoryUsage = new AtomicLong();
@@ -88,7 +88,8 @@ public class SpoolingExchangeOutputBuffer
                 totalPagesAdded.get(),
                 Optional.empty(),
                 Optional.empty(),
-                outputStats.getFinalSnapshot());
+                outputStats.getFinalSnapshot(),
+                getMetrics());
     }
 
     @Override
@@ -192,14 +193,17 @@ public class SpoolingExchangeOutputBuffer
         ExchangeSink sink = exchangeSink;
         checkState(sink != null, "exchangeSink is null");
         long dataSizeInBytes = 0;
+        long addedPositions = 0;
         for (Slice page : pages) {
-            dataSizeInBytes += page.length();
+            dataSizeInBytes += getSerializedPageUncompressedSizeInBytes(page);
+            addedPositions += getSerializedPagePositionCount(page);
             sink.add(partition, page);
-            totalRowsAdded.addAndGet(getSerializedPagePositionCount(page));
         }
-        updateMemoryUsage(sink.getMemoryUsage());
         totalPagesAdded.addAndGet(pages.size());
-        outputStats.update(partition, dataSizeInBytes);
+        totalRowsAdded.addAndGet(addedPositions);
+        outputStats.updateRowCount(addedPositions);
+        outputStats.updatePartitionDataSize(partition, dataSizeInBytes);
+        updateMemoryUsage(sink.getMemoryUsage());
     }
 
     @Override
@@ -223,7 +227,9 @@ public class SpoolingExchangeOutputBuffer
             else {
                 stateMachine.finish();
             }
+            finalSinkMetrics = sink.getMetrics();
             exchangeSink = null;
+
             forceFreeMemory();
         });
     }
@@ -254,6 +260,7 @@ public class SpoolingExchangeOutputBuffer
             if (failure != null) {
                 log.warn(failure, "Error aborting exchange sink");
             }
+            finalSinkMetrics = sink.getMetrics();
             exchangeSink = null;
             forceFreeMemory();
         });
@@ -306,10 +313,19 @@ public class SpoolingExchangeOutputBuffer
         try {
             return memoryContextSupplier.get();
         }
-        catch (RuntimeException ignored) {
+        catch (RuntimeException _) {
             // This is possible with races, e.g., a task is created and then immediately aborted,
             // so that the task context hasn't been created yet (as a result there's no memory context available).
             return null;
         }
+    }
+
+    private Optional<Metrics> getMetrics()
+    {
+        ExchangeSink sink = exchangeSink;
+        if (sink == null) {
+            return finalSinkMetrics;
+        }
+        return sink.getMetrics();
     }
 }

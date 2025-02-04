@@ -18,6 +18,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import static io.trino.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static io.trino.spi.function.OperatorType.ADD;
@@ -33,9 +34,10 @@ import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExceptionThrownBy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
-import static org.testng.Assert.assertEquals;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestIntervalYearMonth
 {
     private static final int MAX_SHORT = Short.MAX_VALUE;
@@ -58,14 +60,14 @@ public class TestIntervalYearMonth
     @Test
     public void testObject()
     {
-        assertEquals(new SqlIntervalYearMonth(3, 11), new SqlIntervalYearMonth(47));
-        assertEquals(new SqlIntervalYearMonth(-3, -11), new SqlIntervalYearMonth(-47));
+        assertThat(new SqlIntervalYearMonth(3, 11)).isEqualTo(new SqlIntervalYearMonth(47));
+        assertThat(new SqlIntervalYearMonth(-3, -11)).isEqualTo(new SqlIntervalYearMonth(-47));
 
-        assertEquals(new SqlIntervalYearMonth(MAX_SHORT, 0), new SqlIntervalYearMonth(393_204));
-        assertEquals(new SqlIntervalYearMonth(MAX_SHORT, MAX_SHORT), new SqlIntervalYearMonth(425_971));
+        assertThat(new SqlIntervalYearMonth(MAX_SHORT, 0)).isEqualTo(new SqlIntervalYearMonth(393_204));
+        assertThat(new SqlIntervalYearMonth(MAX_SHORT, MAX_SHORT)).isEqualTo(new SqlIntervalYearMonth(425_971));
 
-        assertEquals(new SqlIntervalYearMonth(-MAX_SHORT, 0), new SqlIntervalYearMonth(-393_204));
-        assertEquals(new SqlIntervalYearMonth(-MAX_SHORT, -MAX_SHORT), new SqlIntervalYearMonth(-425_971));
+        assertThat(new SqlIntervalYearMonth(-MAX_SHORT, 0)).isEqualTo(new SqlIntervalYearMonth(-393_204));
+        assertThat(new SqlIntervalYearMonth(-MAX_SHORT, -MAX_SHORT)).isEqualTo(new SqlIntervalYearMonth(-425_971));
     }
 
     @Test
@@ -121,10 +123,10 @@ public class TestIntervalYearMonth
         assertThat(assertions.operator(MULTIPLY, "2.5", "INTERVAL '1' YEAR"))
                 .matches("INTERVAL '2-6' YEAR TO MONTH");
 
-        assertTrinoExceptionThrownBy(() -> assertions.operator(MULTIPLY, "INTERVAL '6' MONTH", "nan()").evaluate())
+        assertTrinoExceptionThrownBy(assertions.operator(MULTIPLY, "INTERVAL '6' MONTH", "nan()")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
-        assertTrinoExceptionThrownBy(() -> assertions.operator(MULTIPLY, "nan()", "INTERVAL '6' YEAR").evaluate())
+        assertTrinoExceptionThrownBy(assertions.operator(MULTIPLY, "nan()", "INTERVAL '6' YEAR")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
     }
 
@@ -143,16 +145,16 @@ public class TestIntervalYearMonth
         assertThat(assertions.operator(DIVIDE, "INTERVAL '4' YEAR", "4.8"))
                 .matches("INTERVAL '10' MONTH");
 
-        assertTrinoExceptionThrownBy(() -> assertions.operator(DIVIDE, "INTERVAL '6' MONTH", "nan()").evaluate())
+        assertTrinoExceptionThrownBy(assertions.operator(DIVIDE, "INTERVAL '6' MONTH", "nan()")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
-        assertTrinoExceptionThrownBy(() -> assertions.operator(DIVIDE, "INTERVAL '6' YEAR", "nan()").evaluate())
+        assertTrinoExceptionThrownBy(assertions.operator(DIVIDE, "INTERVAL '6' YEAR", "nan()")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
-        assertTrinoExceptionThrownBy(() -> assertions.operator(DIVIDE, "INTERVAL '6' MONTH", "0E0").evaluate())
+        assertTrinoExceptionThrownBy(assertions.operator(DIVIDE, "INTERVAL '6' MONTH", "0E0")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
-        assertTrinoExceptionThrownBy(() -> assertions.operator(DIVIDE, "INTERVAL '6' YEAR", "0").evaluate())
+        assertTrinoExceptionThrownBy(assertions.operator(DIVIDE, "INTERVAL '6' YEAR", "0")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
     }
 

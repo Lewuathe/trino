@@ -13,6 +13,7 @@
  */
 package io.trino.hive.formats.line.text;
 
+import com.google.common.collect.ImmutableSet;
 import io.trino.filesystem.TrinoInputFile;
 import io.trino.hive.formats.compression.Codec;
 import io.trino.hive.formats.compression.CompressionKind;
@@ -25,8 +26,11 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Optional;
+import java.util.Set;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static io.trino.hive.formats.HiveClassNames.SYMLINK_TEXT_INPUT_FORMAT_CLASS;
+import static io.trino.hive.formats.HiveClassNames.TEXT_INPUT_FORMAT_CLASS;
 
 public class TextLineReaderFactory
         implements LineReaderFactory
@@ -43,9 +47,9 @@ public class TextLineReaderFactory
     }
 
     @Override
-    public String getHiveOutputFormatClassName()
+    public Set<String> getHiveInputFormatClassNames()
     {
-        return "org.apache.hadoop.mapred.TextInputFormat";
+        return ImmutableSet.of(TEXT_INPUT_FORMAT_CLASS, SYMLINK_TEXT_INPUT_FORMAT_CLASS);
     }
 
     @Override
@@ -65,23 +69,27 @@ public class TextLineReaderFactory
     {
         InputStream inputStream = inputFile.newStream();
         try {
-            Optional<Codec> codec = CompressionKind.forFile(inputFile.location())
+            Optional<Codec> codec = CompressionKind.forFile(inputFile.location().fileName())
                     .map(CompressionKind::createCodec);
+            LineReader lineReader;
             if (codec.isPresent()) {
                 checkArgument(start == 0, "Compressed files are not splittable");
-                // for compressed input, we do not know the length of the uncompressed text
-                length = Long.MAX_VALUE;
-                inputStream = codec.get().createStreamDecompressor(inputStream);
+                lineReader = TextLineReader.createCompressedReader(inputStream, fileBufferSize, codec.get());
+            }
+            else {
+                lineReader = TextLineReader.createUncompressedReader(inputStream, fileBufferSize, start, length);
             }
 
-            LineReader lineReader = new TextLineReader(inputStream, fileBufferSize, start, length);
-
-            //  Only skip header rows when the split is at the beginning of the file
             if (headerCount > 0) {
-                skipHeader(lineReader, headerCount);
+                checkArgument(start == 0 || headerCount == 1, "file cannot be split when there is more than one header row");
+                // header is only skipped at the beginning of the file
+                if (start == 0) {
+                    skipHeader(lineReader, headerCount);
+                }
             }
 
             if (footerCount > 0) {
+                checkArgument(start == 0, "file cannot be split when there are footer rows");
                 lineReader = new FooterAwareLineReader(lineReader, footerCount, this::createLineBuffer);
             }
             return lineReader;

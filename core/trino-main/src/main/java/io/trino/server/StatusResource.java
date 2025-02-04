@@ -13,28 +13,28 @@
  */
 package io.trino.server;
 
+import com.google.inject.Inject;
 import com.sun.management.OperatingSystemMXBean;
 import io.airlift.node.NodeInfo;
 import io.trino.client.NodeVersion;
 import io.trino.memory.LocalMemoryManager;
 import io.trino.server.security.ResourceSecurity;
-
-import javax.inject.Inject;
-import javax.ws.rs.GET;
-import javax.ws.rs.HEAD;
-import javax.ws.rs.Path;
-import javax.ws.rs.Produces;
-import javax.ws.rs.core.Response;
+import jakarta.ws.rs.GET;
+import jakarta.ws.rs.HEAD;
+import jakarta.ws.rs.Path;
+import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.core.Response;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
 
 import static io.airlift.units.Duration.nanosSince;
 import static io.trino.server.security.ResourceSecurity.AccessType.PUBLIC;
+import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 import static java.util.Objects.requireNonNull;
-import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 
 @Path("/v1/status")
+@ResourceSecurity(PUBLIC)
 public class StatusResource
 {
     private final NodeInfo nodeInfo;
@@ -65,7 +65,6 @@ public class StatusResource
         }
     }
 
-    @ResourceSecurity(PUBLIC)
     @HEAD
     @Produces(APPLICATION_JSON) // to match the GET route
     public Response statusPing()
@@ -73,7 +72,6 @@ public class StatusResource
         return Response.ok().build();
     }
 
-    @ResourceSecurity(PUBLIC)
     @GET
     @Produces(APPLICATION_JSON)
     public NodeStatus getStatus()

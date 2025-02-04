@@ -14,7 +14,6 @@
 package io.trino.plugin.phoenix5;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
 import io.trino.plugin.jdbc.UnsupportedTypeHandling;
 import io.trino.spi.type.ArrayType;
@@ -29,9 +28,10 @@ import io.trino.testing.datatype.SqlDataTypeTest;
 import io.trino.testing.sql.TestTable;
 import io.trino.testing.sql.TrinoSqlExecutor;
 import org.intellij.lang.annotations.Language;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.math.RoundingMode;
 import java.time.LocalDate;
@@ -47,7 +47,6 @@ import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.DECIMAL_MAPPI
 import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.DECIMAL_ROUNDING_MODE;
 import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.UNSUPPORTED_TYPE_HANDLING;
 import static io.trino.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
-import static io.trino.plugin.phoenix5.PhoenixQueryRunner.createPhoenixQueryRunner;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.CharType.createCharType;
@@ -69,10 +68,14 @@ import static java.time.ZoneOffset.UTC;
 import static java.util.Arrays.asList;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 /**
  * @see <a href="https://phoenix.apache.org/language/datatypes.html">Phoenix data types</a>
  */
+@TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestPhoenixTypeMapping
         extends AbstractTestQueryFramework
 {
@@ -84,11 +87,11 @@ public class TestPhoenixTypeMapping
     // minutes offset change since 1970-01-01, no DST
     private final ZoneId kathmandu = ZoneId.of("Asia/Kathmandu");
 
-    @BeforeClass
+    @BeforeAll
     public void setUp()
     {
         checkState(jvmZone.getId().equals("America/Bahia_Banderas"), "This test assumes certain JVM time zone");
-        LocalDate dateOfLocalTimeChangeForwardAtMidnightInJvmZone = LocalDate.of(1970, 1, 1);
+        LocalDate dateOfLocalTimeChangeForwardAtMidnightInJvmZone = LocalDate.of(1932, 4, 1);
         checkIsGap(jvmZone, dateOfLocalTimeChangeForwardAtMidnightInJvmZone.atStartOfDay());
 
         LocalDate dateOfLocalTimeChangeForwardAtMidnightInSomeZone = LocalDate.of(1983, 4, 1);
@@ -104,7 +107,8 @@ public class TestPhoenixTypeMapping
             throws Exception
     {
         phoenixServer = closeAfterClass(TestingPhoenixServer.getInstance()).get();
-        return createPhoenixQueryRunner(phoenixServer, ImmutableMap.of(), ImmutableList.of());
+        return PhoenixQueryRunner.builder(phoenixServer)
+                .build();
     }
 
     @Test
@@ -386,8 +390,8 @@ public class TestPhoenixTypeMapping
     {
         // Not testing max length (2147483647) because it leads to 'Requested array size exceeds VM limit'
         SqlDataTypeTest.create()
-                .addRoundTrip("binary(1)", "NULL", VARBINARY, "X'00'") // NULL stored as zeros
-                .addRoundTrip("binary(10)", "DECODE('', 'HEX')", VARBINARY, "X'00000000000000000000'") // empty stored as zeros
+                .addRoundTrip("binary(1)", "NULL", VARBINARY, "CAST(NULL AS VARBINARY)")
+                .addRoundTrip("binary(10)", "DECODE('', 'HEX')", VARBINARY, "CAST(NULL AS VARBINARY)")
                 .addRoundTrip("binary(5)", "DECODE('68656C6C6F', 'HEX')", VARBINARY, "to_utf8('hello')")
                 .addRoundTrip("binary(26)", "DECODE('5069C4996B6E6120C582C4856B61207720E69DB1E4BAACE983BD', 'HEX')", VARBINARY, "to_utf8('Piękna łąka w 東京都')")
                 .addRoundTrip("binary(16)", "DECODE('4261672066756C6C206F6620F09F92B0', 'HEX')", VARBINARY, "to_utf8('Bag full of 💰')")
@@ -395,12 +399,6 @@ public class TestPhoenixTypeMapping
                 .addRoundTrip("binary(6)", "DECODE('000000000000', 'HEX')", VARBINARY, "X'000000000000'")
                 .addRoundTrip("integer primary key", "1", INTEGER, "1")
                 .execute(getQueryRunner(), phoenixCreateAndInsert("tpch.test_binary"));
-
-        // Verify 'IS NULL' doesn't get rows where the value is X'00...' padded in Phoenix
-        try (TestTable table = new TestTable(new PhoenixSqlExecutor(phoenixServer.getJdbcUrl()), "tpch.test_binary", "(null_binary binary(1), empty_binary binary(10), pk integer primary key)", ImmutableList.of("NULL, DECODE('', 'HEX'), 1"))) {
-            assertQueryReturnsEmptyResult(format("SELECT * FROM %s WHERE null_binary IS NULL", table.getName()));
-            assertQueryReturnsEmptyResult(format("SELECT * FROM %s WHERE empty_binary IS NULL", table.getName()));
-        }
     }
 
     @Test
@@ -525,8 +523,18 @@ public class TestPhoenixTypeMapping
         }
     }
 
-    @Test(dataProvider = "sessionZonesDataProvider")
-    public void testDate(ZoneId sessionZone)
+    @Test
+    public void testDate()
+    {
+        testDate(UTC);
+        testDate(jvmZone);
+        // using two non-JVM zones so that we don't need to worry what Phoenix system zone is
+        testDate(vilnius);
+        testDate(kathmandu);
+        testDate(TestingSession.DEFAULT_TIME_ZONE_KEY.getZoneId());
+    }
+
+    private void testDate(ZoneId sessionZone)
     {
         Session session = Session.builder(getSession())
                 .setTimeZoneKey(getTimeZoneKey(sessionZone.getId()))
@@ -581,8 +589,18 @@ public class TestPhoenixTypeMapping
                 .execute(getQueryRunner(), session, phoenixCreateAndInsert("tpch.test_date"));
     }
 
-    @Test(dataProvider = "sessionZonesDataProvider")
-    public void testUnsignedDate(ZoneId sessionZone)
+    @Test
+    public void testUnsignedDate()
+    {
+        testUnsignedDate(UTC);
+        testUnsignedDate(jvmZone);
+        // using two non-JVM zones so that we don't need to worry what Phoenix system zone is
+        testUnsignedDate(vilnius);
+        testUnsignedDate(kathmandu);
+        testUnsignedDate(TestingSession.DEFAULT_TIME_ZONE_KEY.getZoneId());
+    }
+
+    private void testUnsignedDate(ZoneId sessionZone)
     {
         Session session = Session.builder(getSession())
                 .setTimeZoneKey(getTimeZoneKey(sessionZone.getId()))
@@ -697,24 +715,11 @@ public class TestPhoenixTypeMapping
     public void testArrayNulls()
     {
         // Verify only SELECT instead of using SqlDataTypeTest because array comparison not supported for arrays with null elements
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_array_nulls", "(c1 ARRAY(boolean), c2 ARRAY(varchar), c3 ARRAY(varchar))", ImmutableList.of("(NULL, ARRAY[NULL], ARRAY['foo', NULL, 'bar', NULL])"))) {
+        try (TestTable table = newTrinoTable("test_array_nulls", "(c1 ARRAY(boolean), c2 ARRAY(varchar), c3 ARRAY(varchar))", ImmutableList.of("(NULL, ARRAY[NULL], ARRAY['foo', NULL, 'bar', NULL])"))) {
             assertThat(query("SELECT c1 FROM " + table.getName())).matches("VALUES CAST(NULL AS ARRAY(boolean))");
             assertThat(query("SELECT c2 FROM " + table.getName())).matches("VALUES CAST(ARRAY[NULL] AS ARRAY(varchar))");
             assertThat(query("SELECT c3 FROM " + table.getName())).matches("VALUES CAST(ARRAY['foo', NULL, 'bar', NULL] AS ARRAY(varchar))");
         }
-    }
-
-    @DataProvider
-    public Object[][] sessionZonesDataProvider()
-    {
-        return new Object[][] {
-                {UTC},
-                {jvmZone},
-                // using two non-JVM zones so that we don't need to worry what Phoenix system zone is
-                {vilnius},
-                {kathmandu},
-                {TestingSession.DEFAULT_TIME_ZONE_KEY.getZoneId()},
-        };
     }
 
     private static void checkIsGap(ZoneId zone, LocalDateTime dateTime)

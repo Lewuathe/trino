@@ -16,11 +16,11 @@ package io.trino.operator.aggregation;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slices;
 import io.trino.metadata.TestingFunctionResolution;
+import io.trino.operator.AggregationMetrics;
 import io.trino.spi.Page;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.type.Type;
-import io.trino.sql.tree.QualifiedName;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -97,8 +97,8 @@ public class BenchmarkArrayAggregation
                 default:
                     throw new UnsupportedOperationException();
             }
-            TestingAggregationFunction function = new TestingFunctionResolution().getAggregateFunction(QualifiedName.of("array_agg"), fromTypes(elementType));
-            aggregator = function.createAggregatorFactory(SINGLE, ImmutableList.of(0), OptionalInt.empty()).createAggregator();
+            TestingAggregationFunction function = new TestingFunctionResolution().getAggregateFunction("array_agg", fromTypes(elementType));
+            aggregator = function.createAggregatorFactory(SINGLE, ImmutableList.of(0), OptionalInt.empty()).createAggregator(new AggregationMetrics());
 
             block = createChannel(ARRAY_SIZE, elementType);
             page = new Page(block);

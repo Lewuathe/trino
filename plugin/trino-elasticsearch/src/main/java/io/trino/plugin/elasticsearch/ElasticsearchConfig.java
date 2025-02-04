@@ -20,9 +20,8 @@ import io.airlift.configuration.DefunctConfig;
 import io.airlift.configuration.validation.FileExists;
 import io.airlift.units.Duration;
 import io.airlift.units.MinDuration;
-
-import javax.validation.constraints.Min;
-import javax.validation.constraints.NotNull;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
 
 import java.io.File;
 import java.util.List;
@@ -118,7 +117,6 @@ public class ElasticsearchConfig
         return this;
     }
 
-    @NotNull
     @Min(1)
     public int getScrollSize()
     {
@@ -240,7 +238,6 @@ public class ElasticsearchConfig
         return this;
     }
 
-    @NotNull
     public int getMaxHttpConnections()
     {
         return maxHttpConnections;
@@ -254,7 +251,6 @@ public class ElasticsearchConfig
         return this;
     }
 
-    @NotNull
     public int getHttpThreadCount()
     {
         return httpThreadCount;

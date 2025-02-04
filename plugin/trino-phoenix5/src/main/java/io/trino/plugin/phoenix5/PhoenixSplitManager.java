@@ -15,6 +15,7 @@ package io.trino.plugin.phoenix5;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
+import com.google.inject.Inject;
 import io.airlift.log.Logger;
 import io.trino.plugin.jdbc.JdbcColumnHandle;
 import io.trino.plugin.jdbc.JdbcTableHandle;
@@ -40,8 +41,6 @@ import org.apache.phoenix.jdbc.PhoenixPreparedStatement;
 import org.apache.phoenix.mapreduce.PhoenixInputSplit;
 import org.apache.phoenix.query.KeyRange;
 
-import javax.inject.Inject;
-
 import java.io.IOException;
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -50,11 +49,12 @@ import java.util.List;
 import java.util.Optional;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.plugin.jdbc.JdbcMetadata.getColumns;
 import static io.trino.plugin.phoenix5.PhoenixErrorCode.PHOENIX_INTERNAL_ERROR;
 import static io.trino.plugin.phoenix5.PhoenixErrorCode.PHOENIX_SPLIT_ERROR;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toList;
-import static org.apache.phoenix.coprocessor.BaseScannerRegionObserver.EXPECTED_UPPER_REGION_KEY;
+import static org.apache.phoenix.coprocessorclient.BaseScannerRegionObserverConstants.EXPECTED_UPPER_REGION_KEY;
 
 public class PhoenixSplitManager
         implements ConnectorSplitManager
@@ -81,13 +81,14 @@ public class PhoenixSplitManager
         try (Connection connection = phoenixClient.getConnection(session)) {
             List<JdbcColumnHandle> columns = tableHandle.getColumns()
                     .map(columnSet -> columnSet.stream().map(JdbcColumnHandle.class::cast).collect(toList()))
-                    .orElseGet(() -> phoenixClient.getColumns(session, tableHandle));
-            PhoenixPreparedStatement inputQuery = (PhoenixPreparedStatement) phoenixClient.prepareStatement(
+                    .orElseGet(() -> getColumns(session, phoenixClient, tableHandle));
+            PhoenixPreparedStatement inputQuery = phoenixClient.prepareStatement(
                     session,
                     connection,
                     tableHandle,
                     columns,
-                    Optional.empty());
+                    Optional.empty())
+                    .unwrap(PhoenixPreparedStatement.class);
 
             int maxScansPerSplit = session.getProperty(PhoenixSessionProperties.MAX_SCANS_PER_SPLIT, Integer.class);
             List<ConnectorSplit> splits = getSplits(inputQuery, maxScansPerSplit).stream()
@@ -135,17 +136,17 @@ public class PhoenixSplitManager
             long regionSize = -1;
             List<InputSplit> inputSplits = new ArrayList<>(splits.size());
             for (List<Scan> scans : queryPlan.getScans()) {
-                HRegionLocation location = regionLocator.getRegionLocation(scans.get(0).getStartRow(), false);
+                HRegionLocation location = regionLocator.getRegionLocation(scans.getFirst().getStartRow(), false);
                 String regionLocation = location.getHostname();
 
                 if (log.isDebugEnabled()) {
                     log.debug(
                             "Scan count[%d] : %s ~ %s",
                             scans.size(),
-                            Bytes.toStringBinary(scans.get(0).getStartRow()),
-                            Bytes.toStringBinary(scans.get(scans.size() - 1).getStopRow()));
+                            Bytes.toStringBinary(scans.getFirst().getStartRow()),
+                            Bytes.toStringBinary(scans.getLast().getStopRow()));
                     log.debug("First scan : %swith scanAttribute : %s [scanCache, cacheBlock, scanBatch] : [%d, %s, %d] and  regionLocation : %s",
-                            scans.get(0), scans.get(0).getAttributesMap(), scans.get(0).getCaching(), scans.get(0).getCacheBlocks(), scans.get(0).getBatch(), regionLocation);
+                            scans.getFirst(), scans.getFirst().getAttributesMap(), scans.getFirst().getCaching(), scans.getFirst().getCacheBlocks(), scans.getFirst().getBatch(), regionLocation);
                     for (int i = 0, limit = scans.size(); i < limit; i++) {
                         log.debug("EXPECTED_UPPER_REGION_KEY[%d] : %s", i, Bytes.toStringBinary(scans.get(i).getAttribute(EXPECTED_UPPER_REGION_KEY)));
                     }

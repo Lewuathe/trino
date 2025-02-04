@@ -30,14 +30,13 @@ import io.trino.spi.predicate.SortedRangeSet;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.predicate.ValueSet;
 import io.trino.spi.type.Type;
+import jakarta.annotation.Nullable;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.Pipeline;
 import redis.clients.jedis.exceptions.JedisDataException;
 import redis.clients.jedis.params.ScanParams;
 import redis.clients.jedis.resps.ScanResult;
-
-import javax.annotation.Nullable;
 
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
@@ -140,10 +139,10 @@ public class RedisRecordCursor
         if (redisCursor == null) {
             return false;
         }
-        // no more keys are unscanned when
+        // no more keys are unscanned
         // when redis scan command
         // returns 0 string cursor
-        return (!redisCursor.getCursor().equals("0"));
+        return !redisCursor.getCursor().equals("0");
     }
 
     @Override
@@ -332,9 +331,7 @@ public class RedisRecordCursor
     }
 
     @Override
-    public void close()
-    {
-    }
+    public void close() {}
 
     private ScanParams setScanParams()
     {

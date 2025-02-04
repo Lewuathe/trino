@@ -15,7 +15,6 @@ package io.trino.plugin.bigquery;
 
 import com.google.cloud.bigquery.FieldValue;
 import com.google.cloud.bigquery.FieldValueList;
-import com.google.cloud.bigquery.JobInfo.CreateDisposition;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableResult;
 import com.google.common.collect.ImmutableList;
@@ -24,9 +23,11 @@ import io.airlift.slice.Slices;
 import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
 import io.trino.spi.TrinoException;
-import io.trino.spi.block.Block;
+import io.trino.spi.block.ArrayBlockBuilder;
 import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.block.RowBlockBuilder;
 import io.trino.spi.connector.ConnectorPageSource;
+import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.Decimals;
@@ -43,12 +44,17 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicLong;
 
-import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Verify.verify;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.airlift.concurrent.MoreFutures.getFutureValue;
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.trino.plugin.bigquery.BigQueryClient.selectSql;
-import static io.trino.plugin.bigquery.BigQueryType.toTrinoTimestamp;
+import static io.trino.plugin.bigquery.BigQueryTypeManager.toTrinoTimestamp;
+import static io.trino.plugin.bigquery.BigQueryUtil.buildNativeQuery;
 import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DateType.DATE;
@@ -66,6 +72,7 @@ import static java.util.Objects.requireNonNull;
 public class BigQueryQueryPageSource
         implements ConnectorPageSource
 {
+    private static final long MAX_PAGE_ROW_COUNT = 8192L;
     private static final DateTimeFormatter TIME_FORMATTER = new DateTimeFormatterBuilder()
             .appendPattern("HH:mm:ss")
             .optionalStart()
@@ -73,43 +80,56 @@ public class BigQueryQueryPageSource
             .optionalEnd()
             .toFormatter();
 
-    private final List<Type> columnTypes;
+    private final BigQueryTypeManager typeManager;
+    private final List<BigQueryColumnHandle> columnHandles;
     private final PageBuilder pageBuilder;
-    private final TableResult tableResult;
+    private final boolean isQueryFunction;
 
+    private final AtomicLong readTimeNanos = new AtomicLong();
+
+    private CompletableFuture<TableResult> tableResultFuture;
+    private TableResult tableResult;
     private boolean finished;
 
     public BigQueryQueryPageSource(
+            ConnectorSession session,
+            BigQueryTypeManager typeManager,
             BigQueryClient client,
+            ExecutorService executor,
             BigQueryTableHandle table,
-            List<String> columnNames,
-            List<Type> columnTypes,
-            Optional<String> filter,
-            boolean useQueryResultsCache,
-            CreateDisposition createDisposition)
+            List<BigQueryColumnHandle> columnHandles,
+            Optional<String> filter)
     {
+        requireNonNull(session, "session is null");
+        this.typeManager = requireNonNull(typeManager, "typeManager is null");
         requireNonNull(client, "client is null");
+        requireNonNull(executor, "executor is null");
         requireNonNull(table, "table is null");
-        requireNonNull(columnNames, "columnNames is null");
-        requireNonNull(columnTypes, "columnTypes is null");
+        this.columnHandles = requireNonNull(columnHandles, "columnHandles is null");
         requireNonNull(filter, "filter is null");
-        checkArgument(columnNames.size() == columnTypes.size(), "columnNames and columnTypes sizes don't match");
-        this.columnTypes = ImmutableList.copyOf(columnTypes);
-        this.pageBuilder = new PageBuilder(columnTypes);
-        String sql = buildSql(table, client.getProjectId(), ImmutableList.copyOf(columnNames), filter);
-        this.tableResult = client.query(sql, useQueryResultsCache, createDisposition);
+        this.pageBuilder = new PageBuilder(columnHandles.stream().map(BigQueryColumnHandle::trinoType).collect(toImmutableList()));
+        this.isQueryFunction = table.relationHandle() instanceof BigQueryQueryRelationHandle;
+        String sql = buildSql(
+                table,
+                client.getProjectId(),
+                ImmutableList.copyOf(columnHandles),
+                filter);
+        this.tableResultFuture = CompletableFuture.supplyAsync(() -> {
+            long start = System.nanoTime();
+            TableResult result = client.executeQuery(session, sql, MAX_PAGE_ROW_COUNT);
+            readTimeNanos.addAndGet(System.nanoTime() - start);
+            return result;
+        }, executor);
     }
 
-    private static String buildSql(BigQueryTableHandle table, String projectId, List<String> columnNames, Optional<String> filter)
+    private String buildSql(BigQueryTableHandle table, String projectId, List<BigQueryColumnHandle> columns, Optional<String> filter)
     {
-        if (table.getRelationHandle() instanceof BigQueryQueryRelationHandle queryRelationHandle) {
-            if (filter.isEmpty()) {
-                return queryRelationHandle.getQuery();
-            }
-            return "SELECT * FROM (" + queryRelationHandle.getQuery() + " ) WHERE " + filter.get();
+        if (isQueryFunction) {
+            BigQueryQueryRelationHandle queryRelationHandle = (BigQueryQueryRelationHandle) table.relationHandle();
+            return buildNativeQuery(queryRelationHandle.getQuery(), filter, table.limit());
         }
-        TableId tableId = TableId.of(projectId, table.asPlainTable().getRemoteTableName().getDatasetName(), table.asPlainTable().getRemoteTableName().getTableName());
-        return selectSql(tableId, ImmutableList.copyOf(columnNames), filter);
+        TableId tableId = TableId.of(projectId, table.asPlainTable().getRemoteTableName().datasetName(), table.asPlainTable().getRemoteTableName().tableName());
+        return selectSql(tableId, ImmutableList.copyOf(columns), filter, table.limit());
     }
 
     @Override
@@ -121,7 +141,7 @@ public class BigQueryQueryPageSource
     @Override
     public long getReadTimeNanos()
     {
-        return 0;
+        return readTimeNanos.get();
     }
 
     @Override
@@ -140,14 +160,33 @@ public class BigQueryQueryPageSource
     public Page getNextPage()
     {
         verify(pageBuilder.isEmpty());
-        for (FieldValueList record : tableResult.iterateAll()) {
+        if (tableResult == null) {
+            tableResult = getFutureValue(tableResultFuture);
+        }
+        else if (tableResult.hasNextPage()) {
+            long start = System.nanoTime();
+            tableResult = tableResult.getNextPage();
+            readTimeNanos.addAndGet(System.nanoTime() - start);
+        }
+        else {
+            finished = true;
+            return null;
+        }
+
+        long start = System.nanoTime();
+        List<FieldValueList> values = ImmutableList.copyOf(tableResult.getValues());
+        finished = !tableResult.hasNextPage();
+        readTimeNanos.addAndGet(System.nanoTime() - start);
+
+        for (FieldValueList record : values) {
             pageBuilder.declarePosition();
-            for (int column = 0; column < columnTypes.size(); column++) {
+            for (int column = 0; column < columnHandles.size(); column++) {
+                BigQueryColumnHandle columnHandle = columnHandles.get(column);
                 BlockBuilder output = pageBuilder.getBlockBuilder(column);
-                appendTo(columnTypes.get(column), record.get(column), output);
+                FieldValue fieldValue = isQueryFunction ? record.get(columnHandle.name()) : record.get(column);
+                appendTo(columnHandle.trinoType(), fieldValue, output);
             }
         }
-        finished = true;
 
         Page page = pageBuilder.build();
         pageBuilder.reset();
@@ -156,7 +195,7 @@ public class BigQueryQueryPageSource
 
     private void appendTo(Type type, FieldValue value, BlockBuilder output)
     {
-        // TODO (https://github.com/trinodb/trino/issues/12346) Add support for bignumeric and timestamp with time zone types
+        // TODO (https://github.com/trinodb/trino/issues/12346) Add support for timestamp with time zone type
         if (value == null || value.isNull()) {
             output.appendNull();
             return;
@@ -189,7 +228,7 @@ public class BigQueryQueryPageSource
                     type.writeLong(output, rounded);
                 }
                 else if (type.equals(TIMESTAMP_MICROS)) {
-                    type.writeLong(output, toTrinoTimestamp((value.getStringValue())));
+                    type.writeLong(output, toTrinoTimestamp(value.getStringValue()));
                 }
                 else {
                     throw new TrinoException(GENERIC_INTERNAL_ERROR, format("Unhandled type for %s: %s", javaType.getSimpleName(), type));
@@ -207,8 +246,22 @@ public class BigQueryQueryPageSource
             else if (javaType == Slice.class) {
                 writeSlice(output, type, value);
             }
-            else if (javaType == Block.class) {
-                writeBlock(output, type, value);
+            else if (type instanceof ArrayType arrayType) {
+                ((ArrayBlockBuilder) output).buildEntry(elementBuilder -> {
+                    Type elementType = arrayType.getElementType();
+                    for (FieldValue element : value.getRepeatedValue()) {
+                        appendTo(elementType, element, elementBuilder);
+                    }
+                });
+            }
+            else if (type instanceof RowType rowType) {
+                FieldValueList record = value.getRecordValue();
+                List<RowType.Field> fields = rowType.getFields();
+                ((RowBlockBuilder) output).buildEntry(fieldBuilders -> {
+                    for (int index = 0; index < fields.size(); index++) {
+                        appendTo(fields.get(index).getType(), record.get(index), fieldBuilders.get(index));
+                    }
+                });
             }
             else {
                 throw new TrinoException(GENERIC_INTERNAL_ERROR, format("Unhandled type for %s: %s", javaType.getSimpleName(), type));
@@ -219,9 +272,9 @@ public class BigQueryQueryPageSource
         }
     }
 
-    private static void writeSlice(BlockBuilder output, Type type, FieldValue value)
+    private void writeSlice(BlockBuilder output, Type type, FieldValue value)
     {
-        if (type instanceof VarcharType) {
+        if (type instanceof VarcharType || typeManager.isJsonType(type)) {
             type.writeSlice(output, utf8Slice(value.getStringValue()));
         }
         else if (type instanceof VarbinaryType) {
@@ -232,31 +285,16 @@ public class BigQueryQueryPageSource
         }
     }
 
-    private void writeBlock(BlockBuilder output, Type type, FieldValue value)
+    @Override
+    public void close()
     {
-        if (type instanceof ArrayType) {
-            BlockBuilder builder = output.beginBlockEntry();
-
-            for (FieldValue element : value.getRepeatedValue()) {
-                appendTo(type.getTypeParameters().get(0), element, builder);
-            }
-
-            output.closeEntry();
-            return;
-        }
-        if (type instanceof RowType) {
-            FieldValueList record = value.getRecordValue();
-            BlockBuilder builder = output.beginBlockEntry();
-
-            for (int index = 0; index < type.getTypeParameters().size(); index++) {
-                appendTo(type.getTypeParameters().get(index), record.get(index), builder);
-            }
-            output.closeEntry();
-            return;
-        }
-        throw new TrinoException(GENERIC_INTERNAL_ERROR, "Unhandled type for Block: " + type.getTypeSignature());
+        tableResultFuture.cancel(true);
+        tableResult = null;
     }
 
     @Override
-    public void close() {}
+    public CompletableFuture<?> isBlocked()
+    {
+        return tableResultFuture;
+    }
 }

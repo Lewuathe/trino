@@ -56,6 +56,7 @@ public class StageId
     public StageId(QueryId queryId, int id)
     {
         this.queryId = requireNonNull(queryId, "queryId is null");
+        checkArgument(id >= 0, "id is negative: %s", id);
         this.id = id;
     }
 
@@ -92,7 +93,7 @@ public class StageId
             return false;
         }
         StageId other = (StageId) obj;
-        return Objects.equals(this.id, other.id) &&
+        return this.id == other.id &&
                 Objects.equals(this.queryId, other.queryId);
     }
 }

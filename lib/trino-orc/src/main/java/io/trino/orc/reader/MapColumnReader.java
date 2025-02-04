@@ -29,9 +29,7 @@ import io.trino.spi.block.Block;
 import io.trino.spi.type.MapType;
 import io.trino.spi.type.Type;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
-
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -66,12 +64,10 @@ public class MapColumnReader
     private int readOffset;
     private int nextBatchSize;
 
-    @Nonnull
     private InputStreamSource<BooleanInputStream> presentStreamSource = missingStreamSource(BooleanInputStream.class);
     @Nullable
     private BooleanInputStream presentStream;
 
-    @Nonnull
     private InputStreamSource<LongInputStream> lengthStreamSource = missingStreamSource(LongInputStream.class);
     @Nullable
     private LongInputStream lengthStream;

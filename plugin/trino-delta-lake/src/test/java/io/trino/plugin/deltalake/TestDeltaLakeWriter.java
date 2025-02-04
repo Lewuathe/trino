@@ -18,16 +18,16 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
+import io.trino.parquet.metadata.ColumnChunkMetadata;
 import io.trino.plugin.deltalake.transactionlog.statistics.DeltaLakeFileStatistics;
 import io.trino.spi.type.VarcharType;
 import org.apache.parquet.column.EncodingStats;
 import org.apache.parquet.column.statistics.Statistics;
-import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
 import org.apache.parquet.hadoop.metadata.ColumnPath;
 import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 import org.apache.parquet.schema.PrimitiveType;
 import org.apache.parquet.schema.Type;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
 import java.util.List;
@@ -44,7 +44,7 @@ import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
 import static java.lang.Float.floatToRawIntBits;
 import static java.nio.ByteOrder.LITTLE_ENDIAN;
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static org.testng.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestDeltaLakeWriter
 {
@@ -53,18 +53,18 @@ public class TestDeltaLakeWriter
     {
         String columnName = "t_int";
         PrimitiveType intType = new PrimitiveType(Type.Repetition.REQUIRED, PrimitiveType.PrimitiveTypeName.INT32, columnName);
-        List<ColumnChunkMetaData> metadata = ImmutableList.of(
+        List<ColumnChunkMetadata> metadata = ImmutableList.of(
                 createMetaData(columnName, intType, 10,
                         Statistics.getBuilderForReading(intType).withMin(getIntByteArray(-100)).withMax(getIntByteArray(250)).withNumNulls(6).build()),
                 createMetaData(columnName, intType, 10,
                         Statistics.getBuilderForReading(intType).withMin(getIntByteArray(-200)).withMax(getIntByteArray(150)).withNumNulls(7).build()));
-        DeltaLakeColumnHandle intColumn = new DeltaLakeColumnHandle(columnName, INTEGER, OptionalInt.empty(), columnName, INTEGER, REGULAR);
+        DeltaLakeColumnHandle intColumn = new DeltaLakeColumnHandle(columnName, INTEGER, OptionalInt.empty(), columnName, INTEGER, REGULAR, Optional.empty());
 
         DeltaLakeFileStatistics fileStats = mergeStats(buildMultimap(columnName, metadata), ImmutableMap.of(columnName, INTEGER), 20);
-        assertEquals(fileStats.getNumRecords(), Optional.of(20L));
-        assertEquals(fileStats.getMinColumnValue(intColumn), Optional.of(-200L));
-        assertEquals(fileStats.getMaxColumnValue(intColumn), Optional.of(250L));
-        assertEquals(fileStats.getNullCount(columnName), Optional.of(13L));
+        assertThat(fileStats.getNumRecords()).isEqualTo(Optional.of(20L));
+        assertThat(fileStats.getMinColumnValue(intColumn)).isEqualTo(Optional.of(-200L));
+        assertThat(fileStats.getMaxColumnValue(intColumn)).isEqualTo(Optional.of(250L));
+        assertThat(fileStats.getNullCount(columnName)).isEqualTo(Optional.of(13L));
     }
 
     @Test
@@ -72,18 +72,18 @@ public class TestDeltaLakeWriter
     {
         String columnName = "t_float";
         PrimitiveType type = new PrimitiveType(Type.Repetition.REQUIRED, PrimitiveType.PrimitiveTypeName.FLOAT, columnName);
-        List<ColumnChunkMetaData> metadata = ImmutableList.of(
+        List<ColumnChunkMetadata> metadata = ImmutableList.of(
                 createMetaData(columnName, type, 10,
                         Statistics.getBuilderForReading(type).withMin(getFloatByteArray(0.01f)).withMax(getFloatByteArray(1.0f)).withNumNulls(6).build()),
                 createMetaData(columnName, type, 10,
                         Statistics.getBuilderForReading(type).withMin(getFloatByteArray(-2.001f)).withMax(getFloatByteArray(0.0f)).withNumNulls(7).build()));
-        DeltaLakeColumnHandle floatColumn = new DeltaLakeColumnHandle(columnName, REAL, OptionalInt.empty(), columnName, REAL, REGULAR);
+        DeltaLakeColumnHandle floatColumn = new DeltaLakeColumnHandle(columnName, REAL, OptionalInt.empty(), columnName, REAL, REGULAR, Optional.empty());
 
         DeltaLakeFileStatistics fileStats = mergeStats(buildMultimap(columnName, metadata), ImmutableMap.of(columnName, REAL), 20);
-        assertEquals(fileStats.getNumRecords(), Optional.of(20L));
-        assertEquals(fileStats.getMinColumnValue(floatColumn), Optional.of((long) floatToRawIntBits(-2.001f)));
-        assertEquals(fileStats.getMaxColumnValue(floatColumn), Optional.of((long) floatToRawIntBits(1.0f)));
-        assertEquals(fileStats.getNullCount(columnName), Optional.of(13L));
+        assertThat(fileStats.getNumRecords()).isEqualTo(Optional.of(20L));
+        assertThat(fileStats.getMinColumnValue(floatColumn)).isEqualTo(Optional.of((long) floatToRawIntBits(-2.001f)));
+        assertThat(fileStats.getMaxColumnValue(floatColumn)).isEqualTo(Optional.of((long) floatToRawIntBits(1.0f)));
+        assertThat(fileStats.getNullCount(columnName)).isEqualTo(Optional.of(13L));
     }
 
     @Test
@@ -91,20 +91,20 @@ public class TestDeltaLakeWriter
     {
         String columnName = "t_float";
         PrimitiveType type = new PrimitiveType(Type.Repetition.REQUIRED, PrimitiveType.PrimitiveTypeName.FLOAT, columnName);
-        List<ColumnChunkMetaData> metadata = ImmutableList.of(
+        List<ColumnChunkMetadata> metadata = ImmutableList.of(
                 createMetaData(columnName, type, 10,
                         Statistics.getBuilderForReading(type).withMin(getFloatByteArray(0.01f)).withMax(getFloatByteArray(1.0f)).withNumNulls(6).build()),
                 createMetaData(columnName, type, 10,
                         Statistics.getBuilderForReading(type).withMin(getFloatByteArray(Float.NaN)).withMax(getFloatByteArray(1.0f)).withNumNulls(6).build()),
                 createMetaData(columnName, type, 10,
                         Statistics.getBuilderForReading(type).withMin(getFloatByteArray(-2.001f)).withMax(getFloatByteArray(0.0f)).withNumNulls(7).build()));
-        DeltaLakeColumnHandle floatColumn = new DeltaLakeColumnHandle(columnName, REAL, OptionalInt.empty(), columnName, REAL, REGULAR);
+        DeltaLakeColumnHandle floatColumn = new DeltaLakeColumnHandle(columnName, REAL, OptionalInt.empty(), columnName, REAL, REGULAR, Optional.empty());
 
         DeltaLakeFileStatistics fileStats = mergeStats(buildMultimap(columnName, metadata), ImmutableMap.of(columnName, REAL), 20);
-        assertEquals(fileStats.getNumRecords(), Optional.of(20L));
-        assertEquals(fileStats.getMinColumnValue(floatColumn), Optional.empty());
-        assertEquals(fileStats.getMaxColumnValue(floatColumn), Optional.empty());
-        assertEquals(fileStats.getNullCount(columnName), Optional.empty());
+        assertThat(fileStats.getNumRecords()).isEqualTo(Optional.of(20L));
+        assertThat(fileStats.getMinColumnValue(floatColumn)).isEqualTo(Optional.empty());
+        assertThat(fileStats.getMaxColumnValue(floatColumn)).isEqualTo(Optional.empty());
+        assertThat(fileStats.getNullCount(columnName)).isEqualTo(Optional.empty());
     }
 
     @Test
@@ -112,20 +112,20 @@ public class TestDeltaLakeWriter
     {
         String columnName = "t_double";
         PrimitiveType type = new PrimitiveType(Type.Repetition.REQUIRED, PrimitiveType.PrimitiveTypeName.DOUBLE, columnName);
-        List<ColumnChunkMetaData> metadata = ImmutableList.of(
+        List<ColumnChunkMetadata> metadata = ImmutableList.of(
                 createMetaData(columnName, type, 10,
                         Statistics.getBuilderForReading(type).withMin(getDoubleByteArray(0.01f)).withMax(getDoubleByteArray(1.0f)).withNumNulls(6).build()),
                 createMetaData(columnName, type, 10,
                         Statistics.getBuilderForReading(type).withMin(getDoubleByteArray(Double.NaN)).withMax(getDoubleByteArray(1.0f)).withNumNulls(6).build()),
                 createMetaData(columnName, type, 10,
                         Statistics.getBuilderForReading(type).withMin(getDoubleByteArray(-2.001f)).withMax(getDoubleByteArray(0.0f)).withNumNulls(7).build()));
-        DeltaLakeColumnHandle doubleColumn = new DeltaLakeColumnHandle(columnName, DOUBLE, OptionalInt.empty(), columnName, DOUBLE, REGULAR);
+        DeltaLakeColumnHandle doubleColumn = new DeltaLakeColumnHandle(columnName, DOUBLE, OptionalInt.empty(), columnName, DOUBLE, REGULAR, Optional.empty());
 
         DeltaLakeFileStatistics fileStats = mergeStats(buildMultimap(columnName, metadata), ImmutableMap.of(columnName, DOUBLE), 20);
-        assertEquals(fileStats.getNumRecords(), Optional.of(20L));
-        assertEquals(fileStats.getMinColumnValue(doubleColumn), Optional.empty());
-        assertEquals(fileStats.getMaxColumnValue(doubleColumn), Optional.empty());
-        assertEquals(fileStats.getNullCount(columnName), Optional.empty());
+        assertThat(fileStats.getNumRecords()).isEqualTo(Optional.of(20L));
+        assertThat(fileStats.getMinColumnValue(doubleColumn)).isEqualTo(Optional.empty());
+        assertThat(fileStats.getMaxColumnValue(doubleColumn)).isEqualTo(Optional.empty());
+        assertThat(fileStats.getNullCount(columnName)).isEqualTo(Optional.empty());
     }
 
     @Test
@@ -133,18 +133,18 @@ public class TestDeltaLakeWriter
     {
         String columnName = "t_string";
         PrimitiveType type = new PrimitiveType(Type.Repetition.REQUIRED, PrimitiveType.PrimitiveTypeName.BINARY, columnName);
-        List<ColumnChunkMetaData> metadata = ImmutableList.of(
+        List<ColumnChunkMetadata> metadata = ImmutableList.of(
                 createMetaData(columnName, type, 10,
                         Statistics.getBuilderForReading(type).withMin("aba".getBytes(UTF_8)).withMax("ab⌘".getBytes(UTF_8)).withNumNulls(6).build()),
                 createMetaData(columnName, type, 10,
                         Statistics.getBuilderForReading(type).withMin("aba".getBytes(UTF_8)).withMax("abc".getBytes(UTF_8)).withNumNulls(6).build()));
-        DeltaLakeColumnHandle varcharColumn = new DeltaLakeColumnHandle(columnName, VarcharType.createUnboundedVarcharType(), OptionalInt.empty(), columnName, VarcharType.createUnboundedVarcharType(), REGULAR);
+        DeltaLakeColumnHandle varcharColumn = new DeltaLakeColumnHandle(columnName, VarcharType.createUnboundedVarcharType(), OptionalInt.empty(), columnName, VarcharType.createUnboundedVarcharType(), REGULAR, Optional.empty());
 
         DeltaLakeFileStatistics fileStats = mergeStats(buildMultimap(columnName, metadata), ImmutableMap.of(columnName, createUnboundedVarcharType()), 20);
-        assertEquals(fileStats.getNumRecords(), Optional.of(20L));
-        assertEquals(fileStats.getMinColumnValue(varcharColumn), Optional.of(utf8Slice("aba")));
-        assertEquals(fileStats.getMaxColumnValue(varcharColumn), Optional.of(utf8Slice("ab⌘")));
-        assertEquals(fileStats.getNullCount(columnName), Optional.of(12L));
+        assertThat(fileStats.getNumRecords()).isEqualTo(Optional.of(20L));
+        assertThat(fileStats.getMinColumnValue(varcharColumn)).isEqualTo(Optional.of(utf8Slice("aba")));
+        assertThat(fileStats.getMaxColumnValue(varcharColumn)).isEqualTo(Optional.of(utf8Slice("ab⌘")));
+        assertThat(fileStats.getNullCount(columnName)).isEqualTo(Optional.of(12L));
     }
 
     @Test
@@ -152,23 +152,23 @@ public class TestDeltaLakeWriter
     {
         String columnName = "t_string";
         PrimitiveType type = new PrimitiveType(Type.Repetition.REQUIRED, PrimitiveType.PrimitiveTypeName.BINARY, columnName);
-        List<ColumnChunkMetaData> metadata = ImmutableList.of(
+        List<ColumnChunkMetadata> metadata = ImmutableList.of(
                 createMetaData(columnName, type, 10,
                         Statistics.getBuilderForReading(type).withMin("aba".getBytes(UTF_8)).withMax("ab\uFAD8".getBytes(UTF_8)).withNumNulls(6).build()),
                 createMetaData(columnName, type, 10,
                         Statistics.getBuilderForReading(type).withMin("aba".getBytes(UTF_8)).withMax("ab\uD83D\uDD74".getBytes(UTF_8)).withNumNulls(6).build()));
-        DeltaLakeColumnHandle varcharColumn = new DeltaLakeColumnHandle(columnName, VarcharType.createUnboundedVarcharType(), OptionalInt.empty(), columnName, VarcharType.createUnboundedVarcharType(), REGULAR);
+        DeltaLakeColumnHandle varcharColumn = new DeltaLakeColumnHandle(columnName, VarcharType.createUnboundedVarcharType(), OptionalInt.empty(), columnName, VarcharType.createUnboundedVarcharType(), REGULAR, Optional.empty());
 
         DeltaLakeFileStatistics fileStats = mergeStats(buildMultimap(columnName, metadata), ImmutableMap.of(columnName, createUnboundedVarcharType()), 20);
-        assertEquals(fileStats.getNumRecords(), Optional.of(20L));
-        assertEquals(fileStats.getMinColumnValue(varcharColumn), Optional.of(utf8Slice("aba")));
-        assertEquals(fileStats.getMaxColumnValue(varcharColumn), Optional.of(utf8Slice("ab\uD83D\uDD74")));
-        assertEquals(fileStats.getNullCount(columnName), Optional.of(12L));
+        assertThat(fileStats.getNumRecords()).isEqualTo(Optional.of(20L));
+        assertThat(fileStats.getMinColumnValue(varcharColumn)).isEqualTo(Optional.of(utf8Slice("aba")));
+        assertThat(fileStats.getMaxColumnValue(varcharColumn)).isEqualTo(Optional.of(utf8Slice("ab\uD83D\uDD74")));
+        assertThat(fileStats.getNullCount(columnName)).isEqualTo(Optional.of(12L));
     }
 
-    private ColumnChunkMetaData createMetaData(String columnName, PrimitiveType columnType, long valueCount, Statistics<?> statistics)
+    private ColumnChunkMetadata createMetaData(String columnName, PrimitiveType columnType, long valueCount, Statistics<?> statistics)
     {
-        return ColumnChunkMetaData.get(
+        return ColumnChunkMetadata.get(
                 ColumnPath.fromDotString(columnName),
                 columnType,
                 CompressionCodecName.SNAPPY,
@@ -182,9 +182,9 @@ public class TestDeltaLakeWriter
                 0);
     }
 
-    private Multimap<String, ColumnChunkMetaData> buildMultimap(String columnName, List<ColumnChunkMetaData> metadata)
+    private Multimap<String, ColumnChunkMetadata> buildMultimap(String columnName, List<ColumnChunkMetadata> metadata)
     {
-        return ImmutableMultimap.<String, ColumnChunkMetaData>builder()
+        return ImmutableMultimap.<String, ColumnChunkMetadata>builder()
                 .putAll(columnName, metadata)
                 .build();
     }

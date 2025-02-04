@@ -16,11 +16,11 @@ package io.trino.plugin.elasticsearch;
 import com.google.inject.Injector;
 import io.airlift.bootstrap.Bootstrap;
 import io.airlift.json.JsonModule;
-import io.trino.plugin.base.CatalogName;
 import io.trino.plugin.base.TypeDeserializerModule;
 import io.trino.plugin.base.jmx.ConnectorObjectNameGeneratorModule;
 import io.trino.plugin.base.jmx.MBeanServerModule;
 import io.trino.spi.NodeManager;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.connector.Connector;
 import io.trino.spi.connector.ConnectorContext;
 import io.trino.spi.connector.ConnectorFactory;
@@ -28,7 +28,7 @@ import org.weakref.jmx.guice.MBeanModule;
 
 import java.util.Map;
 
-import static io.trino.plugin.base.Versions.checkSpiVersion;
+import static io.trino.plugin.base.Versions.checkStrictSpiVersionMatch;
 import static java.util.Objects.requireNonNull;
 
 public class ElasticsearchConnectorFactory
@@ -47,7 +47,7 @@ public class ElasticsearchConnectorFactory
     {
         requireNonNull(catalogName, "catalogName is null");
         requireNonNull(config, "config is null");
-        checkSpiVersion(context, this);
+        checkStrictSpiVersionMatch(context, this);
 
         Bootstrap app = new Bootstrap(
                 new MBeanModule(),

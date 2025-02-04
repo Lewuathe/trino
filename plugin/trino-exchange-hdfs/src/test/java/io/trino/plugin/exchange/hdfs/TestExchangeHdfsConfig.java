@@ -13,9 +13,10 @@
  */
 package io.trino.plugin.exchange.hdfs;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.units.DataSize;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -33,7 +34,7 @@ public class TestExchangeHdfsConfig
     public void testDefaults()
     {
         assertRecordedDefaults(recordDefaults(ExchangeHdfsConfig.class)
-                .setResourceConfigFiles("")
+                .setResourceConfigFiles(ImmutableList.of())
                 .setHdfsStorageBlockSize(DataSize.of(4, MEGABYTE)));
     }
 
@@ -50,7 +51,7 @@ public class TestExchangeHdfsConfig
                 .buildOrThrow();
 
         ExchangeHdfsConfig expected = new ExchangeHdfsConfig()
-                .setResourceConfigFiles(resource1 + "," + resource2)
+                .setResourceConfigFiles(ImmutableList.of(resource1.toString(), resource2.toString()))
                 .setHdfsStorageBlockSize(DataSize.of(8, MEGABYTE));
 
         assertFullMapping(properties, expected);

@@ -18,12 +18,10 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
-import io.trino.Session;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.metadata.QualifiedObjectName;
 import io.trino.metadata.TableHandle;
-import io.trino.metadata.TableMetadata;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnHandle;
@@ -31,6 +29,7 @@ import io.trino.spi.connector.TableScanRedirectApplicationResult;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
+import io.trino.sql.ir.Cast;
 import io.trino.sql.planner.DomainTranslator;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
@@ -40,8 +39,6 @@ import io.trino.sql.planner.plan.FilterNode;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.ProjectNode;
 import io.trino.sql.planner.plan.TableScanNode;
-import io.trino.sql.tree.Cast;
-import io.trino.type.TypeCoercion;
 
 import java.util.Map;
 import java.util.Optional;
@@ -52,7 +49,6 @@ import static io.trino.spi.StandardErrorCode.COLUMN_NOT_FOUND;
 import static io.trino.spi.StandardErrorCode.FUNCTION_NOT_FOUND;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.StandardErrorCode.TABLE_NOT_FOUND;
-import static io.trino.sql.analyzer.TypeSignatureTranslator.toSqlType;
 import static io.trino.sql.planner.plan.Patterns.tableScan;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
@@ -64,12 +60,12 @@ public class ApplyTableScanRedirection
             .matching(node -> !node.isUpdateTarget());
 
     private final PlannerContext plannerContext;
-    private final TypeCoercion typeCoercion;
+    private final DomainTranslator domainTranslator;
 
     public ApplyTableScanRedirection(PlannerContext plannerContext)
     {
         this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
-        this.typeCoercion = new TypeCoercion(plannerContext.getTypeManager()::getType);
+        this.domainTranslator = new DomainTranslator(plannerContext.getMetadata());
     }
 
     @Override
@@ -89,14 +85,13 @@ public class ApplyTableScanRedirection
         CatalogSchemaTableName destinationTable = tableScanRedirectApplicationResult.get().getDestinationTable();
 
         QualifiedObjectName destinationObjectName = convertFromSchemaTableName(destinationTable.getCatalogName()).apply(destinationTable.getSchemaTableName());
-        Optional<QualifiedObjectName> redirectedObjectName = plannerContext.getMetadata().getRedirectionAwareTableHandle(context.getSession(), destinationObjectName).getRedirectedTableName();
+        Optional<QualifiedObjectName> redirectedObjectName = plannerContext.getMetadata().getRedirectionAwareTableHandle(context.getSession(), destinationObjectName).redirectedTableName();
 
         redirectedObjectName.ifPresent(name -> {
             throw new TrinoException(NOT_SUPPORTED, format("Further redirection of destination table '%s' to '%s' is not supported", destinationObjectName, name));
         });
 
-        TableMetadata tableMetadata = plannerContext.getMetadata().getTableMetadata(context.getSession(), scanNode.getTable());
-        CatalogSchemaTableName sourceTable = new CatalogSchemaTableName(tableMetadata.getCatalogName(), tableMetadata.getTable());
+        CatalogSchemaTableName sourceTable = plannerContext.getMetadata().getTableName(context.getSession(), scanNode.getTable());
         if (destinationTable.equals(sourceTable)) {
             return Result.empty();
         }
@@ -121,12 +116,11 @@ public class ApplyTableScanRedirection
             }
 
             // insert ts if redirected types don't match source types
-            Type sourceType = context.getSymbolAllocator().getTypes().get(assignment.getKey());
+            Type sourceType = assignment.getKey().type();
             Type redirectedType = plannerContext.getMetadata().getColumnMetadata(context.getSession(), destinationTableHandle, destinationColumnHandle).getType();
             if (!sourceType.equals(redirectedType)) {
                 Symbol redirectedSymbol = context.getSymbolAllocator().newSymbol(destinationColumn, redirectedType);
                 Cast cast = getCast(
-                        context.getSession(),
                         destinationTable,
                         destinationColumn,
                         redirectedType,
@@ -187,7 +181,6 @@ public class ApplyTableScanRedirection
             if (!domainType.equals(redirectedType)) {
                 Symbol redirectedSymbol = context.getSymbolAllocator().newSymbol(destinationColumn, redirectedType);
                 Cast cast = getCast(
-                        context.getSession(),
                         destinationTable,
                         destinationColumn,
                         redirectedType,
@@ -216,7 +209,6 @@ public class ApplyTableScanRedirection
                 scanNode.isUpdateTarget(),
                 Optional.empty());
 
-        DomainTranslator domainTranslator = new DomainTranslator(plannerContext);
         FilterNode filterNode = new FilterNode(
                 context.getIdAllocator().getNextId(),
                 applyProjection(
@@ -224,7 +216,7 @@ public class ApplyTableScanRedirection
                         newAssignments.keySet(),
                         casts.buildOrThrow(),
                         newScanNode),
-                domainTranslator.toPredicate(context.getSession(), transformedConstraint));
+                domainTranslator.toPredicate(transformedConstraint));
 
         return Result.ofPlanNode(applyProjection(
                 context.getIdAllocator(),
@@ -253,7 +245,6 @@ public class ApplyTableScanRedirection
     }
 
     private Cast getCast(
-            Session session,
             CatalogSchemaTableName destinationTable,
             String destinationColumn,
             Type destinationType,
@@ -263,7 +254,7 @@ public class ApplyTableScanRedirection
             Type sourceType)
     {
         try {
-            plannerContext.getMetadata().getCoercion(session, destinationType, sourceType);
+            plannerContext.getMetadata().getCoercion(destinationType, sourceType);
         }
         catch (TrinoException e) {
             throw new TrinoException(FUNCTION_NOT_FOUND, format(
@@ -277,10 +268,6 @@ public class ApplyTableScanRedirection
                     sourceType));
         }
 
-        return new Cast(
-                destinationSymbol.toSymbolReference(),
-                toSqlType(sourceType),
-                false,
-                typeCoercion.isTypeOnlyCoercion(destinationType, sourceType));
+        return new Cast(destinationSymbol.toSymbolReference(), sourceType);
     }
 }

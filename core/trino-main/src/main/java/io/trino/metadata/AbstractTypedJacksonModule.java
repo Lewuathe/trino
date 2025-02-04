@@ -13,6 +13,7 @@
  */
 package io.trino.metadata;
 
+import com.fasterxml.jackson.annotation.JsonTypeInfo.As;
 import com.fasterxml.jackson.annotation.JsonTypeInfo.Id;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonParser;
@@ -35,7 +36,7 @@ import com.fasterxml.jackson.databind.ser.BeanSerializerFactory;
 import com.fasterxml.jackson.databind.ser.std.StdSerializer;
 import com.fasterxml.jackson.databind.type.TypeFactory;
 import com.google.common.cache.CacheBuilder;
-import io.trino.collect.cache.NonEvictableCache;
+import io.trino.cache.NonEvictableCache;
 
 import java.io.IOException;
 import java.util.concurrent.ExecutionException;
@@ -43,7 +44,7 @@ import java.util.function.Function;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Throwables.throwIfInstanceOf;
-import static io.trino.collect.cache.SafeCaches.buildNonEvictableCache;
+import static io.trino.cache.SafeCaches.buildNonEvictableCache;
 import static java.util.Objects.requireNonNull;
 
 public abstract class AbstractTypedJacksonModule<T>
@@ -77,7 +78,9 @@ public abstract class AbstractTypedJacksonModule<T>
                     typeIdResolver,
                     TYPE_PROPERTY,
                     false,
-                    null);
+                    null,
+                    As.PROPERTY,
+                    true);
         }
 
         @SuppressWarnings("unchecked")

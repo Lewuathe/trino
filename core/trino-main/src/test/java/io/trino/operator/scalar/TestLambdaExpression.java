@@ -24,6 +24,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import static io.trino.operator.scalar.ApplyFunction.APPLY_FUNCTION;
 import static io.trino.operator.scalar.InvokeFunction.INVOKE_FUNCTION;
@@ -39,8 +40,10 @@ import static io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExcept
 import static io.trino.util.StructuralTestUtil.mapType;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestLambdaExpression
 {
     private QueryAssertions assertions;
@@ -164,40 +167,11 @@ public class TestLambdaExpression
     }
 
     @Test
-    public void testBind()
-    {
-        assertThat(assertions.expression("apply(a, \"$internal$bind\"(b, (x, y) -> x + y))")
-                .binding("a", "90")
-                .binding("b", "9"))
-                .isEqualTo(99);
-        assertThat(assertions.expression("invoke(\"$internal$bind\"(a, x -> x + 1))")
-                .binding("a", "8"))
-                .isEqualTo(9);
-        assertThat(assertions.expression("apply(a, \"$internal$bind\"(b, c, (x, y, z) -> x + y + z))")
-                .binding("a", "900")
-                .binding("b", "90")
-                .binding("c", "9"))
-                .isEqualTo(999);
-        assertThat(assertions.expression("invoke(\"$internal$bind\"(a, b, (x, y) -> x + y))")
-                .binding("a", "90")
-                .binding("b", "9"))
-                .isEqualTo(99);
-    }
-
-    @Test
     public void testCoercion()
     {
         assertThat(assertions.expression("apply(a, x -> x + 9.0E0)")
                 .binding("a", "90"))
                 .isEqualTo(99.0);
-
-        assertThat(assertions.expression("apply(a, \"$internal$bind\"(b, (x, y) -> x + y))")
-                .binding("a", "90")
-                .binding("b", "9.0E0"))
-                .isEqualTo(99.0);
-        assertThat(assertions.expression("invoke(\"$internal$bind\"(a, x -> x + 1.0E0))")
-                .binding("a", "8"))
-                .isEqualTo(9.0);
     }
 
     @Test
@@ -296,22 +270,22 @@ public class TestLambdaExpression
     @Test
     public void testFunctionParameter()
     {
-        assertTrinoExceptionThrownBy(() -> assertions.expression("count(x -> x)").evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression("count(x -> x)")::evaluate)
                 .hasErrorCode(FUNCTION_NOT_FOUND)
                 .hasMessage("line 1:12: Unexpected parameters (<function>) for function count. Expected: count(), count(t) T");
-        assertTrinoExceptionThrownBy(() -> assertions.expression("max(x -> x)").evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression("max(x -> x)")::evaluate)
                 .hasErrorCode(FUNCTION_NOT_FOUND)
-                .hasMessage("line 1:12: Unexpected parameters (<function>) for function max. Expected: max(t) T:orderable, max(e, bigint) E:orderable");
-        assertTrinoExceptionThrownBy(() -> assertions.expression("sqrt(x -> x)").evaluate())
+                .hasMessage("line 1:12: Unexpected parameters (<function>) for function max. Expected: max(e, bigint) E:orderable, max(t) T:orderable");
+        assertTrinoExceptionThrownBy(assertions.expression("sqrt(x -> x)")::evaluate)
                 .hasErrorCode(FUNCTION_NOT_FOUND)
                 .hasMessage("line 1:12: Unexpected parameters (<function>) for function sqrt. Expected: sqrt(double)");
-        assertTrinoExceptionThrownBy(() -> assertions.expression("sqrt(x -> x, 123, x -> x)").evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression("sqrt(x -> x, 123, x -> x)")::evaluate)
                 .hasErrorCode(FUNCTION_NOT_FOUND)
                 .hasMessage("line 1:12: Unexpected parameters (<function>, integer, <function>) for function sqrt. Expected: sqrt(double)");
-        assertTrinoExceptionThrownBy(() -> assertions.expression("pow(x -> x, 123)").evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression("pow(x -> x, 123)")::evaluate)
                 .hasErrorCode(FUNCTION_NOT_FOUND)
                 .hasMessage("line 1:12: Unexpected parameters (<function>, integer) for function pow. Expected: pow(double, double)");
-        assertTrinoExceptionThrownBy(() -> assertions.expression("pow(123, x -> x)").evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression("pow(123, x -> x)")::evaluate)
                 .hasErrorCode(FUNCTION_NOT_FOUND)
                 .hasMessage("line 1:12: Unexpected parameters (integer, <function>) for function pow. Expected: pow(double, double)");
     }

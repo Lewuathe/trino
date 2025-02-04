@@ -14,13 +14,14 @@
 package io.trino.plugin.base.classloader;
 
 import io.trino.spi.classloader.ThreadContextClassLoader;
+import io.trino.spi.connector.ConnectorAccessControl;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTransactionHandle;
-import io.trino.spi.ptf.Argument;
-import io.trino.spi.ptf.ArgumentSpecification;
-import io.trino.spi.ptf.ConnectorTableFunction;
-import io.trino.spi.ptf.ReturnTypeSpecification;
-import io.trino.spi.ptf.TableFunctionAnalysis;
+import io.trino.spi.function.table.Argument;
+import io.trino.spi.function.table.ArgumentSpecification;
+import io.trino.spi.function.table.ConnectorTableFunction;
+import io.trino.spi.function.table.ReturnTypeSpecification;
+import io.trino.spi.function.table.TableFunctionAnalysis;
 
 import java.util.List;
 import java.util.Map;
@@ -42,7 +43,7 @@ public class ClassLoaderSafeConnectorTableFunction
     @Override
     public String getSchema()
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getSchema();
         }
     }
@@ -50,7 +51,7 @@ public class ClassLoaderSafeConnectorTableFunction
     @Override
     public String getName()
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getName();
         }
     }
@@ -58,7 +59,7 @@ public class ClassLoaderSafeConnectorTableFunction
     @Override
     public List<ArgumentSpecification> getArguments()
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getArguments();
         }
     }
@@ -66,16 +67,19 @@ public class ClassLoaderSafeConnectorTableFunction
     @Override
     public ReturnTypeSpecification getReturnTypeSpecification()
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getReturnTypeSpecification();
         }
     }
 
     @Override
-    public TableFunctionAnalysis analyze(ConnectorSession session, ConnectorTransactionHandle transaction, Map<String, Argument> arguments)
+    public TableFunctionAnalysis analyze(ConnectorSession session,
+            ConnectorTransactionHandle transaction,
+            Map<String, Argument> arguments,
+            ConnectorAccessControl accessControl)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            return delegate.analyze(session, transaction, arguments);
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            return delegate.analyze(session, transaction, arguments, accessControl);
         }
     }
 }

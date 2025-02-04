@@ -22,13 +22,9 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 
-import static com.google.common.base.Strings.repeat;
-import static io.trino.sql.parser.ParsingOptions.DecimalLiteralTreatment.AS_DOUBLE;
 import static io.trino.sql.testing.TreeAssertions.assertFormattedSql;
-import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestStatementBuilder
 {
@@ -211,6 +207,9 @@ public class TestStatementBuilder
         printStatement("alter table a.b.c set properties a=true, b=123, c='x'");
         printStatement("alter table a.b.c set properties a=DEFAULT, b=123");
 
+        printStatement("alter table a.b.c add column x bigint first");
+        printStatement("alter table a.b.c add column x bigint after y");
+        printStatement("alter table a.b.c add column x bigint last");
         printStatement("alter table a.b.c add column x bigint");
 
         printStatement("alter table a.b.c add column x bigint comment 'large x'");
@@ -221,6 +220,9 @@ public class TestStatementBuilder
 
         printStatement("alter table foo alter column x set data type bigint");
         printStatement("alter table a.b.c alter column x set data type bigint");
+
+        printStatement("alter table foo alter column x drop not null");
+        printStatement("alter table a.b.c alter column x drop not null");
 
         printStatement("alter materialized view foo set properties a='1'");
         printStatement("alter materialized view a.b.c set properties a=true, b=123, c='x'");
@@ -314,6 +316,12 @@ public class TestStatementBuilder
         printStatement("show role grants");
         printStatement("show role grants from foo");
 
+        printStatement("show create schema abc");
+        printStatement("show create table abc");
+        printStatement("show create view abc");
+        printStatement("show create materialized view abc");
+        printStatement("show create function abc");
+
         printStatement("prepare p from select * from (select * from T) \"A B\"");
 
         printStatement("SELECT * FROM table1 WHERE a >= ALL (VALUES 2, 3, 4)");
@@ -329,17 +337,20 @@ public class TestStatementBuilder
                 "when matched and c.action = 'del' then delete\n" +
                 "when not matched and c.action = 'new' then\n" +
                 "insert (part, qty) values (c.part, c.qty)");
+
+        printStatement("set session authorization user");
+        printStatement("reset session authorization");
     }
 
     @Test
     public void testStringFormatter()
     {
         assertSqlFormatter("U&'hello\\6d4B\\8Bd5\\+10FFFFworld\\7F16\\7801'",
-                "U&'hello\\6D4B\\8BD5\\+10FFFFworld\\7F16\\7801'");
+                "'hello测试\uDBFF\uDFFFworld编码'");
         assertSqlFormatter("'hello world'", "'hello world'");
-        assertSqlFormatter("U&'!+10FFFF!6d4B!8Bd5ABC!6d4B!8Bd5' UESCAPE '!'", "U&'\\+10FFFF\\6D4B\\8BD5ABC\\6D4B\\8BD5'");
-        assertSqlFormatter("U&'\\+10FFFF\\6D4B\\8BD5\\0041\\0042\\0043\\6D4B\\8BD5'", "U&'\\+10FFFF\\6D4B\\8BD5ABC\\6D4B\\8BD5'");
-        assertSqlFormatter("U&'\\\\abc\\6D4B'''", "U&'\\\\abc\\6D4B'''");
+        assertSqlFormatter("U&'!+10FFFF!6d4B!8Bd5ABC!6d4B!8Bd5' UESCAPE '!'", "'\uDBFF\uDFFF测试ABC测试'");
+        assertSqlFormatter("U&'\\+10FFFF\\6D4B\\8BD5\\0041\\0042\\0043\\6D4B\\8BD5'", "'\uDBFF\uDFFF测试ABC测试'");
+        assertSqlFormatter("U&'\\\\abc\\6D4B'''", "'\\abc测'''");
     }
 
     @Test
@@ -381,8 +392,7 @@ public class TestStatementBuilder
         println(sql.trim());
         println("");
 
-        ParsingOptions parsingOptions = new ParsingOptions(AS_DOUBLE /* anything */);
-        Statement statement = SQL_PARSER.createStatement(sql, parsingOptions);
+        Statement statement = SQL_PARSER.createStatement(sql);
         println(statement.toString());
         println("");
 
@@ -390,15 +400,15 @@ public class TestStatementBuilder
         println("");
         assertFormattedSql(SQL_PARSER, statement);
 
-        println(repeat("=", 60));
+        println("=".repeat(60));
         println("");
     }
 
     private static void assertSqlFormatter(String expression, String formatted)
     {
-        Expression originalExpression = SQL_PARSER.createExpression(expression, new ParsingOptions());
+        Expression originalExpression = SQL_PARSER.createExpression(expression);
         String real = SqlFormatter.formatSql(originalExpression);
-        assertEquals(formatted, real);
+        assertThat(real).isEqualTo(formatted);
     }
 
     private static void println(String s)
@@ -418,10 +428,12 @@ public class TestStatementBuilder
         String sql = getTpchQuery(query);
 
         for (int i = values.length - 1; i >= 0; i--) {
-            sql = sql.replaceAll(format(":%s", i + 1), String.valueOf(values[i]));
+            sql = sql.replaceAll(":%s".formatted(i + 1), String.valueOf(values[i]));
         }
 
-        assertFalse(sql.matches("(?s).*:[0-9].*"), "Not all bind parameters were replaced: " + sql);
+        assertThat(sql.matches("(?s).*:[0-9].*"))
+                .as("Not all bind parameters were replaced: " + sql)
+                .isFalse();
 
         sql = fixTpchQuery(sql);
         printStatement(sql);

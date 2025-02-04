@@ -13,72 +13,39 @@
  */
 package io.trino.plugin.deltalake.transactionlog;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
+import io.airlift.slice.SizeOf;
+import jakarta.annotation.Nullable;
 
-import java.util.Objects;
+import java.util.Map;
+import java.util.Optional;
 
-import static java.lang.String.format;
+import static io.airlift.slice.SizeOf.SIZE_OF_LONG;
+import static io.airlift.slice.SizeOf.estimatedSizeOf;
+import static io.airlift.slice.SizeOf.instanceSize;
+import static io.airlift.slice.SizeOf.sizeOf;
+import static java.util.Objects.requireNonNull;
 
-public class RemoveFileEntry
+public record RemoveFileEntry(
+        String path,
+        @Nullable Map<String, String> partitionValues,
+        long deletionTimestamp,
+        boolean dataChange,
+        Optional<DeletionVectorEntry> deletionVector)
 {
-    private final String path;
-    private final long deletionTimestamp;
-    private final boolean dataChange;
+    private static final int INSTANCE_SIZE = instanceSize(RemoveFileEntry.class);
 
-    @JsonCreator
-    public RemoveFileEntry(
-            @JsonProperty("path") String path,
-            @JsonProperty("deletionTimestamp") long deletionTimestamp,
-            @JsonProperty("dataChange") boolean dataChange)
+    public RemoveFileEntry
     {
-        this.path = path;
-        this.deletionTimestamp = deletionTimestamp;
-        this.dataChange = dataChange;
+        requireNonNull(path, "path is null");
+        requireNonNull(deletionVector, "deletionVector is null");
     }
 
-    @JsonProperty
-    public String getPath()
+    public long getRetainedSizeInBytes()
     {
-        return path;
-    }
-
-    @JsonProperty
-    public long getDeletionTimestamp()
-    {
-        return deletionTimestamp;
-    }
-
-    @JsonProperty
-    public boolean isDataChange()
-    {
-        return dataChange;
-    }
-
-    @Override
-    public boolean equals(Object o)
-    {
-        if (this == o) {
-            return true;
-        }
-        if (o == null || getClass() != o.getClass()) {
-            return false;
-        }
-        RemoveFileEntry that = (RemoveFileEntry) o;
-        return path.equals(that.path) &&
-                deletionTimestamp == that.deletionTimestamp &&
-                dataChange == that.dataChange;
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return Objects.hash(path, deletionTimestamp, dataChange);
-    }
-
-    @Override
-    public String toString()
-    {
-        return format("RemoveFileEntry{path=%s, deletionTimestamp=%d, dataChange=%b}", path, deletionTimestamp, dataChange);
+        return INSTANCE_SIZE
+                + estimatedSizeOf(path)
+                + estimatedSizeOf(partitionValues, SizeOf::estimatedSizeOf, SizeOf::estimatedSizeOf)
+                + SIZE_OF_LONG
+                + sizeOf(deletionVector, DeletionVectorEntry::getRetainedSizeInBytes);
     }
 }

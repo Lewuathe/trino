@@ -28,15 +28,12 @@ import org.apache.parquet.io.PrimitiveColumnIO;
 import java.util.List;
 import java.util.Optional;
 
-import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.parquet.ParquetTypeUtils.getArrayElementColumn;
 import static io.trino.parquet.ParquetTypeUtils.getMapKeyValueColumn;
 import static io.trino.parquet.ParquetTypeUtils.lookupColumnById;
 import static java.util.Objects.requireNonNull;
-import static org.apache.parquet.io.ColumnIOUtil.columnDefinitionLevel;
-import static org.apache.parquet.io.ColumnIOUtil.columnRepetitionLevel;
 import static org.apache.parquet.schema.Type.Repetition.OPTIONAL;
 
 public final class IcebergParquetColumnIOConverter
@@ -50,11 +47,11 @@ public final class IcebergParquetColumnIOConverter
             return Optional.empty();
         }
         boolean required = columnIO.getType().getRepetition() != OPTIONAL;
-        int repetitionLevel = columnRepetitionLevel(columnIO);
-        int definitionLevel = columnDefinitionLevel(columnIO);
-        Type type = context.getType();
+        int repetitionLevel = columnIO.getRepetitionLevel();
+        int definitionLevel = columnIO.getDefinitionLevel();
+        Type type = context.type();
         if (type instanceof RowType rowType) {
-            List<ColumnIdentity> subColumns = context.getColumnIdentity().getChildren();
+            List<ColumnIdentity> subColumns = context.columnIdentity().getChildren();
             GroupColumnIO groupColumnIO = (GroupColumnIO) columnIO;
             ImmutableList.Builder<Optional<Field>> fieldsBuilder = ImmutableList.builder();
             List<RowType.Field> fields = rowType.getFields();
@@ -77,7 +74,7 @@ public final class IcebergParquetColumnIOConverter
             if (keyValueColumnIO.getChildrenCount() != 2) {
                 return Optional.empty();
             }
-            List<ColumnIdentity> subColumns = context.getColumnIdentity().getChildren();
+            List<ColumnIdentity> subColumns = context.columnIdentity().getChildren();
             checkArgument(subColumns.size() == 2, "Not a map: %s", context);
             ColumnIdentity keyIdentity = subColumns.get(0);
             ColumnIdentity valueIdentity = subColumns.get(1);
@@ -92,7 +89,7 @@ public final class IcebergParquetColumnIOConverter
             if (groupColumnIO.getChildrenCount() != 1) {
                 return Optional.empty();
             }
-            List<ColumnIdentity> subColumns = context.getColumnIdentity().getChildren();
+            List<ColumnIdentity> subColumns = context.columnIdentity().getChildren();
             checkArgument(subColumns.size() == 1, "Not an array: %s", context);
             ColumnIdentity elementIdentity = getOnlyElement(subColumns);
             // TODO validate column ID
@@ -103,34 +100,12 @@ public final class IcebergParquetColumnIOConverter
         return Optional.of(new PrimitiveField(type, required, primitiveColumnIO.getColumnDescriptor(), primitiveColumnIO.getId()));
     }
 
-    public static class FieldContext
+    public record FieldContext(Type type, ColumnIdentity columnIdentity)
     {
-        private final Type type;
-        private final ColumnIdentity columnIdentity;
-
-        public FieldContext(Type type, ColumnIdentity columnIdentity)
+        public FieldContext
         {
-            this.type = requireNonNull(type, "type is null");
-            this.columnIdentity = requireNonNull(columnIdentity, "columnIdentity is null");
-        }
-
-        public Type getType()
-        {
-            return type;
-        }
-
-        public ColumnIdentity getColumnIdentity()
-        {
-            return columnIdentity;
-        }
-
-        @Override
-        public String toString()
-        {
-            return toStringHelper(this)
-                    .add("type", type)
-                    .add("columnIdentity", columnIdentity)
-                    .toString();
+            requireNonNull(type, "type is null");
+            requireNonNull(columnIdentity, "columnIdentity is null");
         }
     }
 }

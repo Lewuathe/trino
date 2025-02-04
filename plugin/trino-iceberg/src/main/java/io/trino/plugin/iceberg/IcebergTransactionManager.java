@@ -13,12 +13,11 @@
  */
 package io.trino.plugin.iceberg;
 
+import com.google.errorprone.annotations.concurrent.GuardedBy;
+import com.google.inject.Inject;
 import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.security.ConnectorIdentity;
-
-import javax.annotation.concurrent.GuardedBy;
-import javax.inject.Inject;
 
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -68,7 +67,7 @@ public class IcebergTransactionManager
         MemoizedMetadata transactionalMetadata = transactions.remove(transaction);
         checkArgument(transactionalMetadata != null, "no such transaction: %s", transaction);
         transactionalMetadata.optionalGet().ifPresent(metadata -> {
-            try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+            try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
                 metadata.rollback();
             }
         });
@@ -87,7 +86,7 @@ public class IcebergTransactionManager
         public synchronized IcebergMetadata get(ConnectorIdentity identity)
         {
             if (metadata == null) {
-                try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+                try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
                     metadata = metadataFactory.create(identity);
                 }
             }

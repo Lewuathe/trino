@@ -13,37 +13,38 @@
  */
 package io.trino.plugin.iceberg.catalog.hms;
 
-import io.trino.plugin.hive.TableAlreadyExistsException;
+import io.trino.annotation.NotThreadSafe;
+import io.trino.metastore.PrincipalPrivileges;
+import io.trino.metastore.Table;
+import io.trino.metastore.cache.CachingHiveMetastore;
 import io.trino.plugin.hive.metastore.MetastoreUtil;
-import io.trino.plugin.hive.metastore.PrincipalPrivileges;
-import io.trino.plugin.hive.metastore.Table;
-import io.trino.plugin.hive.metastore.cache.CachingHiveMetastore;
+import io.trino.plugin.iceberg.CreateTableException;
 import io.trino.plugin.iceberg.UnknownTableTypeException;
 import io.trino.plugin.iceberg.catalog.AbstractIcebergTableOperations;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorSession;
-import io.trino.spi.connector.SchemaNotFoundException;
 import io.trino.spi.connector.TableNotFoundException;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.io.FileIO;
 
-import javax.annotation.concurrent.NotThreadSafe;
-
 import java.util.Optional;
 
 import static com.google.common.base.Verify.verify;
-import static io.trino.plugin.hive.HiveMetadata.TABLE_COMMENT;
+import static io.trino.metastore.PrincipalPrivileges.NO_PRIVILEGES;
+import static io.trino.metastore.Table.TABLE_COMMENT;
 import static io.trino.plugin.hive.TableType.EXTERNAL_TABLE;
-import static io.trino.plugin.hive.ViewReaderUtil.isHiveOrPrestoView;
-import static io.trino.plugin.hive.ViewReaderUtil.isPrestoView;
-import static io.trino.plugin.hive.metastore.PrincipalPrivileges.NO_PRIVILEGES;
+import static io.trino.plugin.hive.ViewReaderUtil.isTrinoMaterializedView;
+import static io.trino.plugin.hive.ViewReaderUtil.isTrinoView;
+import static io.trino.plugin.hive.util.HiveUtil.isIcebergTable;
 import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_INVALID_METADATA;
-import static io.trino.plugin.iceberg.IcebergUtil.isIcebergTable;
+import static io.trino.plugin.iceberg.IcebergTableName.isMaterializedViewStorage;
+import static io.trino.plugin.iceberg.IcebergTableName.tableNameFrom;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 import static org.apache.iceberg.BaseMetastoreTableOperations.ICEBERG_TABLE_TYPE_VALUE;
 import static org.apache.iceberg.BaseMetastoreTableOperations.METADATA_LOCATION_PROP;
+import static org.apache.iceberg.BaseMetastoreTableOperations.PREVIOUS_METADATA_LOCATION_PROP;
 import static org.apache.iceberg.BaseMetastoreTableOperations.TABLE_TYPE_PROP;
 
 @NotThreadSafe
@@ -66,18 +67,28 @@ public abstract class AbstractMetastoreTableOperations
     }
 
     @Override
-    protected final String getRefreshedLocation(boolean invalidateCaches)
+    protected String getRefreshedLocation(boolean invalidateCaches)
     {
         if (invalidateCaches) {
             metastore.invalidateTable(database, tableName);
         }
-        Table table = getTable();
 
-        if (isPrestoView(table) && isHiveOrPrestoView(table)) {
-            // this is a Hive view, hence not a table
+        boolean isMaterializedViewStorageTable = isMaterializedViewStorage(tableName);
+
+        Table table;
+        if (isMaterializedViewStorageTable) {
+            table = getTable(database, tableNameFrom(tableName));
+        }
+        else {
+            table = getTable();
+        }
+
+        if (!isMaterializedViewStorageTable && (isTrinoView(table) || isTrinoMaterializedView(table))) {
+            // this is a Hive view or Trino/Presto view, or Trino materialized view, hence not a table
+            // TODO table operations should not be constructed for views (remove exception-driven code path)
             throw new TableNotFoundException(getSchemaTableName());
         }
-        if (!isIcebergTable(table)) {
+        if (!isMaterializedViewStorageTable && !isIcebergTable(table)) {
             throw new UnknownTableTypeException(getSchemaTableName());
         }
 
@@ -95,38 +106,47 @@ public abstract class AbstractMetastoreTableOperations
         verify(version.isEmpty(), "commitNewTable called on a table which already exists");
         String newMetadataLocation = writeNewMetadata(metadata, 0);
 
-        Table.Builder builder = Table.builder()
+        Table table = Table.builder()
                 .setDatabaseName(database)
                 .setTableName(tableName)
                 .setOwner(owner)
                 // Table needs to be EXTERNAL, otherwise table rename in HMS would rename table directory and break table contents.
                 .setTableType(EXTERNAL_TABLE.name())
-                .setDataColumns(toHiveColumns(metadata.schema().columns()))
-                .withStorage(storage -> storage.setLocation(metadata.location()))
                 .withStorage(storage -> storage.setStorageFormat(ICEBERG_METASTORE_STORAGE_FORMAT))
                 // This is a must-have property for the EXTERNAL_TABLE table type
                 .setParameter("EXTERNAL", "TRUE")
                 .setParameter(TABLE_TYPE_PROP, ICEBERG_TABLE_TYPE_VALUE.toUpperCase(ENGLISH))
-                .setParameter(METADATA_LOCATION_PROP, newMetadataLocation);
-        String tableComment = metadata.properties().get(TABLE_COMMENT);
-        if (tableComment != null) {
-            builder.setParameter(TABLE_COMMENT, tableComment);
-        }
-        Table table = builder.build();
+                .apply(builder -> updateMetastoreTable(builder, metadata, newMetadataLocation, Optional.empty()))
+                .build();
 
         PrincipalPrivileges privileges = owner.map(MetastoreUtil::buildInitialPrivilegeSet).orElse(NO_PRIVILEGES);
         try {
             metastore.createTable(table, privileges);
         }
-        catch (SchemaNotFoundException
-               | TableAlreadyExistsException e) {
-            // clean up metadata files corresponding to the current transaction
+        catch (Exception e) {
+            // clean up metadata file corresponding to the current transaction
             fileIo.deleteFile(newMetadataLocation);
-            throw e;
+            // wrap exception in CleanableFailure to ensure that manifest list Avro files are also cleaned up
+            throw new CreateTableException(e, getSchemaTableName());
         }
     }
 
+    protected Table.Builder updateMetastoreTable(Table.Builder builder, TableMetadata metadata, String metadataLocation, Optional<String> previousMetadataLocation)
+    {
+        return builder
+                .setDataColumns(toHiveColumns(metadata.schema().columns()))
+                .withStorage(storage -> storage.setLocation(metadata.location()))
+                .setParameter(METADATA_LOCATION_PROP, metadataLocation)
+                .setParameter(PREVIOUS_METADATA_LOCATION_PROP, previousMetadataLocation)
+                .setParameter(TABLE_COMMENT, Optional.ofNullable(metadata.properties().get(TABLE_COMMENT)));
+    }
+
     protected Table getTable()
+    {
+        return getTable(database, tableName);
+    }
+
+    protected Table getTable(String database, String tableName)
     {
         return metastore.getTable(database, tableName)
                 .orElseThrow(() -> new TableNotFoundException(getSchemaTableName()));

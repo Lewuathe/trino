@@ -27,11 +27,11 @@ import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
-import io.trino.testing.LocalQueryRunner;
+import io.trino.testing.PlanTester;
 import io.trino.testing.TestingSession;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.BeforeMethod;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.List;
 import java.util.Map;
@@ -46,8 +46,9 @@ import static io.trino.sql.planner.assertions.PlanMatchPattern.tableScan;
 import static io.trino.testing.TestingHandles.TEST_CATALOG_NAME;
 import static java.util.stream.Collectors.toUnmodifiableList;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
 
-@Test(singleThreaded = true) // shared mutable state
+@Execution(SAME_THREAD) // testApplyAggregation is shared mutable state
 public class TestPushDistinctLimitIntoTableScan
         extends BaseRuleTest
 {
@@ -57,16 +58,16 @@ public class TestPushDistinctLimitIntoTableScan
     private ApplyAggregation testApplyAggregation;
 
     @Override
-    protected Optional<LocalQueryRunner> createLocalQueryRunner()
+    protected Optional<PlanTester> createPlanTester()
     {
         Session defaultSession = TestingSession.testSessionBuilder()
                 .setCatalog(TEST_CATALOG_NAME)
                 .setSchema("tiny")
                 .build();
 
-        LocalQueryRunner queryRunner = LocalQueryRunner.create(defaultSession);
+        PlanTester planTester = PlanTester.create(defaultSession);
 
-        queryRunner.createCatalog(
+        planTester.createCatalog(
                 TEST_CATALOG_NAME,
                 MockConnectorFactory.builder()
                         .withApplyAggregation(
@@ -79,26 +80,21 @@ public class TestPushDistinctLimitIntoTableScan
                         .build(),
                 Map.of());
 
-        return Optional.of(queryRunner);
+        return Optional.of(planTester);
     }
 
-    @BeforeClass
+    @BeforeAll
     public void init()
     {
-        rule = new PushDistinctLimitIntoTableScan(tester().getPlannerContext(), tester().getTypeAnalyzer());
+        rule = new PushDistinctLimitIntoTableScan(tester().getPlannerContext());
 
         tableHandle = tester().getCurrentCatalogTableHandle("mock_schema", "mock_nation");
-    }
-
-    @BeforeMethod
-    public void reset()
-    {
-        testApplyAggregation = null;
     }
 
     @Test
     public void testDoesNotFireIfNoTableScan()
     {
+        testApplyAggregation = null;
         tester().assertThat(rule)
                 .on(p -> p.values(p.symbol("a", BIGINT)))
                 .doesNotFire();

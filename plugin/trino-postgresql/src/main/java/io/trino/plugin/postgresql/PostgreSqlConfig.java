@@ -14,30 +14,21 @@
 package io.trino.plugin.postgresql;
 
 import io.airlift.configuration.Config;
+import io.airlift.configuration.ConfigDescription;
+import io.airlift.configuration.DefunctConfig;
 import io.airlift.configuration.LegacyConfig;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
 
-import javax.validation.constraints.NotNull;
+import java.util.Optional;
 
+@DefunctConfig("postgresql.disable-automatic-fetch-size")
 public class PostgreSqlConfig
 {
-    private boolean disableAutomaticFetchSize;
     private ArrayMapping arrayMapping = ArrayMapping.DISABLED;
     private boolean includeSystemTables;
     private boolean enableStringPushdownWithCollate;
-
-    @Deprecated
-    public boolean isDisableAutomaticFetchSize()
-    {
-        return disableAutomaticFetchSize;
-    }
-
-    @Deprecated // TODO temporary kill-switch, to be removed
-    @Config("postgresql.disable-automatic-fetch-size")
-    public PostgreSqlConfig setDisableAutomaticFetchSize(boolean disableAutomaticFetchSize)
-    {
-        this.disableAutomaticFetchSize = disableAutomaticFetchSize;
-        return this;
-    }
+    private Integer fetchSize;
 
     public enum ArrayMapping
     {
@@ -81,6 +72,19 @@ public class PostgreSqlConfig
     public PostgreSqlConfig setEnableStringPushdownWithCollate(boolean enableStringPushdownWithCollate)
     {
         this.enableStringPushdownWithCollate = enableStringPushdownWithCollate;
+        return this;
+    }
+
+    public Optional<@Min(0) Integer> getFetchSize()
+    {
+        return Optional.ofNullable(fetchSize);
+    }
+
+    @Config("postgresql.fetch-size")
+    @ConfigDescription("Postgresql fetch size, trino specific heuristic is applied if empty")
+    public PostgreSqlConfig setFetchSize(Integer fetchSize)
+    {
+        this.fetchSize = fetchSize;
         return this;
     }
 }

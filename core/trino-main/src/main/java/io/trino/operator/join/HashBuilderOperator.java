@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.io.Closer;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.errorprone.annotations.ThreadSafe;
 import io.airlift.log.Logger;
 import io.trino.memory.context.LocalMemoryContext;
 import io.trino.operator.DriverContext;
@@ -31,9 +32,7 @@ import io.trino.spiller.SingleStreamSpiller;
 import io.trino.spiller.SingleStreamSpillerFactory;
 import io.trino.sql.gen.JoinFilterFunctionCompiler.JoinFilterFunctionFactory;
 import io.trino.sql.planner.plan.PlanNodeId;
-
-import javax.annotation.Nullable;
-import javax.annotation.concurrent.ThreadSafe;
+import jakarta.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -286,30 +285,15 @@ public class HashBuilderOperator
     @Override
     public ListenableFuture<Void> isBlocked()
     {
-        switch (state) {
-            case CONSUMING_INPUT:
-                return NOT_BLOCKED;
-
-            case SPILLING_INPUT:
-                return spillInProgress;
-
-            case LOOKUP_SOURCE_BUILT:
-                return lookupSourceNotNeeded.orElseThrow(() -> new IllegalStateException("Lookup source built, but disposal future not set"));
-
-            case INPUT_SPILLED:
-                return spilledLookupSourceHandle.getUnspillingOrDisposeRequested();
-
-            case INPUT_UNSPILLING:
-                return unspillInProgress.map(HashBuilderOperator::asVoid)
-                        .orElseThrow(() -> new IllegalStateException("Unspilling in progress, but unspilling future not set"));
-
-            case INPUT_UNSPILLED_AND_BUILT:
-                return spilledLookupSourceHandle.getDisposeRequested();
-
-            case CLOSED:
-                return NOT_BLOCKED;
-        }
-        throw new IllegalStateException("Unhandled state: " + state);
+        return switch (state) {
+            case CONSUMING_INPUT -> NOT_BLOCKED;
+            case SPILLING_INPUT -> spillInProgress;
+            case LOOKUP_SOURCE_BUILT -> lookupSourceNotNeeded.orElseThrow(() -> new IllegalStateException("Lookup source built, but disposal future not set"));
+            case INPUT_SPILLED -> spilledLookupSourceHandle.getUnspillingOrDisposeRequested();
+            case INPUT_UNSPILLING -> unspillInProgress.map(HashBuilderOperator::asVoid).orElseThrow(() -> new IllegalStateException("Unspilling in progress, but unspilling future not set"));
+            case INPUT_UNSPILLED_AND_BUILT -> spilledLookupSourceHandle.getDisposeRequested();
+            case CLOSED -> NOT_BLOCKED;
+        };
     }
 
     private static <T> ListenableFuture<Void> asVoid(ListenableFuture<T> future)

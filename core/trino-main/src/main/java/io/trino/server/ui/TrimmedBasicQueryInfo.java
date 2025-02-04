@@ -14,6 +14,7 @@
 package io.trino.server.ui;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.errorprone.annotations.Immutable;
 import io.trino.execution.QueryState;
 import io.trino.operator.RetryPolicy;
 import io.trino.server.BasicQueryInfo;
@@ -24,10 +25,9 @@ import io.trino.spi.QueryId;
 import io.trino.spi.resourcegroups.QueryType;
 import io.trino.spi.resourcegroups.ResourceGroupId;
 
-import javax.annotation.concurrent.Immutable;
-
 import java.net.URI;
 import java.util.Optional;
+import java.util.Set;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
@@ -42,6 +42,7 @@ public class TrimmedBasicQueryInfo
     private final Optional<String> sessionPrincipal;
     private final Optional<String> sessionSource;
     private final Optional<ResourceGroupId> resourceGroupId;
+    private final Optional<String> queryDataEncoding;
     private final QueryState state;
     private final boolean scheduled;
     private final URI self;
@@ -53,6 +54,7 @@ public class TrimmedBasicQueryInfo
     private final Optional<ErrorCode> errorCode;
     private final Optional<QueryType> queryType;
     private final RetryPolicy retryPolicy;
+    private final Optional<Set<String>> clientTags;
 
     public TrimmedBasicQueryInfo(BasicQueryInfo queryInfo)
     {
@@ -61,6 +63,7 @@ public class TrimmedBasicQueryInfo
         this.sessionPrincipal = requireNonNull(queryInfo.getSession().getPrincipal(), "principal is null");
         this.sessionSource = requireNonNull(queryInfo.getSession().getSource(), "source is null");
         this.resourceGroupId = requireNonNull(queryInfo.getResourceGroupId(), "resourceGroupId is null");
+        this.queryDataEncoding = requireNonNull(queryInfo.getSession().getQueryDataEncoding(), "queryDataEncoding is null");
         this.state = requireNonNull(queryInfo.getState(), "state is null");
         this.errorType = Optional.ofNullable(queryInfo.getErrorType());
         this.errorCode = Optional.ofNullable(queryInfo.getErrorCode());
@@ -78,6 +81,7 @@ public class TrimmedBasicQueryInfo
         this.queryStats = requireNonNull(queryInfo.getQueryStats(), "queryStats is null");
         this.queryType = requireNonNull(queryInfo.getQueryType(), "queryType is null");
         this.retryPolicy = requireNonNull(queryInfo.getRetryPolicy(), "retryPolicy is null");
+        this.clientTags = Optional.ofNullable(queryInfo.getSession().getClientTags());
     }
 
     @JsonProperty
@@ -108,6 +112,12 @@ public class TrimmedBasicQueryInfo
     public Optional<ResourceGroupId> getResourceGroupId()
     {
         return resourceGroupId;
+    }
+
+    @JsonProperty
+    public Optional<String> getQueryDataEncoding()
+    {
+        return queryDataEncoding;
     }
 
     @JsonProperty
@@ -174,6 +184,12 @@ public class TrimmedBasicQueryInfo
     public RetryPolicy getRetryPolicy()
     {
         return retryPolicy;
+    }
+
+    @JsonProperty
+    public Optional<Set<String>> getClientTags()
+    {
+        return clientTags;
     }
 
     @Override

@@ -24,9 +24,7 @@ import io.trino.spi.predicate.TupleDomain;
 import io.trino.sql.planner.PartitioningHandle;
 
 import java.util.List;
-import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 
 import static java.util.Objects.requireNonNull;
 
@@ -65,12 +63,8 @@ public class TableProperties
                                 Optional.of(catalogHandle),
                                 Optional.of(transaction),
                                 nodePartitioning.getPartitioningHandle()),
-                        nodePartitioning.getPartitioningColumns()));
-    }
-
-    public Optional<Set<ColumnHandle>> getStreamPartitioningColumns()
-    {
-        return tableProperties.getStreamPartitioningColumns();
+                        nodePartitioning.getPartitioningColumns(),
+                        nodePartitioning.isSingleSplitPerPartition()));
     }
 
     public Optional<DiscretePredicates> getDiscretePredicates()
@@ -78,45 +72,15 @@ public class TableProperties
         return tableProperties.getDiscretePredicates();
     }
 
-    public static class TablePartitioning
+    public record TablePartitioning(
+            PartitioningHandle partitioningHandle,
+            List<ColumnHandle> partitioningColumns,
+            boolean singleSplitPerPartition)
     {
-        private final PartitioningHandle partitioningHandle;
-        private final List<ColumnHandle> partitioningColumns;
-
-        public TablePartitioning(PartitioningHandle partitioningHandle, List<ColumnHandle> partitioningColumns)
+        public TablePartitioning
         {
-            this.partitioningHandle = requireNonNull(partitioningHandle, "partitioningHandle is null");
-            this.partitioningColumns = ImmutableList.copyOf(requireNonNull(partitioningColumns, "partitioningColumns is null"));
-        }
-
-        public PartitioningHandle getPartitioningHandle()
-        {
-            return partitioningHandle;
-        }
-
-        public List<ColumnHandle> getPartitioningColumns()
-        {
-            return partitioningColumns;
-        }
-
-        @Override
-        public boolean equals(Object o)
-        {
-            if (this == o) {
-                return true;
-            }
-            if (o == null || getClass() != o.getClass()) {
-                return false;
-            }
-            TablePartitioning that = (TablePartitioning) o;
-            return Objects.equals(partitioningHandle, that.partitioningHandle) &&
-                    Objects.equals(partitioningColumns, that.partitioningColumns);
-        }
-
-        @Override
-        public int hashCode()
-        {
-            return Objects.hash(partitioningHandle, partitioningColumns);
+            requireNonNull(partitioningHandle, "partitioningHandle is null");
+            partitioningColumns = ImmutableList.copyOf(requireNonNull(partitioningColumns, "partitioningColumns is null"));
         }
     }
 }

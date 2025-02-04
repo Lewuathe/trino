@@ -13,7 +13,6 @@
  */
 package io.trino.plugin.kafka;
 
-import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.configuration.Config;
@@ -24,11 +23,10 @@ import io.airlift.units.DataSize;
 import io.airlift.units.DataSize.Unit;
 import io.trino.plugin.kafka.schema.file.FileTableDescriptionSupplier;
 import io.trino.spi.HostAddress;
-
-import javax.validation.constraints.Min;
-import javax.validation.constraints.NotEmpty;
-import javax.validation.constraints.NotNull;
-import javax.validation.constraints.Size;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 
 import java.io.File;
 import java.util.List;
@@ -36,7 +34,6 @@ import java.util.Set;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
-import static com.google.common.collect.Streams.stream;
 
 @DefunctConfig("kafka.connect-timeout")
 public class KafkaConfig
@@ -61,9 +58,11 @@ public class KafkaConfig
 
     @Config("kafka.nodes")
     @ConfigDescription("Seed nodes for Kafka cluster. At least one must exist")
-    public KafkaConfig setNodes(String nodes)
+    public KafkaConfig setNodes(Set<String> nodes)
     {
-        this.nodes = (nodes == null) ? null : parseNodes(nodes);
+        this.nodes = nodes.stream()
+                .map(KafkaConfig::toHostAddress)
+                .collect(toImmutableSet());
         return this;
     }
 
@@ -119,14 +118,6 @@ public class KafkaConfig
     {
         this.hideInternalColumns = hideInternalColumns;
         return this;
-    }
-
-    private static ImmutableSet<HostAddress> parseNodes(String nodes)
-    {
-        Splitter splitter = Splitter.on(',').omitEmptyStrings().trimResults();
-        return stream(splitter.split(nodes))
-                .map(KafkaConfig::toHostAddress)
-                .collect(toImmutableSet());
     }
 
     private static HostAddress toHostAddress(String value)

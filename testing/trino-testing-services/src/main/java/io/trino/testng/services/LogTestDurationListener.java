@@ -14,6 +14,7 @@
 package io.trino.testng.services;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.log.Logger;
 import io.airlift.units.Duration;
 import io.trino.jvm.Threads;
@@ -23,8 +24,6 @@ import org.testng.IInvokedMethod;
 import org.testng.IInvokedMethodListener;
 import org.testng.ITestClass;
 import org.testng.ITestResult;
-
-import javax.annotation.concurrent.GuardedBy;
 
 import java.util.Arrays;
 import java.util.Map;
@@ -40,6 +39,7 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Throwables.getStackTraceAsString;
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static io.airlift.units.Duration.nanosSince;
+import static io.trino.testing.SystemEnvironmentUtils.isEnvSet;
 import static io.trino.testng.services.Listeners.formatTestName;
 import static io.trino.testng.services.Listeners.reportListenerFailure;
 import static java.lang.String.format;
@@ -80,7 +80,7 @@ public class LogTestDurationListener
         if (System.getProperty("LogTestDurationListener.enabled") != null) {
             return Boolean.getBoolean("LogTestDurationListener.enabled");
         }
-        if (System.getenv("CONTINUOUS_INTEGRATION") != null) {
+        if (isEnvSet("CONTINUOUS_INTEGRATION")) {
             return true;
         }
         // LogTestDurationListener does not support concurrent invocations of same test method

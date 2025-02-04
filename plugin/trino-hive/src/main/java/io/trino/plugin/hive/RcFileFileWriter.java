@@ -23,7 +23,6 @@ import io.trino.memory.context.AggregatedMemoryContext;
 import io.trino.spi.Page;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
-import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.RunLengthEncodedBlock;
 import io.trino.spi.type.Type;
 
@@ -45,7 +44,7 @@ import static io.trino.plugin.hive.HiveErrorCode.HIVE_WRITER_DATA_ERROR;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_WRITE_VALIDATION_FAILED;
 import static java.util.Objects.requireNonNull;
 
-public class RcFileFileWriter
+public final class RcFileFileWriter
         implements FileWriter
 {
     private static final int INSTANCE_SIZE = instanceSize(RcFileFileWriter.class);
@@ -88,9 +87,7 @@ public class RcFileFileWriter
 
         ImmutableList.Builder<Block> nullBlocks = ImmutableList.builder();
         for (Type fileColumnType : fileColumnTypes) {
-            BlockBuilder blockBuilder = fileColumnType.createBlockBuilder(null, 1, 0);
-            blockBuilder.appendNull();
-            nullBlocks.add(blockBuilder.build());
+            nullBlocks.add(fileColumnType.createNullBlock());
         }
         this.nullBlocks = nullBlocks.build();
         this.validationInputFactory = validationInputFactory;
@@ -140,7 +137,7 @@ public class RcFileFileWriter
             try {
                 rollbackAction.close();
             }
-            catch (Exception ignored) {
+            catch (Exception _) {
                 // ignore
             }
             throw new TrinoException(HIVE_WRITER_CLOSE_ERROR, "Error committing write to Hive", e);

@@ -17,34 +17,35 @@ package io.trino.sql.planner;
 import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Resources;
+import com.google.errorprone.annotations.FormatMethod;
 import io.airlift.log.Logger;
 import io.trino.Session;
-import io.trino.execution.warnings.WarningCollector;
-import io.trino.metadata.TableHandle;
-import io.trino.metadata.TableMetadata;
-import io.trino.spi.connector.ConnectorFactory;
+import io.trino.spi.catalog.CatalogName;
+import io.trino.spi.connector.CatalogSchemaTableName;
+import io.trino.sql.DynamicFilters;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.OptimizerConfig.JoinDistributionType;
 import io.trino.sql.planner.OptimizerConfig.JoinReorderingStrategy;
 import io.trino.sql.planner.assertions.BasePlanTest;
 import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.ExchangeNode;
+import io.trino.sql.planner.plan.FilterNode;
 import io.trino.sql.planner.plan.JoinNode;
 import io.trino.sql.planner.plan.SemiJoinNode;
 import io.trino.sql.planner.plan.TableScanNode;
 import io.trino.sql.planner.plan.ValuesNode;
-import io.trino.testing.LocalQueryRunner;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import io.trino.testing.PlanTester;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
-import java.util.Optional;
 import java.util.stream.IntStream;
-import java.util.stream.Stream;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
@@ -53,12 +54,15 @@ import static com.google.common.io.Files.createParentDirs;
 import static com.google.common.io.Files.write;
 import static com.google.common.io.Resources.getResource;
 import static io.trino.Session.SessionBuilder;
+import static io.trino.SystemSessionProperties.IGNORE_STATS_CALCULATOR_FAILURES;
 import static io.trino.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
 import static io.trino.SystemSessionProperties.JOIN_REORDERING_STRATEGY;
+import static io.trino.execution.querystats.PlanOptimizersStatsCollector.createPlanOptimizersStatsCollector;
+import static io.trino.execution.warnings.WarningCollector.NOOP;
+import static io.trino.sql.DynamicFilters.extractDynamicFilters;
 import static io.trino.sql.planner.LogicalPlanner.Stage.OPTIMIZED_AND_VALIDATED;
 import static io.trino.sql.planner.plan.JoinNode.DistributionType.REPLICATED;
-import static io.trino.sql.planner.plan.JoinNode.Type.INNER;
-import static io.trino.testing.DataProviders.toDataProvider;
+import static io.trino.sql.planner.plan.JoinType.INNER;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -66,92 +70,90 @@ import static java.nio.file.Files.isDirectory;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.joining;
-import static org.testng.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public abstract class BaseCostBasedPlanTest
         extends BasePlanTest
 {
     private static final Logger log = Logger.get(BaseCostBasedPlanTest.class);
-
-    public static final List<String> TPCH_SQL_FILES = IntStream.rangeClosed(1, 22)
-            .mapToObj(i -> format("q%02d", i))
-            .map(queryId -> format("/sql/presto/tpch/%s.sql", queryId))
-            .collect(toImmutableList());
-
-    public static final List<String> TPCDS_SQL_FILES = IntStream.range(1, 100)
-            .mapToObj(i -> format("q%02d", i))
-            .map(queryId -> format("/sql/presto/tpcds/%s.sql", queryId))
-            .collect(toImmutableList());
-
     private static final String CATALOG_NAME = "local";
 
+    protected static final List<String> TPCH_SQL_FILES = IntStream.rangeClosed(1, 22)
+            .mapToObj(i -> format("q%02d", i))
+            .map(queryId -> format("/sql/trino/tpch/%s.sql", queryId))
+            .collect(toImmutableList());
+
+    protected static final List<String> TPCDS_SQL_FILES = IntStream.range(1, 100)
+            .mapToObj(i -> format("q%02d", i))
+            .map(queryId -> format("/sql/trino/tpcds/%s.sql", queryId))
+            .collect(toImmutableList());
+
     private final String schemaName;
-    private final Optional<String> fileFormatName;
     private final boolean partitioned;
-    protected boolean smallFiles;
+    private final IcebergCostBasedPlanTestSetup planTestSetup;
 
-    public BaseCostBasedPlanTest(String schemaName, Optional<String> fileFormatName, boolean partitioned)
-    {
-        this(schemaName, fileFormatName, partitioned, false);
-    }
-
-    public BaseCostBasedPlanTest(String schemaName, Optional<String> fileFormatName, boolean partitioned, boolean smallFiles)
+    public BaseCostBasedPlanTest(String schemaName, boolean partitioned)
     {
         this.schemaName = requireNonNull(schemaName, "schemaName is null");
-        this.fileFormatName = requireNonNull(fileFormatName, "fileFormatName is null");
         this.partitioned = partitioned;
-        this.smallFiles = smallFiles;
+        this.planTestSetup = new IcebergCostBasedPlanTestSetup();
     }
 
     @Override
-    protected LocalQueryRunner createLocalQueryRunner()
+    protected PlanTester createPlanTester()
     {
         SessionBuilder sessionBuilder = testSessionBuilder()
                 .setCatalog(CATALOG_NAME)
                 .setSchema(schemaName)
+                // Reducing ARM and x86 floating point arithmetic differences, mostly visible at PlanNodeStatsEstimateMath::estimateCorrelatedConjunctionRowCount
+                .setSystemProperty("filter_conjunction_independence_factor", "0.750000001")
                 .setSystemProperty("task_concurrency", "1") // these tests don't handle exchanges from local parallel
                 .setSystemProperty(JOIN_REORDERING_STRATEGY, JoinReorderingStrategy.AUTOMATIC.name())
-                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, JoinDistributionType.AUTOMATIC.name());
-        LocalQueryRunner queryRunner = LocalQueryRunner.builder(sessionBuilder.build())
-                .withNodeCountForStats(8)
-                .build();
-        queryRunner.createCatalog(
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, JoinDistributionType.AUTOMATIC.name())
+                .setSystemProperty(IGNORE_STATS_CALCULATOR_FAILURES, "false");
+        PlanTester planTester = PlanTester.create(sessionBuilder.build(), 8);
+        planTester.createCatalog(
                 CATALOG_NAME,
-                createConnectorFactory(),
+                planTestSetup.createConnectorFactory(),
                 ImmutableMap.of());
-        return queryRunner;
+        return planTester;
     }
 
-    protected abstract ConnectorFactory createConnectorFactory();
-
-    @BeforeClass
-    public abstract void prepareTables()
-            throws Exception;
-
-    protected abstract Stream<String> getQueryResourcePaths();
-
-    @DataProvider
-    public Object[][] getQueriesDataProvider()
+    @BeforeAll
+    public void prepareTables()
     {
-        return getQueryResourcePaths()
-                .collect(toDataProvider());
+        planTestSetup.createDatabase(schemaName);
+        planTestSetup.populateTablesFromResource(getTableNames(), schemaName, getTableResourceDirectory(), getTableTargetDirectory());
     }
 
-    @Test(dataProvider = "getQueriesDataProvider")
+    @AfterAll
+    public void cleanUp()
+            throws Exception
+    {
+        planTestSetup.cleanUp();
+    }
+
+    protected abstract List<String> getTableNames();
+
+    protected abstract String getTableResourceDirectory();
+
+    protected abstract String getTableTargetDirectory();
+
+    protected abstract List<String> getQueryResourcePaths();
+
+    @ParameterizedTest
+    @MethodSource("getQueryResourcePaths")
     public void test(String queryResourcePath)
     {
-        assertEquals(generateQueryPlan(readQuery(queryResourcePath)), read(getQueryPlanResourcePath(queryResourcePath)));
+        assertThat(generateQueryPlan(readQuery(queryResourcePath))).isEqualTo(read(getQueryPlanResourcePath(queryResourcePath)));
     }
 
     private String getQueryPlanResourcePath(String queryResourcePath)
     {
         Path queryPath = Paths.get(queryResourcePath);
-        String connectorName = getQueryRunner().getCatalogManager().getCatalog(CATALOG_NAME).orElseThrow().getConnectorName().toString();
+        String connectorName = getPlanTester().getCatalogManager().getCatalog(new CatalogName(CATALOG_NAME)).orElseThrow().getConnectorName().toString();
         Path directory = queryPath.getParent();
-        directory = directory.resolve(connectorName + (smallFiles ? "_small_files" : ""));
-        if (fileFormatName.isPresent()) {
-            directory = directory.resolve(fileFormatName.get());
-        }
+        directory = directory.resolve(connectorName);
         directory = directory.resolve(partitioned ? "partitioned" : "unpartitioned");
         String planResourceName = queryPath.getFileName().toString().replaceAll("\\.sql$", ".plan.txt");
         return directory.resolve(planResourceName).toString();
@@ -162,7 +164,7 @@ public abstract class BaseCostBasedPlanTest
         initPlanTest();
         try {
             prepareTables();
-            getQueryResourcePaths()
+            getQueryResourcePaths().stream()
                     .parallel()
                     .forEach(queryResourcePath -> {
                         try {
@@ -179,10 +181,6 @@ public abstract class BaseCostBasedPlanTest
                         }
                     });
         }
-        catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException("Interrupted", e);
-        }
         catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -191,7 +189,7 @@ public abstract class BaseCostBasedPlanTest
         }
     }
 
-    public static String readQuery(String resource)
+    private static String readQuery(String resource)
     {
         return read(resource).replaceAll("\\s+;\\s+$", "")
                 .replace("${database}.${schema}.", "")
@@ -212,8 +210,9 @@ public abstract class BaseCostBasedPlanTest
     private String generateQueryPlan(String query)
     {
         try {
-            return getQueryRunner().inTransaction(transactionSession -> {
-                Plan plan = getQueryRunner().createPlan(transactionSession, query, OPTIMIZED_AND_VALIDATED, false, WarningCollector.NOOP);
+            return getPlanTester().inTransaction(transactionSession -> {
+                PlanTester planTester = getPlanTester();
+                Plan plan = planTester.createPlan(transactionSession, query, planTester.getPlanOptimizers(false), OPTIMIZED_AND_VALIDATED, NOOP, createPlanOptimizersStatsCollector());
                 JoinOrderPrinter joinOrderPrinter = new JoinOrderPrinter(transactionSession);
                 plan.getRoot().accept(joinOrderPrinter, 0);
                 return joinOrderPrinter.result();
@@ -224,7 +223,7 @@ public abstract class BaseCostBasedPlanTest
         }
     }
 
-    protected Path getSourcePath()
+    private Path getSourcePath()
     {
         Path workingDir = Paths.get(System.getProperty("user.dir"));
         verify(isDirectory(workingDir), "Working directory is not a directory");
@@ -291,7 +290,7 @@ public abstract class BaseCostBasedPlanTest
                     node.getType(),
                     partitioning.getHandle(),
                     partitioning.getArguments().stream()
-                            .map(Object::toString)
+                            .map(BaseCostBasedPlanTest::argumentBindingToString)
                             .sorted() // Currently, order of hash columns is not deterministic
                             .collect(joining(", ", "[", "]")));
 
@@ -306,7 +305,7 @@ public abstract class BaseCostBasedPlanTest
                     "%s aggregation over (%s)",
                     node.getStep().name().toLowerCase(ENGLISH),
                     node.getGroupingKeys().stream()
-                            .map(Object::toString)
+                            .map(Symbol::name)
                             .sorted()
                             .collect(joining(", ")));
 
@@ -314,17 +313,28 @@ public abstract class BaseCostBasedPlanTest
         }
 
         @Override
-        public Void visitTableScan(TableScanNode node, Integer indent)
+        public Void visitFilter(FilterNode node, Integer indent)
         {
-            TableMetadata tableMetadata = getTableMetadata(node.getTable());
-            output(indent, "scan %s", tableMetadata.getTable().getTableName());
+            DynamicFilters.ExtractResult filters = extractDynamicFilters(node.getPredicate());
+            String inputs = filters.getDynamicConjuncts().stream()
+                    .map(descriptor -> ((Reference) descriptor.getInput()).name() + "::" + descriptor.getOperator())
+                    .sorted()
+                    .collect(joining(", "));
 
-            return null;
+            if (!inputs.isEmpty()) {
+                output(indent, "dynamic filter (%s)", inputs);
+                indent = indent + 1;
+            }
+            return visitPlan(node, indent);
         }
 
-        private TableMetadata getTableMetadata(TableHandle tableHandle)
+        @Override
+        public Void visitTableScan(TableScanNode node, Integer indent)
         {
-            return getQueryRunner().getMetadata().getTableMetadata(session, tableHandle);
+            CatalogSchemaTableName tableName = getPlanTester().getPlannerContext().getMetadata().getTableName(session, node.getTable());
+            output(indent, "scan %s", tableName.getSchemaTableName().getTableName());
+
+            return null;
         }
 
         @Override
@@ -343,10 +353,19 @@ public abstract class BaseCostBasedPlanTest
             return null;
         }
 
+        @FormatMethod
         private void output(int indent, String message, Object... args)
         {
             String formattedMessage = format(message, args);
             result.append(format("%s%s\n", "    ".repeat(indent), formattedMessage));
         }
+    }
+
+    private static String argumentBindingToString(Partitioning.ArgumentBinding argument)
+    {
+        if (argument.isConstant()) {
+            return argument.getConstant().getValue().toString();
+        }
+        return argument.getColumn().name();
     }
 }

@@ -14,8 +14,7 @@
 package io.trino.plugin.deltalake.transactionlog;
 
 import com.google.common.collect.ImmutableList;
-
-import javax.annotation.concurrent.Immutable;
+import com.google.errorprone.annotations.Immutable;
 
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -58,8 +57,8 @@ public final class DeltaLakeDataFileCacheEntry
 
             RemoveFileEntry removeEntry = deltaLakeTransactionLogEntry.getRemove();
             if (removeEntry != null) {
-                activeJsonEntries.remove(removeEntry.getPath());
-                removedFiles.add(removeEntry.getPath());
+                activeJsonEntries.remove(removeEntry.path());
+                removedFiles.add(removeEntry.path());
             }
         });
 

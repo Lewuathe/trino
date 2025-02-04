@@ -13,6 +13,7 @@
  */
 package io.trino.testing.containers;
 
+import com.github.dockerjava.api.command.CreateContainerCmd;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.net.HostAndPort;
@@ -20,6 +21,7 @@ import dev.failsafe.Failsafe;
 import dev.failsafe.RetryPolicy;
 import io.airlift.log.Logger;
 import io.trino.testing.ResourcePresence;
+import org.testcontainers.containers.BindMode;
 import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
@@ -113,6 +115,16 @@ public abstract class BaseTestContainer
                 dockerPath);
     }
 
+    protected void mountDirectory(String hostPath, String dockerPath)
+    {
+        container.addFileSystemBind(hostPath, dockerPath, BindMode.READ_WRITE);
+    }
+
+    protected void withCreateContainerModifier(Consumer<CreateContainerCmd> modifier)
+    {
+        container.withCreateContainerCmdModifier(modifier);
+    }
+
     protected HostAndPort getMappedHostAndPortForExposedPort(int exposedPort)
     {
         return fromParts(container.getHost(), container.getMappedPort(exposedPort));
@@ -120,20 +132,33 @@ public abstract class BaseTestContainer
 
     public void start()
     {
-        Failsafe.with(RetryPolicy.builder()
-                        .withMaxRetries(startupRetryLimit)
-                        .onRetry(event -> log.warn(
-                                "%s initialization failed (attempt %s), will retry. Exception: %s",
-                                this.getClass().getSimpleName(),
-                                event.getAttemptCount(),
-                                event.getLastException().getMessage()))
-                        .build())
-                .get(() -> TestContainers.startOrReuse(this.container));
+        GenericContainer<?> container = this.container;
+        try {
+            Failsafe.with(RetryPolicy.builder()
+                            .withMaxRetries(startupRetryLimit)
+                            .onRetry(event -> log.warn(
+                                    "%s initialization failed (attempt %s), will retry. Exception: %s",
+                                    this.getClass().getSimpleName(),
+                                    event.getAttemptCount(),
+                                    event.getLastException().getMessage()))
+                            .build())
+                    .get(() -> TestContainers.startOrReuse(container));
+        }
+        catch (Throwable e) {
+            try (container) {
+                throw e;
+            }
+        }
     }
 
     public void stop()
     {
         container.stop();
+    }
+
+    public String getContainerId()
+    {
+        return container.getContainerId();
     }
 
     public String executeInContainerFailOnError(String... commandAndArgs)

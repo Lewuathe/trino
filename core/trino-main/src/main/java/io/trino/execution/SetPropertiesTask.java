@@ -14,6 +14,7 @@
 package io.trino.execution;
 
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.inject.Inject;
 import io.trino.Session;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.MaterializedViewPropertyManager;
@@ -24,8 +25,6 @@ import io.trino.security.AccessControl;
 import io.trino.sql.PlannerContext;
 import io.trino.sql.tree.Expression;
 import io.trino.sql.tree.SetProperties;
-
-import javax.inject.Inject;
 
 import java.util.List;
 import java.util.Map;
@@ -75,7 +74,7 @@ public class SetPropertiesTask
         Session session = stateMachine.getSession();
         QualifiedObjectName objectName = createQualifiedObjectName(session, statement, statement.getName());
 
-        String catalogName = objectName.getCatalogName();
+        String catalogName = objectName.catalogName();
         if (statement.getType() == TABLE) {
             Map<String, Optional<Object>> properties = tablePropertyManager.getNullableProperties(
                     catalogName,
@@ -132,7 +131,7 @@ public class SetPropertiesTask
     {
         if (plannerContext.getMetadata().getMaterializedView(session, materializedViewName).isEmpty()) {
             String additionalInformation;
-            if (plannerContext.getMetadata().getView(session, materializedViewName).isPresent()) {
+            if (plannerContext.getMetadata().isView(session, materializedViewName)) {
                 additionalInformation = ", but a view with that name exists.";
             }
             else if (plannerContext.getMetadata().getTableHandle(session, materializedViewName).isPresent()) {

@@ -25,6 +25,7 @@ import org.testng.ITestResult;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 
+import static io.trino.testing.SystemEnvironmentUtils.isEnvSet;
 import static io.trino.testng.services.Listeners.formatTestName;
 import static java.lang.String.format;
 
@@ -47,7 +48,7 @@ public class ProgressLoggingListener
         if (System.getProperty("ProgressLoggingListener.enabled") != null) {
             return Boolean.getBoolean("ProgressLoggingListener.enabled");
         }
-        if (System.getenv("CONTINUOUS_INTEGRATION") != null) {
+        if (isEnvSet("CONTINUOUS_INTEGRATION")) {
             return true;
         }
         // most often not useful for local development
@@ -158,6 +159,6 @@ public class ProgressLoggingListener
 
     private static BigDecimal durationInSeconds(long millis)
     {
-        return (new BigDecimal(millis)).divide(new BigDecimal(1000), 1, RoundingMode.HALF_UP);
+        return new BigDecimal(millis).divide(new BigDecimal(1000), 1, RoundingMode.HALF_UP);
     }
 }

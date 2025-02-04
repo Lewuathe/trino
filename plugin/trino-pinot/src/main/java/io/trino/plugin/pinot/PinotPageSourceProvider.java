@@ -13,6 +13,7 @@
  */
 package io.trino.plugin.pinot;
 
+import com.google.inject.Inject;
 import io.trino.plugin.pinot.client.PinotClient;
 import io.trino.plugin.pinot.client.PinotDataFetcher;
 import io.trino.plugin.pinot.query.DynamicTable;
@@ -25,8 +26,6 @@ import io.trino.spi.connector.ConnectorSplit;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.connector.DynamicFilter;
-
-import javax.inject.Inject;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -75,25 +74,26 @@ public class PinotPageSourceProvider
             handles.add((PinotColumnHandle) handle);
         }
         PinotTableHandle pinotTableHandle = (PinotTableHandle) tableHandle;
-        String query = generatePql(pinotTableHandle, handles, pinotSplit.getSuffix(), pinotSplit.getTimePredicate(), limitForSegmentQueries);
 
         switch (pinotSplit.getSplitType()) {
             case SEGMENT:
-                PinotDataFetcher pinotDataFetcher = pinotDataFetcherFactory.create(session, query, pinotSplit);
+                String segmentQuery = generatePql(pinotTableHandle, handles, pinotSplit.getSuffix(), pinotSplit.getTimePredicate(), limitForSegmentQueries);
+                PinotDataFetcher pinotDataFetcher = pinotDataFetcherFactory.create(segmentQuery, pinotSplit);
                 return new PinotSegmentPageSource(
                         targetSegmentPageSizeBytes,
                         handles,
                         pinotDataFetcher);
             case BROKER:
                 PinotQueryInfo pinotQueryInfo;
-                if (pinotTableHandle.getQuery().isPresent()) {
-                    DynamicTable dynamicTable = pinotTableHandle.getQuery().get();
-                    pinotQueryInfo = new PinotQueryInfo(dynamicTable.getTableName(),
-                            extractPql(dynamicTable, pinotTableHandle.getConstraint()),
-                            dynamicTable.getGroupingColumns().size());
+                if (pinotTableHandle.query().isPresent()) {
+                    DynamicTable dynamicTable = pinotTableHandle.query().get();
+                    pinotQueryInfo = new PinotQueryInfo(dynamicTable.tableName(),
+                            extractPql(dynamicTable, pinotTableHandle.constraint()),
+                            dynamicTable.groupingColumns().size());
                 }
                 else {
-                    pinotQueryInfo = new PinotQueryInfo(pinotTableHandle.getTableName(), query, 0);
+                    String brokerQuery = generatePql(pinotTableHandle, handles, pinotSplit.getSuffix(), pinotSplit.getTimePredicate(), limitForSegmentQueries);
+                    pinotQueryInfo = new PinotQueryInfo(pinotTableHandle.tableName(), brokerQuery, 0);
                 }
 
                 return new PinotBrokerPageSource(

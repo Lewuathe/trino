@@ -16,7 +16,7 @@ package io.trino.tests.product.jdbc;
 import com.google.inject.Inject;
 import com.google.inject.name.Named;
 import io.trino.jdbc.TestingRedirectHandlerInjector;
-import io.trino.tempto.BeforeTestWithContext;
+import io.trino.tempto.BeforeMethodWithContext;
 import io.trino.tempto.ProductTest;
 import io.trino.tests.product.TpchTableResults;
 import okhttp3.JavaNetCookieJar;
@@ -24,7 +24,6 @@ import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
 import okhttp3.tls.HandshakeCertificates;
-import org.assertj.core.api.Assertions;
 import org.testng.annotations.Test;
 
 import java.io.File;
@@ -44,31 +43,31 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import static com.google.common.base.Preconditions.checkState;
-import static io.trino.tempto.assertions.QueryAssert.assertThat;
 import static io.trino.tempto.query.QueryResult.forResultSet;
 import static io.trino.tests.product.TestGroups.OAUTH2_REFRESH;
 import static io.trino.tests.product.TestGroups.PROFILE_SPECIFIC_TESTS;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestExternalAuthorizerOAuth2RefreshToken
         extends ProductTest
 {
     @Inject
-    @Named("databases.presto.jdbc_url")
+    @Named("databases.trino.jdbc_url")
     String jdbcUrl;
 
     @Inject
-    @Named("databases.presto.https_keystore_path")
+    @Named("databases.trino.https_keystore_path")
     String truststorePath;
 
     @Inject
-    @Named("databases.presto.https_keystore_password")
+    @Named("databases.trino.https_keystore_password")
     String truststorePassword;
 
     private OkHttpClient httpClient;
 
-    @BeforeTestWithContext
+    @BeforeMethodWithContext
     public void setUp()
             throws Exception
     {
@@ -103,19 +102,19 @@ public class TestExternalAuthorizerOAuth2RefreshToken
         try (Connection connection = DriverManager.getConnection(jdbcUrl);
                 PreparedStatement statement = connection.prepareStatement("SELECT * FROM tpch.tiny.nation");
                 ResultSet results = statement.executeQuery()) {
-            assertThat(forResultSet(results)).matches(TpchTableResults.PRESTO_NATION_RESULT);
+            assertThat(forResultSet(results)).matches(TpchTableResults.TRINO_NATION_RESULT);
 
-            Assertions.assertThat(redirectHandler.getRedirectCount()).isEqualTo(1);
+            assertThat(redirectHandler.getRedirectCount()).isEqualTo(1);
 
             //Wait until the token expires. See: HydraIdentityProvider.TTL_ACCESS_TOKEN_IN_SECONDS
             SECONDS.sleep(10);
 
             try (PreparedStatement repeatedStatement = connection.prepareStatement("SELECT * FROM tpch.tiny.nation");
                     ResultSet repeatedResults = repeatedStatement.executeQuery()) {
-                assertThat(forResultSet(repeatedResults)).matches(TpchTableResults.PRESTO_NATION_RESULT);
+                assertThat(forResultSet(repeatedResults)).matches(TpchTableResults.TRINO_NATION_RESULT);
             }
 
-            Assertions.assertThat(redirectHandler.getRedirectCount()).isEqualTo(1);
+            assertThat(redirectHandler.getRedirectCount()).isEqualTo(1);
         }
     }
 
@@ -129,18 +128,18 @@ public class TestExternalAuthorizerOAuth2RefreshToken
         try (Connection connection = DriverManager.getConnection(jdbcUrl);
                 PreparedStatement statement = connection.prepareStatement("SELECT * FROM tpch.tiny.nation");
                 ResultSet results = statement.executeQuery()) {
-            assertThat(forResultSet(results)).matches(TpchTableResults.PRESTO_NATION_RESULT);
+            assertThat(forResultSet(results)).matches(TpchTableResults.TRINO_NATION_RESULT);
 
-            Assertions.assertThat(redirectHandler.getRedirectCount()).isEqualTo(1);
+            assertThat(redirectHandler.getRedirectCount()).isEqualTo(1);
 
             //Wait until the refresh token expires (15s) . See: HydraIdentityProvider.TTL_REFRESH_TOKEN_IN_SECONDS
             SECONDS.sleep(20);
             try (PreparedStatement repeatedStatement = connection.prepareStatement("SELECT * FROM tpch.tiny.nation");
                     ResultSet repeatedResults = repeatedStatement.executeQuery()) {
-                assertThat(forResultSet(repeatedResults)).matches(TpchTableResults.PRESTO_NATION_RESULT);
+                assertThat(forResultSet(repeatedResults)).matches(TpchTableResults.TRINO_NATION_RESULT);
             }
 
-            Assertions.assertThat(redirectHandler.getRedirectCount()).isEqualTo(2);
+            assertThat(redirectHandler.getRedirectCount()).isEqualTo(2);
         }
     }
 
@@ -154,19 +153,19 @@ public class TestExternalAuthorizerOAuth2RefreshToken
         try (Connection connection = DriverManager.getConnection(jdbcUrl);
                 PreparedStatement statement = connection.prepareStatement("SELECT * FROM tpch.tiny.nation");
                 ResultSet results = statement.executeQuery()) {
-            assertThat(forResultSet(results)).matches(TpchTableResults.PRESTO_NATION_RESULT);
+            assertThat(forResultSet(results)).matches(TpchTableResults.TRINO_NATION_RESULT);
 
-            Assertions.assertThat(redirectHandler.getRedirectCount()).isEqualTo(1);
+            assertThat(redirectHandler.getRedirectCount()).isEqualTo(1);
 
             //Wait until the internally issued token expires. See: http-server.authentication.oauth2.refresh-tokens.issued-token.timeout
             SECONDS.sleep(35);
 
             try (PreparedStatement repeatedStatement = connection.prepareStatement("SELECT * FROM tpch.tiny.nation");
                     ResultSet repeatedResults = repeatedStatement.executeQuery()) {
-                assertThat(forResultSet(repeatedResults)).matches(TpchTableResults.PRESTO_NATION_RESULT);
+                assertThat(forResultSet(repeatedResults)).matches(TpchTableResults.TRINO_NATION_RESULT);
             }
 
-            Assertions.assertThat(redirectHandler.getRedirectCount()).isEqualTo(2);
+            assertThat(redirectHandler.getRedirectCount()).isEqualTo(2);
         }
     }
 

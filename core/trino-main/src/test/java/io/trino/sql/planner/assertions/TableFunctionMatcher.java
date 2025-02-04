@@ -19,18 +19,18 @@ import com.google.common.collect.ImmutableSet;
 import io.trino.Session;
 import io.trino.cost.StatsProvider;
 import io.trino.metadata.Metadata;
-import io.trino.spi.ptf.Argument;
-import io.trino.spi.ptf.Descriptor;
-import io.trino.spi.ptf.DescriptorArgument;
-import io.trino.spi.ptf.ScalarArgument;
-import io.trino.spi.ptf.TableArgument;
+import io.trino.spi.function.table.Argument;
+import io.trino.spi.function.table.Descriptor;
+import io.trino.spi.function.table.DescriptorArgument;
+import io.trino.spi.function.table.ScalarArgument;
+import io.trino.spi.function.table.TableArgument;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.plan.DataOrganizationSpecification;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.TableFunctionNode;
 import io.trino.sql.planner.plan.TableFunctionNode.PassThroughColumn;
 import io.trino.sql.planner.plan.TableFunctionNode.TableArgumentProperties;
-import io.trino.sql.tree.SymbolReference;
 
 import java.util.Arrays;
 import java.util.List;
@@ -114,24 +114,24 @@ public class TableFunctionMatcher
                 }
                 TableArgumentValue expectedTableArgument = (TableArgumentValue) expected;
                 TableArgumentProperties argumentProperties = tableFunctionNode.getTableArgumentProperties().get(expectedTableArgument.sourceIndex());
-                if (!name.equals(argumentProperties.getArgumentName())) {
+                if (!name.equals(argumentProperties.argumentName())) {
                     return NO_MATCH;
                 }
-                if (expectedTableArgument.rowSemantics() != argumentProperties.isRowSemantics() ||
-                        expectedTableArgument.pruneWhenEmpty() != argumentProperties.isPruneWhenEmpty() ||
-                        expectedTableArgument.passThroughColumns() != argumentProperties.getPassThroughSpecification().declaredAsPassThrough()) {
+                if (expectedTableArgument.rowSemantics() != argumentProperties.rowSemantics() ||
+                        expectedTableArgument.pruneWhenEmpty() != argumentProperties.pruneWhenEmpty() ||
+                        expectedTableArgument.passThroughColumns() != argumentProperties.passThroughSpecification().declaredAsPassThrough()) {
                     return NO_MATCH;
                 }
                 boolean specificationMatches = expectedTableArgument.specification()
                         .map(specification -> specification.getExpectedValue(symbolAliases))
-                        .equals(argumentProperties.getSpecification());
+                        .equals(argumentProperties.specification());
                 if (!specificationMatches) {
                     return NO_MATCH;
                 }
-                Set<SymbolReference> expectedPassThrough = expectedTableArgument.passThroughSymbols().stream()
+                Set<Reference> expectedPassThrough = expectedTableArgument.passThroughSymbols().stream()
                         .map(symbolAliases::get)
                         .collect(toImmutableSet());
-                Set<SymbolReference> actualPassThrough = argumentProperties.getPassThroughSpecification().columns().stream()
+                Set<Reference> actualPassThrough = argumentProperties.passThroughSpecification().columns().stream()
                         .map(PassThroughColumn::symbol)
                         .map(Symbol::toSymbolReference)
                         .collect(toImmutableSet());
@@ -149,7 +149,7 @@ public class TableFunctionMatcher
             return NO_MATCH;
         }
 
-        ImmutableMap.Builder<String, SymbolReference> properOutputsMapping = ImmutableMap.builder();
+        ImmutableMap.Builder<String, Reference> properOutputsMapping = ImmutableMap.builder();
         for (int i = 0; i < properOutputs.size(); i++) {
             properOutputsMapping.put(properOutputs.get(i), tableFunctionNode.getProperOutputs().get(i).toSymbolReference());
         }
@@ -235,9 +235,9 @@ public class TableFunctionMatcher
     public record DescriptorArgumentValue(Optional<Descriptor> descriptor)
             implements ArgumentValue
     {
-        public DescriptorArgumentValue(Optional<Descriptor> descriptor)
+        public DescriptorArgumentValue
         {
-            this.descriptor = requireNonNull(descriptor, "descriptor is null");
+            requireNonNull(descriptor, "descriptor is null");
         }
 
         public static DescriptorArgumentValue descriptorArgument(Descriptor descriptor)
@@ -264,20 +264,10 @@ public class TableFunctionMatcher
             Set<String> passThroughSymbols)
             implements ArgumentValue
     {
-        public TableArgumentValue(
-                int sourceIndex,
-                boolean rowSemantics,
-                boolean pruneWhenEmpty,
-                boolean passThroughColumns,
-                Optional<ExpectedValueProvider<DataOrganizationSpecification>> specification,
-                Set<String> passThroughSymbols)
+        public TableArgumentValue
         {
-            this.sourceIndex = sourceIndex;
-            this.rowSemantics = rowSemantics;
-            this.pruneWhenEmpty = pruneWhenEmpty;
-            this.passThroughColumns = passThroughColumns;
-            this.specification = requireNonNull(specification, "specification is null");
-            this.passThroughSymbols = ImmutableSet.copyOf(passThroughSymbols);
+            requireNonNull(specification, "specification is null");
+            passThroughSymbols = ImmutableSet.copyOf(passThroughSymbols);
         }
 
         public static class Builder

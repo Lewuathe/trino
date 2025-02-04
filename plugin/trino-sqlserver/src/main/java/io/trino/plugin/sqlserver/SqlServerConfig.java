@@ -15,12 +15,14 @@ package io.trino.plugin.sqlserver;
 
 import io.airlift.configuration.Config;
 import io.airlift.configuration.ConfigDescription;
+import io.airlift.configuration.LegacyConfig;
 
 public class SqlServerConfig
 {
     private boolean snapshotIsolationDisabled;
     private boolean bulkCopyForWrite;
     private boolean bulkCopyForWriteLockDestinationTable;
+    private boolean storedProcedureTableFunctionEnabled;
 
     public boolean isBulkCopyForWrite()
     {
@@ -58,6 +60,20 @@ public class SqlServerConfig
     public SqlServerConfig setSnapshotIsolationDisabled(boolean snapshotIsolationDisabled)
     {
         this.snapshotIsolationDisabled = snapshotIsolationDisabled;
+        return this;
+    }
+
+    public boolean isStoredProcedureTableFunctionEnabled()
+    {
+        return storedProcedureTableFunctionEnabled;
+    }
+
+    @Config("sqlserver.stored-procedure-table-function-enabled")
+    @LegacyConfig("sqlserver.experimental.stored-procedure-table-function-enabled")
+    @ConfigDescription("Allows accessing Stored procedure as a table function")
+    public SqlServerConfig setStoredProcedureTableFunctionEnabled(boolean storedProcedureTableFunctionEnabled)
+    {
+        this.storedProcedureTableFunctionEnabled = storedProcedureTableFunctionEnabled;
         return this;
     }
 }

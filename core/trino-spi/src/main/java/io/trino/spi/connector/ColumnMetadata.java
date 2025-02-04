@@ -14,8 +14,7 @@
 package io.trino.spi.connector;
 
 import io.trino.spi.type.Type;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -142,10 +141,10 @@ public class ColumnMetadata
         ColumnMetadata other = (ColumnMetadata) obj;
         return Objects.equals(this.name, other.name) &&
                 Objects.equals(this.type, other.type) &&
-                Objects.equals(this.nullable, other.nullable) &&
+                this.nullable == other.nullable &&
                 Objects.equals(this.comment, other.comment) &&
                 Objects.equals(this.extraInfo, other.extraInfo) &&
-                Objects.equals(this.hidden, other.hidden);
+                this.hidden == other.hidden;
     }
 
     public static Builder builder()

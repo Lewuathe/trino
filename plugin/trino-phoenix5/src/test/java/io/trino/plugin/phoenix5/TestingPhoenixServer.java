@@ -14,15 +14,15 @@
 package io.trino.plugin.phoenix5;
 
 import io.airlift.log.Logger;
-import io.trino.testing.ResourcePresence;
 import io.trino.testing.SharedResource;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.MiniHBaseCluster;
+import org.apache.hadoop.hbase.StartMiniClusterOption;
+import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.zookeeper.MiniZooKeeperCluster;
-
-import javax.annotation.concurrent.GuardedBy;
+import org.apache.phoenix.query.HBaseFactoryProvider;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -38,7 +38,6 @@ public final class TestingPhoenixServer
 {
     private static final Logger LOG = Logger.get(TestingPhoenixServer.class);
 
-    @GuardedBy("this")
     private static final SharedResource<TestingPhoenixServer> sharedResource = new SharedResource<>(TestingPhoenixServer::new);
 
     public static synchronized SharedResource.Lease<TestingPhoenixServer> getInstance()
@@ -67,7 +66,7 @@ public final class TestingPhoenixServer
         securityLogger = java.util.logging.Logger.getLogger("SecurityLogger.org.apache");
         securityLogger.setLevel(Level.SEVERE);
         // to squelch the SecurityLogger,
-        // instantiate logger with config above before config is overriden again in HBase test franework
+        // instantiate logger with config above before config is overridden again in HBase test franework
         org.apache.commons.logging.LogFactory.getLog("SecurityLogger.org.apache.hadoop.hbase.server");
         this.conf.set("hbase.security.logger", "ERROR");
         this.conf.setInt(MASTER_INFO_PORT, -1);
@@ -81,13 +80,20 @@ public final class TestingPhoenixServer
             MiniZooKeeperCluster zkCluster = this.hbaseTestingUtility.startMiniZKCluster();
             port = zkCluster.getClientPort();
 
-            MiniHBaseCluster hbaseCluster = hbaseTestingUtility.startMiniHBaseCluster(1, 4);
+            StartMiniClusterOption option = StartMiniClusterOption.builder().numMasters(1).numRegionServers(4).build();
+            MiniHBaseCluster hbaseCluster = hbaseTestingUtility.startMiniHBaseCluster(option);
             hbaseCluster.waitForActiveAndReadyMaster();
             LOG.info("Phoenix server ready: %s", getJdbcUrl());
         }
         catch (Exception e) {
             throw new RuntimeException("Can't start phoenix server.", e);
         }
+    }
+
+    public Connection getConnection()
+            throws IOException
+    {
+        return HBaseFactoryProvider.getHConnectionFactory().createConnection(this.conf);
     }
 
     @Override
@@ -111,11 +117,5 @@ public final class TestingPhoenixServer
     public String getJdbcUrl()
     {
         return format("jdbc:phoenix:localhost:%d:/hbase;phoenix.schema.isNamespaceMappingEnabled=true", port);
-    }
-
-    @ResourcePresence
-    public boolean isRunning()
-    {
-        return hbaseTestingUtility != null;
     }
 }

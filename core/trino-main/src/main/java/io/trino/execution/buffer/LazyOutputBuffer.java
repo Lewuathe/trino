@@ -17,6 +17,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.slice.Slice;
 import io.airlift.units.DataSize;
 import io.trino.exchange.ExchangeManagerRegistry;
@@ -27,9 +28,7 @@ import io.trino.memory.context.LocalMemoryContext;
 import io.trino.spi.exchange.ExchangeManager;
 import io.trino.spi.exchange.ExchangeSink;
 import io.trino.spi.exchange.ExchangeSinkInstanceHandle;
-
-import javax.annotation.Nullable;
-import javax.annotation.concurrent.GuardedBy;
+import jakarta.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -59,8 +58,7 @@ public class LazyOutputBuffer
     private final ExchangeManagerRegistry exchangeManagerRegistry;
 
     // Note: this is a write once field, so an unsynchronized volatile read that returns a non-null value is safe, but if a null value is observed instead
-    // a subsequent synchronized read is required to ensure the writing thread can complete any in-flight initialization
-    @GuardedBy("this")
+    // a subsequent synchronized read is required to ensure only one thread does the initialization
     private volatile OutputBuffer delegate;
 
     @GuardedBy("this")
@@ -138,6 +136,7 @@ public class LazyOutputBuffer
                     0,
                     0,
                     0,
+                    Optional.empty(),
                     Optional.empty(),
                     Optional.empty(),
                     Optional.empty());

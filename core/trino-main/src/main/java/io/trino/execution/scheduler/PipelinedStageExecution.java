@@ -19,7 +19,9 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.log.Logger;
+import io.opentelemetry.api.trace.Span;
 import io.trino.exchange.DirectExchangeInput;
 import io.trino.execution.ExecutionFailureInfo;
 import io.trino.execution.RemoteTask;
@@ -43,8 +45,6 @@ import io.trino.sql.planner.plan.PlanFragmentId;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.sql.planner.plan.RemoteSourceNode;
 import io.trino.util.Failures;
-
-import javax.annotation.concurrent.GuardedBy;
 
 import java.net.URI;
 import java.util.HashSet;
@@ -298,7 +298,8 @@ public class PipelinedStageExecution
                 outputBuffers,
                 initialSplits,
                 ImmutableSet.of(),
-                Optional.empty());
+                Optional.empty(),
+                false);
 
         if (optionalTask.isEmpty()) {
             return Optional.empty();
@@ -553,6 +554,12 @@ public class PipelinedStageExecution
     }
 
     @Override
+    public Span getStageSpan()
+    {
+        return stage.getStageSpan();
+    }
+
+    @Override
     public PlanFragment getFragment()
     {
         return stage.getFragment();
@@ -646,7 +653,7 @@ public class PipelinedStageExecution
             failureCause.compareAndSet(null, Failures.toFailure(throwable));
             boolean failed = state.setIf(FAILED, currentState -> !currentState.isDone());
             if (failed) {
-                log.error(throwable, "Pipelined stage execution for stage %s failed", stageId);
+                log.debug(throwable, "Pipelined stage execution for stage %s failed", stageId);
             }
             else {
                 log.debug(throwable, "Failure in pipelined stage execution for stage %s after finished", stageId);

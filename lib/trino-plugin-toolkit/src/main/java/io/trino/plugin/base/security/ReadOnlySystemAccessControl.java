@@ -13,25 +13,24 @@
  */
 package io.trino.plugin.base.security;
 
+import io.trino.spi.QueryId;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaRoutineName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.SchemaTableName;
-import io.trino.spi.function.FunctionKind;
+import io.trino.spi.function.SchemaFunctionName;
+import io.trino.spi.security.Identity;
 import io.trino.spi.security.SystemAccessControl;
 import io.trino.spi.security.SystemAccessControlFactory;
 import io.trino.spi.security.SystemSecurityContext;
-import io.trino.spi.security.TrinoPrincipal;
 
 import java.security.Principal;
+import java.util.Collection;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static io.trino.spi.security.AccessDeniedException.denyGrantExecuteFunctionPrivilege;
-import static java.lang.String.format;
-import static java.util.Locale.ENGLISH;
 
 public class ReadOnlySystemAccessControl
         implements SystemAccessControl
@@ -50,7 +49,7 @@ public class ReadOnlySystemAccessControl
         }
 
         @Override
-        public SystemAccessControl create(Map<String, String> config)
+        public SystemAccessControl create(Map<String, String> config, SystemAccessControlContext context)
         {
             checkArgument(config.isEmpty(), "This access controller does not support any configuration properties");
             return INSTANCE;
@@ -58,69 +57,37 @@ public class ReadOnlySystemAccessControl
     }
 
     @Override
-    public void checkCanSetUser(Optional<Principal> principal, String userName)
-    {
-    }
+    public void checkCanSetUser(Optional<Principal> principal, String userName) {}
 
     @Override
-    public void checkCanExecuteQuery(SystemSecurityContext context)
-    {
-    }
+    public void checkCanExecuteQuery(Identity identity, QueryId queryId) {}
 
     @Override
-    public void checkCanViewQueryOwnedBy(SystemSecurityContext context, String queryOwner)
-    {
-    }
+    public void checkCanViewQueryOwnedBy(Identity identity, Identity queryOwner) {}
 
     @Override
-    public Set<String> filterViewQueryOwnedBy(SystemSecurityContext context, Set<String> queryOwners)
+    public Collection<Identity> filterViewQueryOwnedBy(Identity identity, Collection<Identity> queryOwners)
     {
         return queryOwners;
     }
 
     @Override
-    public void checkCanSetSystemSessionProperty(SystemSecurityContext context, String propertyName)
+    public void checkCanSetSystemSessionProperty(Identity identity, QueryId queryId, String propertyName) {}
+
+    @Override
+    public void checkCanSelectFromColumns(SystemSecurityContext context, CatalogSchemaTableName table, Set<String> columns) {}
+
+    @Override
+    public boolean canAccessCatalog(SystemSecurityContext context, String catalogName)
     {
+        return true;
     }
 
     @Override
-    public void checkCanAccessCatalog(SystemSecurityContext context, String catalogName)
-    {
-    }
+    public void checkCanSetCatalogSessionProperty(SystemSecurityContext context, String catalogName, String propertyName) {}
 
     @Override
-    public void checkCanSelectFromColumns(SystemSecurityContext context, CatalogSchemaTableName table, Set<String> columns)
-    {
-    }
-
-    @Override
-    public void checkCanSetCatalogSessionProperty(SystemSecurityContext context, String catalogName, String propertyName)
-    {
-    }
-
-    @Override
-    public void checkCanCreateViewWithSelectFromColumns(SystemSecurityContext context, CatalogSchemaTableName table, Set<String> columns)
-    {
-    }
-
-    @Override
-    public void checkCanGrantExecuteFunctionPrivilege(SystemSecurityContext context, String functionName, TrinoPrincipal grantee, boolean grantOption)
-    {
-    }
-
-    @Override
-    public void checkCanGrantExecuteFunctionPrivilege(SystemSecurityContext context, FunctionKind functionKind, CatalogSchemaRoutineName functionName, TrinoPrincipal grantee, boolean grantOption)
-    {
-        switch (functionKind) {
-            case SCALAR, AGGREGATE, WINDOW:
-                return;
-            case TABLE:
-                // May not be read-only, so deny
-                String granteeAsString = format("%s '%s'", grantee.getType().name().toLowerCase(ENGLISH), grantee.getName());
-                denyGrantExecuteFunctionPrivilege(functionName.toString(), context.getIdentity(), granteeAsString);
-        }
-        throw new UnsupportedOperationException("Unsupported function kind: " + functionKind);
-    }
+    public void checkCanCreateViewWithSelectFromColumns(SystemSecurityContext context, CatalogSchemaTableName table, Set<String> columns) {}
 
     @Override
     public Set<String> filterCatalogs(SystemSecurityContext context, Set<String> catalogs)
@@ -141,9 +108,7 @@ public class ReadOnlySystemAccessControl
     }
 
     @Override
-    public void checkCanShowColumns(SystemSecurityContext context, CatalogSchemaTableName table)
-    {
-    }
+    public void checkCanShowColumns(SystemSecurityContext context, CatalogSchemaTableName table) {}
 
     @Override
     public Set<String> filterColumns(SystemSecurityContext context, CatalogSchemaTableName tableName, Set<String> columns)
@@ -152,32 +117,46 @@ public class ReadOnlySystemAccessControl
     }
 
     @Override
-    public void checkCanShowSchemas(SystemSecurityContext context, String catalogName)
+    public Map<SchemaTableName, Set<String>> filterColumns(SystemSecurityContext context, String catalogName, Map<SchemaTableName, Set<String>> tableColumns)
     {
+        return tableColumns;
     }
 
     @Override
-    public void checkCanShowTables(SystemSecurityContext context, CatalogSchemaName schema)
+    public void checkCanShowSchemas(SystemSecurityContext context, String catalogName) {}
+
+    @Override
+    public void checkCanShowTables(SystemSecurityContext context, CatalogSchemaName schema) {}
+
+    @Override
+    public void checkCanShowRoles(SystemSecurityContext context) {}
+
+    @Override
+    public void checkCanShowCurrentRoles(SystemSecurityContext context) {}
+
+    @Override
+    public boolean canExecuteFunction(SystemSecurityContext systemSecurityContext, CatalogSchemaRoutineName functionName)
     {
+        return isSystemBuiltinSchema(functionName);
     }
 
     @Override
-    public void checkCanShowRoles(SystemSecurityContext context)
+    public boolean canCreateViewWithExecuteFunction(SystemSecurityContext systemSecurityContext, CatalogSchemaRoutineName functionName)
     {
+        return isSystemBuiltinSchema(functionName);
+    }
+
+    private static boolean isSystemBuiltinSchema(CatalogSchemaRoutineName functionName)
+    {
+        return functionName.getCatalogName().equals("system") && functionName.getSchemaName().equals("builtin");
     }
 
     @Override
-    public void checkCanShowRoleAuthorizationDescriptors(SystemSecurityContext context)
-    {
-    }
+    public void checkCanShowFunctions(SystemSecurityContext context, CatalogSchemaName schema) {}
 
     @Override
-    public void checkCanShowCurrentRoles(SystemSecurityContext context)
+    public Set<SchemaFunctionName> filterFunctions(SystemSecurityContext context, String catalogName, Set<SchemaFunctionName> functionNames)
     {
-    }
-
-    @Override
-    public void checkCanExecuteFunction(SystemSecurityContext systemSecurityContext, String functionName)
-    {
+        return functionNames;
     }
 }

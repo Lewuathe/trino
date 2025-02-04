@@ -13,111 +13,84 @@
  */
 package io.trino.plugin.mongodb;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.common.collect.ImmutableSet;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.predicate.TupleDomain;
 
-import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.Set;
 
-import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.joining;
 
-public class MongoTableHandle
+public record MongoTableHandle(
+        SchemaTableName schemaTableName,
+        RemoteTableName remoteTableName,
+        Optional<String> filter,
+        TupleDomain<ColumnHandle> constraint,
+        Set<MongoColumnHandle> projectedColumns,
+        OptionalInt limit)
         implements ConnectorTableHandle
 {
-    private final SchemaTableName schemaTableName;
-    private final RemoteTableName remoteTableName;
-    private final TupleDomain<ColumnHandle> constraint;
-    private final Optional<String> filter;
-    private final OptionalInt limit;
-
     public MongoTableHandle(SchemaTableName schemaTableName, RemoteTableName remoteTableName, Optional<String> filter)
     {
-        this(schemaTableName, remoteTableName, filter, TupleDomain.all(), OptionalInt.empty());
+        this(schemaTableName, remoteTableName, filter, TupleDomain.all(), ImmutableSet.of(), OptionalInt.empty());
     }
 
-    @JsonCreator
-    public MongoTableHandle(
-            @JsonProperty("schemaTableName") SchemaTableName schemaTableName,
-            @JsonProperty("remoteTableName") RemoteTableName remoteTableName,
-            @JsonProperty("filter") Optional<String> filter,
-            @JsonProperty("constraint") TupleDomain<ColumnHandle> constraint,
-            @JsonProperty("limit") OptionalInt limit)
+    public MongoTableHandle
     {
-        this.schemaTableName = requireNonNull(schemaTableName, "schemaTableName is null");
-        this.remoteTableName = requireNonNull(remoteTableName, "remoteTableName is null");
-        this.filter = requireNonNull(filter, "filter is null");
-        this.constraint = requireNonNull(constraint, "constraint is null");
-        this.limit = requireNonNull(limit, "limit is null");
-    }
-
-    @JsonProperty
-    public SchemaTableName getSchemaTableName()
-    {
-        return schemaTableName;
-    }
-
-    @JsonProperty
-    public RemoteTableName getRemoteTableName()
-    {
-        return remoteTableName;
-    }
-
-    @JsonProperty
-    public Optional<String> getFilter()
-    {
-        return filter;
-    }
-
-    @JsonProperty
-    public TupleDomain<ColumnHandle> getConstraint()
-    {
-        return constraint;
-    }
-
-    @JsonProperty
-    public OptionalInt getLimit()
-    {
-        return limit;
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return Objects.hash(schemaTableName, filter, constraint, limit);
-    }
-
-    @Override
-    public boolean equals(Object obj)
-    {
-        if (this == obj) {
-            return true;
-        }
-        if (obj == null || getClass() != obj.getClass()) {
-            return false;
-        }
-        MongoTableHandle other = (MongoTableHandle) obj;
-        return Objects.equals(this.schemaTableName, other.schemaTableName) &&
-                Objects.equals(this.remoteTableName, other.remoteTableName) &&
-                Objects.equals(this.filter, other.filter) &&
-                Objects.equals(this.constraint, other.constraint) &&
-                Objects.equals(this.limit, other.limit);
+        requireNonNull(schemaTableName, "schemaTableName is null");
+        requireNonNull(remoteTableName, "remoteTableName is null");
+        requireNonNull(filter, "filter is null");
+        requireNonNull(constraint, "constraint is null");
+        projectedColumns = ImmutableSet.copyOf(requireNonNull(projectedColumns, "projectedColumns is null"));
+        requireNonNull(limit, "limit is null");
     }
 
     @Override
     public String toString()
     {
-        return toStringHelper(this)
-                .add("schemaTableName", schemaTableName)
-                .add("remoteTableName", remoteTableName)
-                .add("filter", filter)
-                .add("limit", limit)
-                .add("constraint", constraint)
-                .toString();
+        StringBuilder builder = new StringBuilder();
+        builder.append(remoteTableName);
+        filter.ifPresent(value -> builder.append(" filter=").append(value));
+        if (constraint.isNone()) {
+            builder.append(" constraint=FALSE");
+        }
+        else if (!constraint.isAll()) {
+            builder.append(" constraint on ");
+            builder.append(constraint.getDomains().orElseThrow().keySet().stream()
+                    .map(columnHandle -> ((MongoColumnHandle) columnHandle).baseName())
+                    .collect(joining(", ", "[", "]")));
+        }
+        if (!projectedColumns.isEmpty()) {
+            builder.append(" columns=").append(projectedColumns);
+        }
+        limit.ifPresent(value -> builder.append(" limit=").append(value));
+        return builder.toString();
+    }
+
+    public MongoTableHandle withProjectedColumns(Set<MongoColumnHandle> projectedColumns)
+    {
+        return new MongoTableHandle(
+                schemaTableName,
+                remoteTableName,
+                filter,
+                constraint,
+                projectedColumns,
+                limit);
+    }
+
+    public MongoTableHandle withConstraint(TupleDomain<ColumnHandle> constraint)
+    {
+        return new MongoTableHandle(
+                schemaTableName,
+                remoteTableName,
+                filter,
+                constraint,
+                projectedColumns,
+                limit);
     }
 }

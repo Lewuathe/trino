@@ -24,7 +24,6 @@ import static io.trino.spi.type.Int128Math.compareAbsolute;
 import static io.trino.spi.type.Int128Math.rescale;
 import static java.lang.Double.parseDouble;
 import static java.lang.Float.floatToRawIntBits;
-import static java.lang.Float.intBitsToFloat;
 import static java.lang.Float.parseFloat;
 import static java.lang.String.format;
 import static java.math.RoundingMode.HALF_UP;
@@ -122,7 +121,7 @@ public final class DecimalConversions
         }
     }
 
-    public static long realToShortDecimal(long value, long precision, long scale)
+    public static long realToShortDecimal(float value, long precision, long scale)
     {
         // TODO: implement specialized version for short decimals
         Int128 decimal = realToLongDecimal(value, precision, scale);
@@ -135,9 +134,8 @@ public final class DecimalConversions
         return low;
     }
 
-    public static Int128 realToLongDecimal(long value, long precision, long scale)
+    public static Int128 realToLongDecimal(float floatValue, long precision, long scale)
     {
-        float floatValue = intBitsToFloat(intScale(value));
         if (Float.isInfinite(floatValue) || Float.isNaN(floatValue)) {
             throw new TrinoException(INVALID_CAST_ARGUMENT, format("Cannot cast REAL '%s' to DECIMAL(%s, %s)", floatValue, precision, scale));
         }

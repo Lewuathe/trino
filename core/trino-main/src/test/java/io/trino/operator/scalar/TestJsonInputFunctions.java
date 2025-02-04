@@ -27,6 +27,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.nio.charset.Charset;
 
@@ -40,8 +41,10 @@ import static java.nio.charset.StandardCharsets.UTF_16LE;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestJsonInputFunctions
 {
     private static final String INPUT = "{\"key1\" : 1e0, \"key2\" : true, \"key3\" : null}";
@@ -77,7 +80,7 @@ public class TestJsonInputFunctions
                 .isEqualTo(JSON_OBJECT);
 
         // with unsuppressed input conversion error
-        assertTrinoExceptionThrownBy(() -> assertions.expression("\"$varchar_to_json\"('" + ERROR_INPUT + "', true)").evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression("\"$varchar_to_json\"('" + ERROR_INPUT + "', true)")::evaluate)
                 .hasErrorCode(JSON_INPUT_CONVERSION_ERROR)
                 .hasMessage("conversion to JSON failed: ");
 
@@ -100,7 +103,7 @@ public class TestJsonInputFunctions
 
         // wrong input encoding
 
-        assertTrinoExceptionThrownBy(() -> assertions.expression("\"$varbinary_utf8_to_json\"(" + toVarbinary(INPUT, UTF_16LE) + ", true)").evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression("\"$varbinary_utf8_to_json\"(" + toVarbinary(INPUT, UTF_16LE) + ", true)")::evaluate)
                 .hasErrorCode(JSON_INPUT_CONVERSION_ERROR)
                 .hasMessage("conversion to JSON failed: ");
 
@@ -112,7 +115,7 @@ public class TestJsonInputFunctions
         // correct encoding, incorrect input
 
         // with unsuppressed input conversion error
-        assertTrinoExceptionThrownBy(() -> assertions.expression("\"$varbinary_utf8_to_json\"(" + toVarbinary(ERROR_INPUT, UTF_8) + ", true)").evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression("\"$varbinary_utf8_to_json\"(" + toVarbinary(ERROR_INPUT, UTF_8) + ", true)")::evaluate)
                 .hasErrorCode(JSON_INPUT_CONVERSION_ERROR)
                 .hasMessage("conversion to JSON failed: ");
 
@@ -132,11 +135,11 @@ public class TestJsonInputFunctions
         // wrong input encoding
         String varbinaryLiteral = toVarbinary(INPUT, UTF_16BE);
 
-        assertTrinoExceptionThrownBy(() -> assertions.expression("\"$varbinary_utf16_to_json\"(" + varbinaryLiteral + ", true)").evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression("\"$varbinary_utf16_to_json\"(" + varbinaryLiteral + ", true)")::evaluate)
                 .hasErrorCode(JSON_INPUT_CONVERSION_ERROR)
                 .hasMessage("conversion to JSON failed: ");
 
-        assertTrinoExceptionThrownBy(() -> assertions.expression("\"$varbinary_utf16_to_json\"(" + toVarbinary(INPUT, UTF_8) + ", true)").evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression("\"$varbinary_utf16_to_json\"(" + toVarbinary(INPUT, UTF_8) + ", true)")::evaluate)
                 .hasErrorCode(JSON_INPUT_CONVERSION_ERROR)
                 .hasMessage("conversion to JSON failed: ");
 
@@ -148,7 +151,7 @@ public class TestJsonInputFunctions
         // correct encoding, incorrect input
 
         // with unsuppressed input conversion error
-        assertTrinoExceptionThrownBy(() -> assertions.expression("\"$varbinary_utf16_to_json\"(" + toVarbinary(ERROR_INPUT, UTF_16LE) + ", true)").evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression("\"$varbinary_utf16_to_json\"(" + toVarbinary(ERROR_INPUT, UTF_16LE) + ", true)")::evaluate)
                 .hasErrorCode(JSON_INPUT_CONVERSION_ERROR)
                 .hasMessage("conversion to JSON failed: ");
 
@@ -167,11 +170,11 @@ public class TestJsonInputFunctions
 
         // wrong input encoding
 
-        assertTrinoExceptionThrownBy(() -> assertions.expression("\"$varbinary_utf32_to_json\"(" + toVarbinary(INPUT, Charset.forName("UTF-32BE")) + ", true)").evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression("\"$varbinary_utf32_to_json\"(" + toVarbinary(INPUT, Charset.forName("UTF-32BE")) + ", true)")::evaluate)
                 .hasErrorCode(JSON_INPUT_CONVERSION_ERROR)
                 .hasMessage("conversion to JSON failed: ");
 
-        assertTrinoExceptionThrownBy(() -> assertions.expression("\"$varbinary_utf32_to_json\"(" + toVarbinary(INPUT, UTF_8) + ", true)").evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression("\"$varbinary_utf32_to_json\"(" + toVarbinary(INPUT, UTF_8) + ", true)")::evaluate)
                 .hasErrorCode(JSON_INPUT_CONVERSION_ERROR)
                 .hasMessage("conversion to JSON failed: ");
 
@@ -183,7 +186,7 @@ public class TestJsonInputFunctions
         // correct encoding, incorrect input
 
         // with unsuppressed input conversion error
-        assertTrinoExceptionThrownBy(() -> assertions.expression("\"$varbinary_utf32_to_json\"(" + toVarbinary(ERROR_INPUT, Charset.forName("UTF-32LE")) + ", true)").evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression("\"$varbinary_utf32_to_json\"(" + toVarbinary(ERROR_INPUT, Charset.forName("UTF-32LE")) + ", true)")::evaluate)
                 .hasErrorCode(JSON_INPUT_CONVERSION_ERROR)
                 .hasMessage("conversion to JSON failed: ");
 

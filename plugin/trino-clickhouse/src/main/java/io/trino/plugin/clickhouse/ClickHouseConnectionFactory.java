@@ -16,8 +16,7 @@ package io.trino.plugin.clickhouse;
 import io.trino.plugin.jdbc.ConnectionFactory;
 import io.trino.plugin.jdbc.ForwardingConnection;
 import io.trino.spi.connector.ConnectorSession;
-
-import javax.annotation.PreDestroy;
+import jakarta.annotation.PreDestroy;
 
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -50,19 +49,13 @@ public class ClickHouseConnectionFactory
 
             // Since https://github.com/ClickHouse/clickhouse-jdbc/commit/259682eaa8d5af741e4df57ca745f21ae3ae574c setAutoCommit(false) will fail
             @Override
-            public void setAutoCommit(boolean autoCommit)
-            {
-            }
+            public void setAutoCommit(boolean autoCommit) {}
 
             @Override
-            public void commit()
-            {
-            }
+            public void commit() {}
 
             @Override
-            public void rollback()
-            {
-            }
+            public void rollback() {}
         };
     }
 

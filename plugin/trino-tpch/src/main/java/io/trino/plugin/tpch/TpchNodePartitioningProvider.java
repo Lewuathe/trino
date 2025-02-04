@@ -14,6 +14,7 @@
 package io.trino.plugin.tpch;
 
 import com.google.common.collect.ImmutableList;
+import com.google.inject.Inject;
 import io.trino.spi.Node;
 import io.trino.spi.NodeManager;
 import io.trino.spi.connector.BucketFunction;
@@ -36,12 +37,19 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.spi.connector.ConnectorBucketNodeMap.createBucketNodeMap;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static java.util.Comparator.comparing;
+import static java.util.Objects.requireNonNull;
 
 public class TpchNodePartitioningProvider
         implements ConnectorNodePartitioningProvider
 {
     private final NodeManager nodeManager;
     private final int splitsPerNode;
+
+    @Inject
+    public TpchNodePartitioningProvider(NodeManager nodeManager, TpchConfig config)
+    {
+        this(requireNonNull(nodeManager, "nodeManager is null"), requireNonNull(config, "config is null").getSplitsPerNode());
+    }
 
     public TpchNodePartitioningProvider(NodeManager nodeManager, int splitsPerNode)
     {
@@ -69,7 +77,11 @@ public class TpchNodePartitioningProvider
     }
 
     @Override
-    public ToIntFunction<ConnectorSplit> getSplitBucketFunction(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorPartitioningHandle partitioningHandle)
+    public ToIntFunction<ConnectorSplit> getSplitBucketFunction(
+            ConnectorTransactionHandle transactionHandle,
+            ConnectorSession session,
+            ConnectorPartitioningHandle partitioningHandle,
+            int bucketCount)
     {
         return value -> ((TpchSplit) value).getPartNumber();
     }
@@ -77,7 +89,7 @@ public class TpchNodePartitioningProvider
     @Override
     public BucketFunction getBucketFunction(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorPartitioningHandle partitioningHandle, List<Type> partitionChannelTypes, int bucketCount)
     {
-        long totalRows = ((TpchPartitioningHandle) partitioningHandle).getTotalRows();
+        long totalRows = ((TpchPartitioningHandle) partitioningHandle).totalRows();
         long rowsPerBucket = totalRows / bucketCount;
         checkArgument(partitionChannelTypes.equals(ImmutableList.of(BIGINT)), "Expected one BIGINT parameter");
         return new TpchBucketFunction(bucketCount, rowsPerBucket);

@@ -15,7 +15,7 @@ package io.trino.connector;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.util.Map;
@@ -31,7 +31,7 @@ public class TestFileCatalogStoreConfig
     {
         assertRecordedDefaults(recordDefaults(FileCatalogStoreConfig.class)
                 .setCatalogConfigurationDir(new File("etc/catalog"))
-                .setDisabledCatalogs((String) null)
+                .setDisabledCatalogs(ImmutableList.of())
                 .setReadOnly(false));
     }
 

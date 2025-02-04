@@ -19,8 +19,7 @@ import io.airlift.configuration.Config;
 import io.airlift.configuration.ConfigDescription;
 import io.airlift.configuration.ConfigSecuritySensitive;
 import io.airlift.units.Duration;
-
-import javax.validation.constraints.NotNull;
+import jakarta.validation.constraints.NotNull;
 
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -85,16 +84,16 @@ public class LdapAuthenticatorConfig
         return this;
     }
 
-    public String getBindDistingushedName()
+    public String getBindDistinguishedName()
     {
         return bindDistinguishedName;
     }
 
     @Config("ldap.bind-dn")
     @ConfigDescription("Bind distinguished name. Example: CN=User Name,OU=CITY_OU,OU=STATE_OU,DC=domain,DC=domain_root")
-    public LdapAuthenticatorConfig setBindDistingushedName(String bindDistingushedName)
+    public LdapAuthenticatorConfig setBindDistinguishedName(String bindDistinguishedName)
     {
-        this.bindDistinguishedName = bindDistingushedName;
+        this.bindDistinguishedName = bindDistinguishedName;
         return this;
     }
 

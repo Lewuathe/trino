@@ -13,9 +13,8 @@
  */
 package io.trino.plugin.deltalake;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableSet;
+import io.trino.plugin.deltalake.DeltaLakeAnalyzeProperties.AnalyzeMode;
 
 import java.time.Instant;
 import java.util.Optional;
@@ -23,39 +22,16 @@ import java.util.Set;
 
 import static java.util.Objects.requireNonNull;
 
-public class AnalyzeHandle
+public record AnalyzeHandle(
+        AnalyzeMode analyzeMode,
+        Optional<Instant> filesModifiedAfter,
+        Optional<Set<String>> columns)
 {
-    private final boolean initialAnalyze;
-    private final Optional<Instant> filesModifiedAfter;
-    private final Optional<Set<String>> columns;
-
-    @JsonCreator
-    public AnalyzeHandle(
-            @JsonProperty("initialAnalyze") boolean initialAnalyze,
-            @JsonProperty("startTime") Optional<Instant> filesModifiedAfter,
-            @JsonProperty("columns") Optional<Set<String>> columns)
+    public AnalyzeHandle
     {
-        this.initialAnalyze = initialAnalyze;
-        this.filesModifiedAfter = requireNonNull(filesModifiedAfter, "filesModifiedAfter is null");
+        requireNonNull(analyzeMode, "analyzeMode is null");
+        requireNonNull(filesModifiedAfter, "filesModifiedAfter is null");
         requireNonNull(columns, "columns is null");
-        this.columns = columns.map(ImmutableSet::copyOf);
-    }
-
-    @JsonProperty
-    public boolean isInitialAnalyze()
-    {
-        return initialAnalyze;
-    }
-
-    @JsonProperty
-    public Optional<Instant> getFilesModifiedAfter()
-    {
-        return filesModifiedAfter;
-    }
-
-    @JsonProperty
-    public Optional<Set<String>> getColumns()
-    {
-        return columns;
+        columns = columns.map(ImmutableSet::copyOf);
     }
 }

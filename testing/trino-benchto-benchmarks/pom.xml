@@ -4,19 +4,25 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>411-SNAPSHOT</version>
+        <version>470-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
     <artifactId>trino-benchto-benchmarks</artifactId>
-    <name>trino-benchto-benchmarks</name>
+    <description>Trino - Benchto benchmarks</description>
 
     <properties>
-        <air.main.basedir>${project.parent.basedir}</air.main.basedir>
         <air.check.fail-duplicate-finder>false</air.check.fail-duplicate-finder>
     </properties>
 
     <dependencies>
+        <dependency>
+            <!-- TODO document why we have explicit dependency on Guava -->
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
         <dependency>
             <!-- benchmark queries referenced from benchmark definition files -->
             <groupId>io.trino</groupId>
@@ -39,15 +45,14 @@
         </dependency>
 
         <dependency>
-            <!-- TODO document why we have explicit dependency on Guava -->
-            <groupId>com.google.guava</groupId>
-            <artifactId>guava</artifactId>
-            <scope>runtime</scope>
+            <groupId>io.airlift</groupId>
+            <artifactId>junit-extensions</artifactId>
+            <scope>test</scope>
         </dependency>
 
         <dependency>
-            <groupId>org.testng</groupId>
-            <artifactId>testng</artifactId>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -56,6 +61,7 @@
         <plugins>
             <!-- Build archive files -->
             <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-assembly-plugin</artifactId>
                 <configuration>
                     <descriptors>
@@ -66,17 +72,17 @@
                 </configuration>
                 <executions>
                     <execution>
-                        <phase>package</phase>
                         <goals>
                             <goal>single</goal>
                         </goals>
+                        <phase>package</phase>
                     </execution>
                 </executions>
             </plugin>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
-                <version>1.2.5.RELEASE</version>
+                <version>2.7.18</version>
                 <configuration>
                     <classifier>executable</classifier>
                     <mainClass>io.trino.benchto.driver.DriverApp</mainClass>
@@ -89,6 +95,22 @@
                         </goals>
                     </execution>
                 </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <configuration>
+                    <rules>
+                        <bannedDependencies>
+                            <includes combine.children="append">
+                                <!-- allow vulnerable snakeyaml version until benchto is updated -->
+                                <include>org.yaml:snakeyaml:1.33</include>
+                                <!-- benchto still uses javax.annotation -->
+                                <include>javax.annotation:javax.annotation-api</include>
+                            </includes>
+                        </bannedDependencies>
+                    </rules>
+                </configuration>
             </plugin>
         </plugins>
     </build>

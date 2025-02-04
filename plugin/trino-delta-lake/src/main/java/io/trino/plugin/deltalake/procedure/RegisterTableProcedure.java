@@ -14,30 +14,39 @@
 package io.trino.plugin.deltalake.procedure;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.inject.Inject;
+import com.google.inject.Provider;
+import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoFileSystemFactory;
+import io.trino.metastore.PrincipalPrivileges;
+import io.trino.metastore.Table;
+import io.trino.plugin.base.util.UncheckedCloseable;
 import io.trino.plugin.deltalake.DeltaLakeConfig;
+import io.trino.plugin.deltalake.DeltaLakeMetadata;
 import io.trino.plugin.deltalake.DeltaLakeMetadataFactory;
 import io.trino.plugin.deltalake.metastore.DeltaLakeMetastore;
-import io.trino.plugin.hive.metastore.PrincipalPrivileges;
-import io.trino.plugin.hive.metastore.Table;
+import io.trino.plugin.deltalake.statistics.CachingExtendedStatisticsAccess;
+import io.trino.plugin.deltalake.transactionlog.MetadataEntry;
+import io.trino.plugin.deltalake.transactionlog.TableSnapshot;
+import io.trino.plugin.deltalake.transactionlog.TransactionLogAccess;
 import io.trino.spi.TrinoException;
 import io.trino.spi.classloader.ThreadContextClassLoader;
+import io.trino.spi.connector.ConnectorAccessControl;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.SchemaNotFoundException;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.procedure.Procedure;
 
-import javax.inject.Inject;
-import javax.inject.Provider;
-
 import java.io.IOException;
 import java.lang.invoke.MethodHandle;
+import java.util.Optional;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static io.trino.plugin.base.util.Procedures.checkProcedureArgument;
 import static io.trino.plugin.deltalake.DeltaLakeErrorCode.DELTA_LAKE_FILESYSTEM_ERROR;
-import static io.trino.plugin.deltalake.DeltaLakeMetadata.buildTable;
+import static io.trino.plugin.deltalake.DeltaLakeErrorCode.DELTA_LAKE_INVALID_TABLE;
 import static io.trino.plugin.deltalake.transactionlog.TransactionLogUtil.getTransactionLogDir;
 import static io.trino.plugin.hive.metastore.MetastoreUtil.buildInitialPrivilegeSet;
 import static io.trino.spi.StandardErrorCode.GENERIC_USER_ERROR;
@@ -61,7 +70,7 @@ public class RegisterTableProcedure
 
     static {
         try {
-            REGISTER_TABLE = lookup().unreflect(RegisterTableProcedure.class.getMethod("registerTable", ConnectorSession.class, String.class, String.class, String.class));
+            REGISTER_TABLE = lookup().unreflect(RegisterTableProcedure.class.getMethod("registerTable", ConnectorAccessControl.class, ConnectorSession.class, String.class, String.class, String.class));
         }
         catch (ReflectiveOperationException e) {
             throw new AssertionError(e);
@@ -69,13 +78,22 @@ public class RegisterTableProcedure
     }
 
     private final DeltaLakeMetadataFactory metadataFactory;
+    private final TransactionLogAccess transactionLogAccess;
+    private final CachingExtendedStatisticsAccess statisticsAccess;
     private final TrinoFileSystemFactory fileSystemFactory;
     private final boolean registerTableProcedureEnabled;
 
     @Inject
-    public RegisterTableProcedure(DeltaLakeMetadataFactory metadataFactory, TrinoFileSystemFactory fileSystemFactory, DeltaLakeConfig deltaLakeConfig)
+    public RegisterTableProcedure(
+            DeltaLakeMetadataFactory metadataFactory,
+            TransactionLogAccess transactionLogAccess,
+            CachingExtendedStatisticsAccess statisticsAccess,
+            TrinoFileSystemFactory fileSystemFactory,
+            DeltaLakeConfig deltaLakeConfig)
     {
         this.metadataFactory = requireNonNull(metadataFactory, "metadataFactory is null");
+        this.transactionLogAccess = requireNonNull(transactionLogAccess, "transactionLogAccess is null");
+        this.statisticsAccess = requireNonNull(statisticsAccess, "statisticsAccess is null");
         this.fileSystemFactory = requireNonNull(fileSystemFactory, "fileSystemFactory is null");
         this.registerTableProcedureEnabled = deltaLakeConfig.isRegisterTableProcedureEnabled();
     }
@@ -94,13 +112,15 @@ public class RegisterTableProcedure
     }
 
     public void registerTable(
+            ConnectorAccessControl accessControl,
             ConnectorSession clientSession,
             String schemaName,
             String tableName,
             String tableLocation)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(getClass().getClassLoader())) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(getClass().getClassLoader())) {
             doRegisterTable(
+                    accessControl,
                     clientSession,
                     schemaName,
                     tableName,
@@ -109,6 +129,7 @@ public class RegisterTableProcedure
     }
 
     private void doRegisterTable(
+            ConnectorAccessControl accessControl,
             ConnectorSession session,
             String schemaName,
             String tableName,
@@ -122,29 +143,53 @@ public class RegisterTableProcedure
         checkProcedureArgument(!isNullOrEmpty(tableLocation), "table_location cannot be null or empty");
 
         SchemaTableName schemaTableName = new SchemaTableName(schemaName, tableName);
-        DeltaLakeMetastore metastore = metadataFactory.create(session.getIdentity()).getMetastore();
+        accessControl.checkCanCreateTable(null, schemaTableName, ImmutableMap.of());
+        DeltaLakeMetadata metadata = metadataFactory.create(session.getIdentity());
+        metadata.beginQuery(session);
+        try (UncheckedCloseable ignore = () -> metadata.cleanupQuery(session)) {
+            DeltaLakeMetastore metastore = metadata.getMetastore();
 
-        if (metastore.getDatabase(schemaName).isEmpty()) {
-            throw new SchemaNotFoundException(schemaTableName.getSchemaName());
-        }
-
-        TrinoFileSystem fileSystem = fileSystemFactory.create(session);
-        try {
-            String transactionLogDir = getTransactionLogDir(tableLocation);
-            if (!fileSystem.listFiles(transactionLogDir).hasNext()) {
-                throw new TrinoException(GENERIC_USER_ERROR, format("No transaction log found in location %s", transactionLogDir));
+            if (metastore.getDatabase(schemaName).isEmpty()) {
+                throw new SchemaNotFoundException(schemaTableName.getSchemaName());
             }
-        }
-        catch (IOException e) {
-            throw new TrinoException(DELTA_LAKE_FILESYSTEM_ERROR, format("Failed checking table location %s", tableLocation), e);
-        }
 
-        Table table = buildTable(session, schemaTableName, tableLocation, true);
+            TrinoFileSystem fileSystem = fileSystemFactory.create(session);
+            try {
+                Location transactionLogDir = Location.of(getTransactionLogDir(tableLocation));
+                if (!fileSystem.listFiles(transactionLogDir).hasNext()) {
+                    throw new TrinoException(GENERIC_USER_ERROR, format("No transaction log found in location %s", transactionLogDir));
+                }
+            }
+            catch (IOException e) {
+                throw new TrinoException(DELTA_LAKE_FILESYSTEM_ERROR, format("Failed checking table location %s", tableLocation), e);
+            }
 
-        PrincipalPrivileges principalPrivileges = buildInitialPrivilegeSet(table.getOwner().orElseThrow());
-        metastore.createTable(
-                session,
-                table,
-                principalPrivileges);
+            statisticsAccess.invalidateCache(schemaTableName, Optional.of(tableLocation));
+            transactionLogAccess.invalidateCache(schemaTableName, Optional.of(tableLocation));
+            // Verify we're registering a location with a valid table
+            TableSnapshot tableSnapshot;
+            MetadataEntry metadataEntry;
+            try {
+                tableSnapshot = transactionLogAccess.loadSnapshot(session, schemaTableName, tableLocation, Optional.empty());
+                metadataEntry = transactionLogAccess.getMetadataEntry(session, tableSnapshot);
+            }
+            catch (TrinoException e) {
+                throw e;
+            }
+            catch (IOException | RuntimeException e) {
+                throw new TrinoException(DELTA_LAKE_INVALID_TABLE, "Failed to access table location: " + tableLocation, e);
+            }
+
+            Table table = metadata.buildTable(
+                    session,
+                    schemaTableName,
+                    tableLocation,
+                    true,
+                    Optional.ofNullable(metadataEntry.getDescription()),
+                    tableSnapshot.getVersion(),
+                    metadataEntry.getSchemaString());
+            PrincipalPrivileges principalPrivileges = buildInitialPrivilegeSet(table.getOwner().orElseThrow());
+            metastore.createTable(table, principalPrivileges);
+        }
     }
 }

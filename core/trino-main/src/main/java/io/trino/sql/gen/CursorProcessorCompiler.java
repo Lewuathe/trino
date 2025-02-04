@@ -13,6 +13,7 @@
  */
 package io.trino.sql.gen;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.bytecode.BytecodeBlock;
@@ -236,11 +237,13 @@ public class CursorProcessorCompiler
         Variable wasNullVariable = scope.declareVariable(type(boolean.class), "wasNull");
 
         RowExpressionCompiler compiler = new RowExpressionCompiler(
+                classDefinition,
                 callSiteBinder,
                 cachedInstanceBinder,
                 fieldReferenceCompiler(cursor),
                 functionManager,
-                compiledLambdaMap);
+                compiledLambdaMap,
+                ImmutableList.of(session, cursor));
 
         LabelNode end = new LabelNode("end");
         method.getBody()
@@ -276,11 +279,13 @@ public class CursorProcessorCompiler
         Variable wasNullVariable = scope.declareVariable(type(boolean.class), "wasNull");
 
         RowExpressionCompiler compiler = new RowExpressionCompiler(
+                classDefinition,
                 callSiteBinder,
                 cachedInstanceBinder,
                 fieldReferenceCompiler(cursor),
                 functionManager,
-                compiledLambdaMap);
+                compiledLambdaMap,
+                ImmutableList.of(session, cursor, output));
 
         method.getBody()
                 .comment("boolean wasNull = false;")
@@ -288,7 +293,7 @@ public class CursorProcessorCompiler
                 .getVariable(output)
                 .comment("evaluate projection: " + projection.toString())
                 .append(compiler.compile(projection, scope))
-                .append(generateWrite(callSiteBinder, scope, wasNullVariable, projection.getType()))
+                .append(generateWrite(callSiteBinder, scope, wasNullVariable, projection.type()))
                 .ret();
     }
 
@@ -299,8 +304,8 @@ public class CursorProcessorCompiler
             @Override
             public BytecodeNode visitInputReference(InputReferenceExpression node, Scope scope)
             {
-                int field = node.getField();
-                Type type = node.getType();
+                int field = node.field();
+                Type type = node.type();
                 Variable wasNullVariable = scope.getVariable("wasNull");
 
                 Class<?> javaType = type.getJavaType();

@@ -21,6 +21,8 @@ import io.trino.execution.buffer.SpoolingOutputStats;
 import io.trino.metadata.Split;
 import io.trino.sql.planner.plan.PlanNodeId;
 
+import java.util.Optional;
+
 public interface RemoteTask
 {
     TaskId getTaskId();
@@ -38,6 +40,8 @@ public interface RemoteTask
     void noMoreSplits(PlanNodeId sourceId);
 
     void setOutputBuffers(OutputBuffers outputBuffers);
+
+    void setSpeculative(boolean speculative);
 
     /**
      * Listener is always notified asynchronously using a dedicated notification thread pool so, care should
@@ -86,5 +90,5 @@ public interface RemoteTask
      *
      * @return spooling output statistics
      */
-    SpoolingOutputStats.Snapshot retrieveAndDropSpoolingOutputStats();
+    Optional<SpoolingOutputStats.Snapshot> retrieveAndDropSpoolingOutputStats();
 }

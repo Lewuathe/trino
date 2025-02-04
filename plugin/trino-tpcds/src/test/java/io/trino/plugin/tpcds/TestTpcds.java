@@ -17,7 +17,7 @@ import io.trino.Session;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.MaterializedResult;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.time.LocalTime;
@@ -37,7 +37,7 @@ public class TestTpcds
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return TpcdsQueryRunner.createQueryRunner();
+        return TpcdsQueryRunner.builder().build();
     }
 
     @Test
@@ -80,6 +80,7 @@ public class TestTpcds
     {
         // TODO add a test with long decimal
         String longValues = range(0, 5000)
+                .map(value -> value * 2) // Make the values discontinuous to avoid getting optimized to a BETWEEN filter
                 .mapToObj(Integer::toString)
                 .collect(joining(", "));
 

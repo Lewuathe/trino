@@ -15,12 +15,17 @@ package io.trino.plugin.iceberg.catalog.rest;
 
 import io.airlift.configuration.Config;
 import io.airlift.configuration.ConfigDescription;
-
-import javax.validation.constraints.NotNull;
+import io.airlift.configuration.DefunctConfig;
+import io.airlift.units.Duration;
+import io.airlift.units.MinDuration;
+import jakarta.validation.constraints.NotNull;
 
 import java.net.URI;
 import java.util.Optional;
 
+import static java.util.concurrent.TimeUnit.MINUTES;
+
+@DefunctConfig("iceberg.rest-catalog.parent-namespace")
 public class IcebergRestCatalogConfig
 {
     public enum Security
@@ -36,9 +41,14 @@ public class IcebergRestCatalogConfig
     }
 
     private URI restUri;
+    private Optional<String> prefix = Optional.empty();
     private Optional<String> warehouse = Optional.empty();
+    private boolean nestedNamespaceEnabled;
     private Security security = Security.NONE;
     private SessionType sessionType = SessionType.NONE;
+    private boolean vendedCredentialsEnabled;
+    private boolean caseInsensitiveNameMatching;
+    private Duration caseInsensitiveNameMatchingCacheTtl = new Duration(1, MINUTES);
 
     @NotNull
     public URI getBaseUri()
@@ -53,6 +63,45 @@ public class IcebergRestCatalogConfig
         if (uri != null) {
             this.restUri = URI.create(uri);
         }
+        return this;
+    }
+
+    public Optional<String> getPrefix()
+    {
+        return prefix;
+    }
+
+    @Config("iceberg.rest-catalog.prefix")
+    @ConfigDescription("The prefix for the resource path to use with the REST catalog server")
+    public IcebergRestCatalogConfig setPrefix(String prefix)
+    {
+        this.prefix = Optional.ofNullable(prefix);
+        return this;
+    }
+
+    public Optional<String> getWarehouse()
+    {
+        return warehouse;
+    }
+
+    @Config("iceberg.rest-catalog.warehouse")
+    @ConfigDescription("The warehouse location/identifier to use with the REST catalog server")
+    public IcebergRestCatalogConfig setWarehouse(String warehouse)
+    {
+        this.warehouse = Optional.ofNullable(warehouse);
+        return this;
+    }
+
+    public boolean isNestedNamespaceEnabled()
+    {
+        return nestedNamespaceEnabled;
+    }
+
+    @Config("iceberg.rest-catalog.nested-namespace-enabled")
+    @ConfigDescription("Support querying objects under nested namespace")
+    public IcebergRestCatalogConfig setNestedNamespaceEnabled(boolean nestedNamespaceEnabled)
+    {
+        this.nestedNamespaceEnabled = nestedNamespaceEnabled;
         return this;
     }
 
@@ -84,16 +133,44 @@ public class IcebergRestCatalogConfig
         return this;
     }
 
-    public Optional<String> getWarehouse()
+    public boolean isVendedCredentialsEnabled()
     {
-        return warehouse;
+        return vendedCredentialsEnabled;
     }
 
-    @Config("iceberg.rest-catalog.warehouse")
-    @ConfigDescription("The warehouse location/identifier to use with the REST catalog server")
-    public IcebergRestCatalogConfig setWarehouse(String warehouse)
+    @Config("iceberg.rest-catalog.vended-credentials-enabled")
+    @ConfigDescription("Use credentials provided by the REST backend for file system access")
+    public IcebergRestCatalogConfig setVendedCredentialsEnabled(boolean vendedCredentialsEnabled)
     {
-        this.warehouse = Optional.ofNullable(warehouse);
+        this.vendedCredentialsEnabled = vendedCredentialsEnabled;
+        return this;
+    }
+
+    public boolean isCaseInsensitiveNameMatching()
+    {
+        return caseInsensitiveNameMatching;
+    }
+
+    @Config("iceberg.rest-catalog.case-insensitive-name-matching")
+    @ConfigDescription("Match object names case-insensitively")
+    public IcebergRestCatalogConfig setCaseInsensitiveNameMatching(boolean caseInsensitiveNameMatching)
+    {
+        this.caseInsensitiveNameMatching = caseInsensitiveNameMatching;
+        return this;
+    }
+
+    @NotNull
+    @MinDuration("0ms")
+    public Duration getCaseInsensitiveNameMatchingCacheTtl()
+    {
+        return caseInsensitiveNameMatchingCacheTtl;
+    }
+
+    @Config("iceberg.rest-catalog.case-insensitive-name-matching.cache-ttl")
+    @ConfigDescription("Duration to keep case insensitive object mapping prior to eviction")
+    public IcebergRestCatalogConfig setCaseInsensitiveNameMatchingCacheTtl(Duration caseInsensitiveNameMatchingCacheTtl)
+    {
+        this.caseInsensitiveNameMatchingCacheTtl = caseInsensitiveNameMatchingCacheTtl;
         return this;
     }
 }

@@ -756,7 +756,7 @@ public class LongOutputStreamV2
     @Override
     public long getBufferedBytes()
     {
-        return buffer.estimateOutputDataSize() + (Long.BYTES * numLiterals);
+        return buffer.estimateOutputDataSize() + (Long.BYTES * (long) numLiterals);
     }
 
     @Override
@@ -1057,7 +1057,7 @@ public class LongOutputStreamV2
                 int bitsToWrite = bitSize;
                 while (bitsToWrite > bitsLeft) {
                     // add the bits to the bottom of the current word
-                    current |= value >>> (bitsToWrite - bitsLeft);
+                    current = (byte) (current | value >>> (bitsToWrite - bitsLeft));
                     // subtract out the bits we just added
                     bitsToWrite -= bitsLeft;
                     // zero out the bits above bitsToWrite
@@ -1067,7 +1067,7 @@ public class LongOutputStreamV2
                     bitsLeft = 8;
                 }
                 bitsLeft -= bitsToWrite;
-                current |= value << bitsLeft;
+                current = (byte) (current | value << bitsLeft);
                 if (bitsLeft == 0) {
                     output.write(current);
                     current = 0;
@@ -1096,7 +1096,7 @@ public class LongOutputStreamV2
                         | ((input[i + 4] & 1) << 3)
                         | ((input[i + 5] & 1) << 2)
                         | ((input[i + 6] & 1) << 1)
-                        | (input[i + 7]) & 1);
+                        | (input[i + 7] & 1));
                 output.write(val);
                 val = 0;
             }
@@ -1122,7 +1122,7 @@ public class LongOutputStreamV2
                 val = (int) (val | ((input[i] & 3) << 6)
                         | ((input[i + 1] & 3) << 4)
                         | ((input[i + 2] & 3) << 2)
-                        | (input[i + 3]) & 3);
+                        | (input[i + 3] & 3));
                 output.write(val);
                 val = 0;
             }
@@ -1145,7 +1145,7 @@ public class LongOutputStreamV2
             final int endUnroll = endOffset - remainder;
             int val = 0;
             for (int i = offset; i < endUnroll; i = i + numHops) {
-                val = (int) (val | ((input[i] & 15) << 4) | (input[i + 1]) & 15);
+                val = (int) (val | ((input[i] & 15) << 4) | input[i + 1] & 15);
                 output.write(val);
                 val = 0;
             }

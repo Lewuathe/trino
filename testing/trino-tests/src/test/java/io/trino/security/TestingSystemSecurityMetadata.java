@@ -20,6 +20,7 @@ import io.trino.metadata.QualifiedTablePrefix;
 import io.trino.metadata.SystemSecurityMetadata;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
+import io.trino.spi.function.CatalogSchemaFunctionName;
 import io.trino.spi.security.GrantInfo;
 import io.trino.spi.security.Identity;
 import io.trino.spi.security.Privilege;
@@ -47,12 +48,19 @@ class TestingSystemSecurityMetadata
     private final Set<String> roles = synchronizedSet(new HashSet<>());
     private final Set<RoleGrant> roleGrants = synchronizedSet(new HashSet<>());
     private final Map<CatalogSchemaTableName, Identity> viewOwners = synchronizedMap(new HashMap<>());
+    private final Map<CatalogSchemaFunctionName, Identity> functionOwners = synchronizedMap(new HashMap<>());
 
     public void reset()
     {
         roles.clear();
         roleGrants.clear();
         viewOwners.clear();
+        functionOwners.clear();
+    }
+
+    public String getFunctionOwner(CatalogSchemaFunctionName functionName)
+    {
+        return functionOwners.get(functionName).getUser();
     }
 
     @Override
@@ -243,6 +251,30 @@ class TestingSystemSecurityMetadata
     }
 
     @Override
+    public Optional<Identity> getFunctionRunAsIdentity(Session session, CatalogSchemaFunctionName functionName)
+    {
+        return Optional.ofNullable(functionOwners.get(functionName))
+                .map(identity -> Identity.from(identity)
+                        .withEnabledRoles(getRoleGrantsRecursively(new TrinoPrincipal(USER, identity.getUser()))
+                                .stream()
+                                .map(RoleGrant::getRoleName)
+                                .collect(toImmutableSet()))
+                        .build());
+    }
+
+    @Override
+    public void functionCreated(Session session, CatalogSchemaFunctionName function)
+    {
+        functionOwners.put(function, session.getIdentity());
+    }
+
+    @Override
+    public void functionDropped(Session session, CatalogSchemaFunctionName function)
+    {
+        functionOwners.remove(function);
+    }
+
+    @Override
     public void schemaCreated(Session session, CatalogSchemaName schema) {}
 
     @Override
@@ -259,4 +291,19 @@ class TestingSystemSecurityMetadata
 
     @Override
     public void tableDropped(Session session, CatalogSchemaTableName table) {}
+
+    @Override
+    public void columnCreated(Session session, CatalogSchemaTableName table, String column) {}
+
+    @Override
+    public void columnRenamed(Session session, CatalogSchemaTableName table, String oldName, String newName) {}
+
+    @Override
+    public void columnDropped(Session session, CatalogSchemaTableName table, String column) {}
+
+    @Override
+    public void columnTypeChanged(Session session, CatalogSchemaTableName table, String column, String oldType, String newType) {}
+
+    @Override
+    public void columnNotNullConstraintDropped(Session session, CatalogSchemaTableName table, String column) {}
 }

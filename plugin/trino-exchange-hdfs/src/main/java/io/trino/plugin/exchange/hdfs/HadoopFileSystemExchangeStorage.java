@@ -15,23 +15,24 @@ package io.trino.plugin.exchange.hdfs;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
+import com.google.inject.Inject;
 import io.airlift.slice.InputStreamSliceInput;
 import io.airlift.slice.Slice;
+import io.trino.annotation.NotThreadSafe;
 import io.trino.plugin.exchange.filesystem.ExchangeSourceFile;
 import io.trino.plugin.exchange.filesystem.ExchangeStorageReader;
 import io.trino.plugin.exchange.filesystem.ExchangeStorageWriter;
 import io.trino.plugin.exchange.filesystem.FileStatus;
 import io.trino.plugin.exchange.filesystem.FileSystemExchangeStorage;
+import io.trino.plugin.exchange.filesystem.MetricsBuilder;
+import io.trino.spi.classloader.ThreadContextClassLoader;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
-
-import javax.annotation.concurrent.GuardedBy;
-import javax.annotation.concurrent.NotThreadSafe;
-import javax.annotation.concurrent.ThreadSafe;
-import javax.inject.Inject;
 
 import java.io.File;
 import java.io.IOException;
@@ -47,7 +48,7 @@ import static com.google.common.util.concurrent.Futures.immediateFailedFuture;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static com.google.common.util.concurrent.Futures.immediateVoidFuture;
 import static io.airlift.slice.SizeOf.instanceSize;
-import static io.trino.hadoop.ConfigurationInstantiator.newEmptyConfiguration;
+import static io.trino.plugin.exchange.filesystem.MetricsBuilder.SOURCE_FILES_PROCESSED;
 import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
 
@@ -78,9 +79,9 @@ public class HadoopFileSystemExchangeStorage
     }
 
     @Override
-    public ExchangeStorageReader createExchangeStorageReader(List<ExchangeSourceFile> sourceFiles, int maxPageStorageSize)
+    public ExchangeStorageReader createExchangeStorageReader(List<ExchangeSourceFile> sourceFiles, int maxPageStorageSize, MetricsBuilder metricsBuilder)
     {
-        return new HadoopExchangeStorageReader(fileSystem, sourceFiles, blockSize);
+        return new HadoopExchangeStorageReader(fileSystem, sourceFiles, metricsBuilder, blockSize);
     }
 
     @Override
@@ -140,8 +141,13 @@ public class HadoopFileSystemExchangeStorage
     }
 
     @Override
-    public void close()
+    public void close() {}
+
+    private static Configuration newEmptyConfiguration()
     {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(HadoopFileSystemExchangeStorage.class.getClassLoader())) {
+            return new Configuration(false);
+        }
     }
 
     @ThreadSafe
@@ -153,6 +159,7 @@ public class HadoopFileSystemExchangeStorage
         private final FileSystem fileSystem;
         @GuardedBy("this")
         private final Queue<ExchangeSourceFile> sourceFiles;
+        private final MetricsBuilder.CounterMetricBuilder sourceFilesProcessedMetric;
         private final int blockSize;
 
         @GuardedBy("this")
@@ -160,10 +167,12 @@ public class HadoopFileSystemExchangeStorage
         @GuardedBy("this")
         private boolean closed;
 
-        public HadoopExchangeStorageReader(FileSystem fileSystem, List<ExchangeSourceFile> sourceFiles, int blockSize)
+        public HadoopExchangeStorageReader(FileSystem fileSystem, List<ExchangeSourceFile> sourceFiles, MetricsBuilder metricsBuilder, int blockSize)
         {
             this.fileSystem = requireNonNull(fileSystem, "fileSystem is null");
             this.sourceFiles = new ArrayDeque<>(requireNonNull(sourceFiles, "sourceFiles is null"));
+            requireNonNull(metricsBuilder, "metricsBuilder is null");
+            sourceFilesProcessedMetric = metricsBuilder.getCounterMetric(SOURCE_FILES_PROCESSED);
             this.blockSize = blockSize;
         }
 
@@ -175,8 +184,14 @@ public class HadoopFileSystemExchangeStorage
                 return null;
             }
 
-            if (sliceInput != null && sliceInput.isReadable()) {
-                return sliceInput.readSlice(sliceInput.readInt());
+            if (sliceInput != null) {
+                if (sliceInput.isReadable()) {
+                    return sliceInput.readSlice(sliceInput.readInt());
+                }
+                else {
+                    sliceInput.close();
+                    sourceFilesProcessedMetric.increment();
+                }
             }
 
             ExchangeSourceFile sourceFile = sourceFiles.poll();

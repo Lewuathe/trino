@@ -13,16 +13,16 @@
  */
 package io.trino.plugin.bigquery;
 
-import com.google.common.collect.ImmutableMap;
 import io.trino.testing.BaseConnectorSmokeTest;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
+import static io.trino.plugin.bigquery.BigQueryQueryRunner.BIGQUERY_CREDENTIALS_KEY;
 import static io.trino.testing.TestingNames.randomNameSuffix;
-import static java.util.Objects.requireNonNull;
+import static io.trino.testing.TestingProperties.requiredNonEmptySystemProperty;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestBigQueryWithDifferentProjectIdConnectorSmokeTest
@@ -37,30 +37,29 @@ public class TestBigQueryWithDifferentProjectIdConnectorSmokeTest
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        this.alternateProjectId = requireNonNull(System.getProperty("testing.alternate-bq-project-id"), "testing.alternate-bq-project-id system property not set");
+        this.alternateProjectId = requiredNonEmptySystemProperty("testing.alternate-bq-project-id");
 
-        QueryRunner queryRunner = BigQueryQueryRunner.createQueryRunner(
-                ImmutableMap.of(),
-                ImmutableMap.of("bigquery.project-id", alternateProjectId),
-                REQUIRED_TPCH_TABLES);
-        queryRunner.createCatalog(SERVICE_ACCOUNT_CATALOG, "bigquery", Map.of());
+        QueryRunner queryRunner = BigQueryQueryRunner.builder()
+                .setConnectorProperties(Map.of("bigquery.project-id", alternateProjectId))
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
+        queryRunner.createCatalog(SERVICE_ACCOUNT_CATALOG, "bigquery", Map.of("bigquery.credentials-key", BIGQUERY_CREDENTIALS_KEY));
         return queryRunner;
     }
 
-    @SuppressWarnings("DuplicateBranchesInSwitch")
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
-        switch (connectorBehavior) {
-            case SUPPORTS_RENAME_SCHEMA:
-                return false;
-
-            case SUPPORTS_RENAME_TABLE:
-                return false;
-
-            default:
-                return super.hasBehavior(connectorBehavior);
-        }
+        return switch (connectorBehavior) {
+            case SUPPORTS_TRUNCATE -> true;
+            case SUPPORTS_CREATE_MATERIALIZED_VIEW,
+                 SUPPORTS_CREATE_VIEW,
+                 SUPPORTS_MERGE,
+                 SUPPORTS_RENAME_SCHEMA,
+                 SUPPORTS_RENAME_TABLE,
+                 SUPPORTS_UPDATE -> false;
+            default -> super.hasBehavior(connectorBehavior);
+        };
     }
 
     @Test

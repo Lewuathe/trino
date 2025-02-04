@@ -22,9 +22,10 @@ import java.util.List;
 public interface FileSystemExchangeStorage
         extends AutoCloseable
 {
-    void createDirectories(URI dir) throws IOException;
+    void createDirectories(URI dir)
+            throws IOException;
 
-    ExchangeStorageReader createExchangeStorageReader(List<ExchangeSourceFile> sourceFiles, int maxPageStorageSize);
+    ExchangeStorageReader createExchangeStorageReader(List<ExchangeSourceFile> sourceFiles, int maxPageStorageSize, MetricsBuilder metricsBuilder);
 
     ExchangeStorageWriter createExchangeStorageWriter(URI file);
 
@@ -37,5 +38,6 @@ public interface FileSystemExchangeStorage
     int getWriteBufferSize();
 
     @Override
-    void close() throws IOException;
+    void close()
+            throws IOException;
 }

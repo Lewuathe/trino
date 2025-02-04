@@ -17,14 +17,13 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
+import com.google.inject.Inject;
 import io.airlift.log.Logger;
 import io.trino.plugin.cassandra.util.CassandraCqlUtils;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.Range;
 import io.trino.spi.predicate.TupleDomain;
-
-import javax.inject.Inject;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -88,7 +87,7 @@ public class CassandraPartitionManager
             }
         }
 
-        // push down indexed column fixed value predicates only for unpartitioned partition which uses token range query
+        // Cassandra allows pushing down indexed column fixed value predicates along with token range SELECT
         if ((partitions.size() == 1) && partitions.get(0).isUnpartitioned()) {
             Map<ColumnHandle, Domain> domains = tupleDomain.getDomains().get();
             List<ColumnHandle> indexedColumns = new ArrayList<>();
@@ -97,10 +96,10 @@ public class CassandraPartitionManager
             for (Map.Entry<ColumnHandle, Domain> entry : domains.entrySet()) {
                 CassandraColumnHandle column = (CassandraColumnHandle) entry.getKey();
                 Domain domain = entry.getValue();
-                if (column.isIndexed() && domain.isSingleValue()) {
-                    sb.append(CassandraCqlUtils.validColumnName(column.getName()))
+                if (column.indexed() && domain.isSingleValue()) {
+                    sb.append(CassandraCqlUtils.validColumnName(column.name()))
                             .append(" = ")
-                            .append(cassandraTypeManager.toCqlLiteral(column.getCassandraType(), entry.getValue().getSingleValue()));
+                            .append(cassandraTypeManager.toCqlLiteral(column.cassandraType(), entry.getValue().getSingleValue()));
                     indexedColumns.add(column);
                     // Only one indexed column predicate can be pushed down.
                     break;
@@ -109,9 +108,9 @@ public class CassandraPartitionManager
             if (sb.length() > 0) {
                 CassandraPartition partition = partitions.get(0);
                 TupleDomain<ColumnHandle> filterIndexedColumn = TupleDomain.withColumnDomains(Maps.filterKeys(remainingTupleDomain.getDomains().get(), not(in(indexedColumns))));
-                partitions = new ArrayList<>();
-                partitions.add(new CassandraPartition(partition.getKey(), sb.toString(), filterIndexedColumn, true));
-                return new CassandraPartitionResult(partitions, filterIndexedColumn);
+                return new CassandraPartitionResult(
+                        ImmutableList.of(new CassandraPartition(partition.getKey(), sb.toString(), filterIndexedColumn, true)),
+                        filterIndexedColumn);
             }
         }
         return new CassandraPartitionResult(partitions, remainingTupleDomain);
@@ -137,7 +136,7 @@ public class CassandraPartitionManager
     private List<Set<Object>> getPartitionKeysList(CassandraTable table, TupleDomain<ColumnHandle> tupleDomain)
     {
         ImmutableList.Builder<Set<Object>> partitionColumnValues = ImmutableList.builder();
-        for (CassandraColumnHandle columnHandle : table.getPartitionKeyColumns()) {
+        for (CassandraColumnHandle columnHandle : table.partitionKeyColumns()) {
             Domain domain = tupleDomain.getDomains().get().get(columnHandle);
 
             // if there is no constraint on a partition key, return an empty set
@@ -160,8 +159,8 @@ public class CassandraPartitionManager
                             }
                             Object value = range.getSingleValue();
 
-                            CassandraType valueType = columnHandle.getCassandraType();
-                            if (cassandraTypeManager.isSupportedPartitionKey(valueType.getKind())) {
+                            CassandraType valueType = columnHandle.cassandraType();
+                            if (valueType.kind().isSupportedPartitionKey()) {
                                 columnValues.add(value);
                             }
                         }

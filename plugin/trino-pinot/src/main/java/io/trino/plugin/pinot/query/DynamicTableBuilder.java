@@ -65,9 +65,7 @@ public final class DynamicTableBuilder
     public static final String REALTIME_SUFFIX = "_REALTIME";
     private static final Set<AggregationFunctionType> NON_NULL_ON_EMPTY_AGGREGATIONS = EnumSet.of(COUNT, DISTINCTCOUNT, DISTINCTCOUNTHLL);
 
-    private DynamicTableBuilder()
-    {
-    }
+    private DynamicTableBuilder() {}
 
     public static DynamicTable buildFromPql(PinotMetadata pinotMetadata, SchemaTableName schemaTableName, PinotClient pinotClient, PinotTypeConverter typeConverter)
     {
@@ -127,7 +125,7 @@ public final class DynamicTableBuilder
             filter = Optional.of(formatted);
         }
 
-        return new DynamicTable(pinotTableName, suffix, selectColumns, filter, groupByColumns, ImmutableList.of(), havingExpression, orderBy, OptionalLong.of(queryContext.getLimit()), getOffset(queryContext), query);
+        return new DynamicTable(pinotTableName, suffix, selectColumns, filter, groupByColumns, ImmutableList.of(), havingExpression, orderBy, OptionalLong.of(queryContext.getLimit()), getOffset(queryContext), queryContext.getQueryOptions(), query);
     }
 
     private static List<PinotColumnHandle> getPinotColumns(SchemaTableName schemaTableName, List<ExpressionContext> expressions, List<String> aliases, Map<String, ColumnHandle> columnHandles, PinotTypeResolver pinotTypeResolver, Map<String, PinotColumnNameAndTrinoType> aggregateTypes)

@@ -14,7 +14,6 @@
 package io.trino.plugin.mongodb;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.mongodb.client.MongoClients;
 import io.trino.Session;
 import io.trino.spi.type.ArrayType;
@@ -28,12 +27,10 @@ import io.trino.testing.datatype.DataSetup;
 import io.trino.testing.datatype.SqlDataTypeTest;
 import io.trino.testing.sql.TestTable;
 import io.trino.testing.sql.TrinoSqlExecutor;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.time.ZoneId;
 
-import static io.trino.plugin.mongodb.MongoQueryRunner.createMongoQueryRunner;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.CharType.createCharType;
@@ -63,7 +60,8 @@ public class TestMongoTypeMapping
             throws Exception
     {
         server = closeAfterClass(new MongoServer());
-        return createMongoQueryRunner(server, ImmutableMap.of(), ImmutableList.of());
+        return MongoQueryRunner.builder(server)
+                .build();
     }
 
     @Test
@@ -185,6 +183,16 @@ public class TestMongoTypeMapping
                 .addRoundTrip("decimal(38, 0)", "CAST(NULL AS decimal(38, 0))", createDecimalType(38, 0), "CAST(NULL AS decimal(38, 0))")
                 .execute(getQueryRunner(), trinoCreateAsSelect("test_decimal"))
                 .execute(getQueryRunner(), trinoCreateAndInsert("test_decimal"));
+
+        SqlDataTypeTest.create()
+                .addRoundTrip("NumberDecimal(\"2\")", "CAST('2' AS decimal(1, 0))")
+                .addRoundTrip("NumberDecimal(\"2.3\")", "CAST('2.3' AS decimal(2, 1))")
+                .addRoundTrip("NumberDecimal(\"-2.3\")", "CAST('-2.3' AS decimal(2, 1))")
+                .addRoundTrip("NumberDecimal(\"0.03\")", "CAST('0.03' AS decimal(2, 2))")
+                .addRoundTrip("NumberDecimal(\"-0.03\")", "CAST('-0.03' AS decimal(2, 2))")
+                .addRoundTrip("NumberDecimal(\"1234567890123456789012345678901234\")", "CAST('1234567890123456789012345678901234' AS decimal(34, 0))") // 34 is the max precision in Decimal128
+                .addRoundTrip("NumberDecimal(\"1234567890123456.789012345678901234\")", "CAST('1234567890123456.789012345678901234' AS decimal(34, 18))")
+                .execute(getQueryRunner(), mongoCreateAndInsert(getSession(), "tpch", "test_decimal"));
     }
 
     @Test
@@ -256,8 +264,19 @@ public class TestMongoTypeMapping
                 .execute(getQueryRunner(), trinoCreateAndInsert("test_time"));
     }
 
-    @Test(dataProvider = "sessionZonesDataProvider")
-    public void testDate(ZoneId sessionZone)
+    @Test
+    public void testDate()
+    {
+        testDate(UTC);
+        testDate(ZoneId.systemDefault());
+        // no DST in 1970, but has DST in later years (e.g. 2018)
+        testDate(ZoneId.of("Europe/Vilnius"));
+        // minutes offset change since 1970-01-01, no DST
+        testDate(ZoneId.of("Asia/Kathmandu"));
+        testDate(TestingSession.DEFAULT_TIME_ZONE_KEY.getZoneId());
+    }
+
+    private void testDate(ZoneId sessionZone)
     {
         Session session = Session.builder(getSession())
                 .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(sessionZone.getId()))
@@ -287,8 +306,19 @@ public class TestMongoTypeMapping
                 .execute(getQueryRunner(), session, trinoCreateAndInsert("test_date"));
     }
 
-    @Test(dataProvider = "sessionZonesDataProvider")
-    public void testTimestamp(ZoneId sessionZone)
+    @Test
+    public void testTimestamp()
+    {
+        testTimestamp(UTC);
+        testTimestamp(ZoneId.systemDefault());
+        // no DST in 1970, but has DST in later years (e.g. 2018)
+        testTimestamp(ZoneId.of("Europe/Vilnius"));
+        // minutes offset change since 1970-01-01, no DST
+        testTimestamp(ZoneId.of("Asia/Kathmandu"));
+        testTimestamp(TestingSession.DEFAULT_TIME_ZONE_KEY.getZoneId());
+    }
+
+    private void testTimestamp(ZoneId sessionZone)
     {
         Session session = Session.builder(getSession())
                 .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(sessionZone.getId()))
@@ -312,8 +342,19 @@ public class TestMongoTypeMapping
                 .execute(getQueryRunner(), session, trinoCreateAndInsert("test_timestamp"));
     }
 
-    @Test(dataProvider = "sessionZonesDataProvider")
-    public void testTimestampWithTimeZoneMapping(ZoneId sessionZone)
+    @Test
+    public void testTimestampWithTimeZoneMapping()
+    {
+        testTimestampWithTimeZoneMapping(UTC);
+        testTimestampWithTimeZoneMapping(ZoneId.systemDefault());
+        // no DST in 1970, but has DST in later years (e.g. 2018)
+        testTimestampWithTimeZoneMapping(ZoneId.of("Europe/Vilnius"));
+        // minutes offset change since 1970-01-01, no DST
+        testTimestampWithTimeZoneMapping(ZoneId.of("Asia/Kathmandu"));
+        testTimestampWithTimeZoneMapping(TestingSession.DEFAULT_TIME_ZONE_KEY.getZoneId());
+    }
+
+    private void testTimestampWithTimeZoneMapping(ZoneId sessionZone)
     {
         Session session = Session.builder(getSession())
                 .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(sessionZone.getId()))
@@ -357,7 +398,7 @@ public class TestMongoTypeMapping
     public void testArrayNulls()
     {
         // Verify only SELECT instead of using SqlDataTypeTest because array comparison not supported for arrays with null elements
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_array_nulls", "(c1 ARRAY(boolean), c2 ARRAY(varchar), c3 ARRAY(varchar))", ImmutableList.of("(NULL, ARRAY[NULL], ARRAY['foo', NULL, 'bar', NULL])"))) {
+        try (TestTable table = newTrinoTable("test_array_nulls", "(c1 ARRAY(boolean), c2 ARRAY(varchar), c3 ARRAY(varchar))", ImmutableList.of("(NULL, ARRAY[NULL], ARRAY['foo', NULL, 'bar', NULL])"))) {
             assertThat(query("SELECT c1 FROM " + table.getName())).matches("VALUES CAST(NULL AS ARRAY(boolean))");
             assertThat(query("SELECT c2 FROM " + table.getName())).matches("VALUES CAST(ARRAY[NULL] AS ARRAY(varchar))");
             assertThat(query("SELECT c3 FROM " + table.getName())).matches("VALUES CAST(ARRAY['foo', NULL, 'bar', NULL] AS ARRAY(varchar))");
@@ -373,20 +414,6 @@ public class TestMongoTypeMapping
                 .addRoundTrip("json", "CAST(NULL AS json)", JSON, "CAST(NULL AS json)")
                 .execute(getQueryRunner(), trinoCreateAsSelect("test_json"))
                 .execute(getQueryRunner(), trinoCreateAndInsert("test_json"));
-    }
-
-    @DataProvider
-    public Object[][] sessionZonesDataProvider()
-    {
-        return new Object[][] {
-                {UTC},
-                {ZoneId.systemDefault()},
-                // no DST in 1970, but has DST in later years (e.g. 2018)
-                {ZoneId.of("Europe/Vilnius")},
-                // minutes offset change since 1970-01-01, no DST
-                {ZoneId.of("Asia/Kathmandu")},
-                {TestingSession.DEFAULT_TIME_ZONE_KEY.getZoneId()},
-        };
     }
 
     private DataSetup trinoCreateAsSelect(String tableNamePrefix)

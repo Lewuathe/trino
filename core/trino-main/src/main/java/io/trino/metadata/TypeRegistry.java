@@ -19,8 +19,10 @@ import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Multimap;
 import com.google.common.util.concurrent.UncheckedExecutionException;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.inject.Inject;
 import io.trino.FeaturesConfig;
-import io.trino.collect.cache.NonEvictableCache;
+import io.trino.cache.NonEvictableCache;
 import io.trino.spi.function.OperatorType;
 import io.trino.spi.type.ParametricType;
 import io.trino.spi.type.Type;
@@ -31,14 +33,12 @@ import io.trino.spi.type.TypeOperators;
 import io.trino.spi.type.TypeParameter;
 import io.trino.spi.type.TypeSignature;
 import io.trino.spi.type.TypeSignatureParameter;
+import io.trino.sql.parser.ParsingException;
 import io.trino.sql.parser.SqlParser;
 import io.trino.type.CharParametricType;
 import io.trino.type.DecimalParametricType;
 import io.trino.type.Re2JRegexpType;
 import io.trino.type.VarcharParametricType;
-
-import javax.annotation.concurrent.ThreadSafe;
-import javax.inject.Inject;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -52,8 +52,8 @@ import java.util.concurrent.ConcurrentMap;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Throwables.throwIfUnchecked;
-import static io.trino.collect.cache.CacheUtils.uncheckedCacheGet;
-import static io.trino.collect.cache.SafeCaches.buildNonEvictableCache;
+import static io.trino.cache.CacheUtils.uncheckedCacheGet;
+import static io.trino.cache.SafeCaches.buildNonEvictableCache;
 import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.BOXED_NULLABLE;
 import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.NEVER_NULL;
 import static io.trino.spi.function.InvocationConvention.InvocationReturnConvention.FAIL_ON_NULL;
@@ -63,8 +63,8 @@ import static io.trino.spi.function.OperatorType.COMPARISON_UNORDERED_FIRST;
 import static io.trino.spi.function.OperatorType.COMPARISON_UNORDERED_LAST;
 import static io.trino.spi.function.OperatorType.EQUAL;
 import static io.trino.spi.function.OperatorType.HASH_CODE;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 import static io.trino.spi.function.OperatorType.INDETERMINATE;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
 import static io.trino.spi.function.OperatorType.LESS_THAN;
 import static io.trino.spi.function.OperatorType.LESS_THAN_OR_EQUAL;
 import static io.trino.spi.function.OperatorType.XX_HASH_64;
@@ -197,7 +197,12 @@ public final class TypeRegistry
 
     public Type fromSqlType(String sqlType)
     {
-        return getType(toTypeSignature(SQL_PARSER.createType(sqlType)));
+        try {
+            return getType(toTypeSignature(SQL_PARSER.createType(sqlType)));
+        }
+        catch (ParsingException e) {
+            throw new TypeNotFoundException(sqlType, e);
+        }
     }
 
     private Type instantiateParametricType(TypeSignature signature)
@@ -284,8 +289,8 @@ public final class TypeRegistry
                 if (!hasXxHash64Method(type)) {
                     missingOperators.put(type, XX_HASH_64);
                 }
-                if (!hasDistinctFromMethod(type)) {
-                    missingOperators.put(type, IS_DISTINCT_FROM);
+                if (!hasIdenticalMethod(type)) {
+                    missingOperators.put(type, IDENTICAL);
                 }
                 if (!hasIndeterminateMethod(type)) {
                     missingOperators.put(type, INDETERMINATE);
@@ -352,10 +357,10 @@ public final class TypeRegistry
         }
     }
 
-    private boolean hasDistinctFromMethod(Type type)
+    private boolean hasIdenticalMethod(Type type)
     {
         try {
-            typeOperators.getDistinctFromOperator(type, simpleConvention(FAIL_ON_NULL, BOXED_NULLABLE, BOXED_NULLABLE));
+            typeOperators.getIdenticalOperator(type, simpleConvention(FAIL_ON_NULL, BOXED_NULLABLE, BOXED_NULLABLE));
             return true;
         }
         catch (RuntimeException e) {

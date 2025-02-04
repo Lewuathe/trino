@@ -13,6 +13,9 @@
  */
 package io.trino.plugin.bigquery;
 
+import com.google.common.collect.ImmutableSet;
+import com.google.inject.Inject;
+import io.airlift.bootstrap.LifeCycleManager;
 import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorMetadata;
 import io.trino.plugin.base.session.SessionPropertiesProvider;
 import io.trino.spi.connector.Connector;
@@ -22,11 +25,10 @@ import io.trino.spi.connector.ConnectorPageSourceProvider;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplitManager;
 import io.trino.spi.connector.ConnectorTransactionHandle;
-import io.trino.spi.ptf.ConnectorTableFunction;
+import io.trino.spi.function.table.ConnectorTableFunction;
+import io.trino.spi.procedure.Procedure;
 import io.trino.spi.session.PropertyMetadata;
 import io.trino.spi.transaction.IsolationLevel;
-
-import javax.inject.Inject;
 
 import java.util.List;
 import java.util.Set;
@@ -37,27 +39,33 @@ import static java.util.Objects.requireNonNull;
 public class BigQueryConnector
         implements Connector
 {
+    private final LifeCycleManager lifeCycleManager;
     private final BigQueryTransactionManager transactionManager;
     private final BigQuerySplitManager splitManager;
     private final BigQueryPageSourceProvider pageSourceProvider;
     private final BigQueryPageSinkProvider pageSinkProvider;
     private final Set<ConnectorTableFunction> connectorTableFunctions;
+    private final Set<Procedure> procedures;
     private final List<PropertyMetadata<?>> sessionProperties;
 
     @Inject
     public BigQueryConnector(
+            LifeCycleManager lifeCycleManager,
             BigQueryTransactionManager transactionManager,
             BigQuerySplitManager splitManager,
             BigQueryPageSourceProvider pageSourceProvider,
             BigQueryPageSinkProvider pageSinkProvider,
             Set<ConnectorTableFunction> connectorTableFunctions,
+            Set<Procedure> procedures,
             Set<SessionPropertiesProvider> sessionPropertiesProviders)
     {
+        this.lifeCycleManager = requireNonNull(lifeCycleManager, "lifeCycleManager is null");
         this.transactionManager = requireNonNull(transactionManager, "transactionManager is null");
         this.splitManager = requireNonNull(splitManager, "splitManager is null");
         this.pageSourceProvider = requireNonNull(pageSourceProvider, "pageSourceProvider is null");
         this.pageSinkProvider = requireNonNull(pageSinkProvider, "pageSinkProvider is null");
         this.connectorTableFunctions = requireNonNull(connectorTableFunctions, "connectorTableFunctions is null");
+        this.procedures = ImmutableSet.copyOf(requireNonNull(procedures, "procedures is null"));
         this.sessionProperties = sessionPropertiesProviders.stream()
                 .flatMap(sessionPropertiesProvider -> sessionPropertiesProvider.getSessionProperties().stream())
                 .collect(toImmutableList());
@@ -112,8 +120,20 @@ public class BigQueryConnector
     }
 
     @Override
+    public Set<Procedure> getProcedures()
+    {
+        return procedures;
+    }
+
+    @Override
     public List<PropertyMetadata<?>> getSessionProperties()
     {
         return sessionProperties;
+    }
+
+    @Override
+    public void shutdown()
+    {
+        lifeCycleManager.stop();
     }
 }

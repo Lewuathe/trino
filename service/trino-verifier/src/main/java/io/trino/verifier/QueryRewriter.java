@@ -19,7 +19,6 @@ import com.google.common.util.concurrent.SimpleTimeLimiter;
 import com.google.common.util.concurrent.TimeLimiter;
 import com.google.common.util.concurrent.UncheckedTimeoutException;
 import io.airlift.units.Duration;
-import io.trino.sql.parser.ParsingOptions;
 import io.trino.sql.parser.SqlParser;
 import io.trino.sql.tree.CreateTable;
 import io.trino.sql.tree.CreateTableAsSelect;
@@ -31,6 +30,7 @@ import io.trino.sql.tree.Insert;
 import io.trino.sql.tree.LikeClause;
 import io.trino.sql.tree.Limit;
 import io.trino.sql.tree.LongLiteral;
+import io.trino.sql.tree.NodeLocation;
 import io.trino.sql.tree.QualifiedName;
 import io.trino.sql.tree.QueryBody;
 import io.trino.sql.tree.QuerySpecification;
@@ -56,11 +56,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import static io.trino.sql.SqlFormatter.formatSql;
-import static io.trino.sql.parser.ParsingOptions.DecimalLiteralTreatment.AS_DOUBLE;
 import static io.trino.sql.tree.LikeClause.PropertiesOption.INCLUDING;
+import static io.trino.sql.tree.SaveMode.IGNORE;
 import static io.trino.verifier.QueryType.READ;
 import static io.trino.verifier.VerifyCommand.statementToQueryType;
-import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newSingleThreadExecutor;
 
@@ -104,7 +103,7 @@ public class QueryRewriter
             throw new QueryRewriteException("Cannot rewrite queries that use post-queries");
         }
 
-        Statement statement = parser.createStatement(query.getQuery(), new ParsingOptions(AS_DOUBLE /* anything */));
+        Statement statement = parser.createStatement(query.getQuery());
         try (Connection connection = DriverManager.getConnection(gatewayUrl, usernameOverride.orElse(query.getUsername()), passwordOverride.orElse(query.getPassword()))) {
             trySetConnectionProperties(query, connection);
             if (statement instanceof CreateTableAsSelect) {
@@ -122,7 +121,7 @@ public class QueryRewriter
             throws SQLException, QueryRewriteException
     {
         QualifiedName temporaryTableName = generateTemporaryTableName(statement.getName());
-        Statement rewritten = new CreateTableAsSelect(temporaryTableName, statement.getQuery(), statement.isNotExists(), statement.getProperties(), statement.isWithData(), statement.getColumnAliases(), Optional.empty());
+        Statement rewritten = new CreateTableAsSelect(temporaryTableName, statement.getQuery(), statement.getSaveMode(), statement.getProperties(), statement.isWithData(), statement.getColumnAliases(), Optional.empty());
         String createTableAsSql = formatSql(rewritten);
         String checksumSql = checksumSql(getColumns(connection, statement), temporaryTableName);
         String dropTableSql = dropTableSql(temporaryTableName);
@@ -133,7 +132,7 @@ public class QueryRewriter
             throws SQLException, QueryRewriteException
     {
         QualifiedName temporaryTableName = generateTemporaryTableName(statement.getTarget());
-        Statement createTemporaryTable = new CreateTable(temporaryTableName, ImmutableList.of(new LikeClause(statement.getTarget(), Optional.of(INCLUDING))), true, ImmutableList.of(), Optional.empty());
+        Statement createTemporaryTable = new CreateTable(temporaryTableName, ImmutableList.of(new LikeClause(statement.getTarget(), Optional.of(INCLUDING))), IGNORE, ImmutableList.of(), Optional.empty());
         String createTemporaryTableSql = formatSql(createTemporaryTable);
         String insertSql = formatSql(new Insert(new Table(temporaryTableName), statement.getColumns(), statement.getQuery()));
         String checksumSql = checksumSql(getColumnsForTable(connection, query.getCatalog(), query.getSchema(), statement.getTarget().toString()), temporaryTableName);
@@ -164,7 +163,7 @@ public class QueryRewriter
             connection.setCatalog(catalogOverride.orElse(query.getCatalog()));
             connection.setSchema(schemaOverride.orElse(query.getSchema()));
         }
-        catch (SQLClientInfoException ignored) {
+        catch (SQLClientInfoException _) {
             // Do nothing
         }
     }
@@ -207,10 +206,10 @@ public class QueryRewriter
                     querySpecification.getOffset(),
                     Optional.of(new Limit(new LongLiteral("0"))));
 
-            zeroRowsQuery = new io.trino.sql.tree.Query(createSelectClause.getWith(), innerQuery, Optional.empty(), Optional.empty(), Optional.empty());
+            zeroRowsQuery = new io.trino.sql.tree.Query(ImmutableList.of(), createSelectClause.getWith(), innerQuery, Optional.empty(), Optional.empty(), Optional.empty());
         }
         else {
-            zeroRowsQuery = new io.trino.sql.tree.Query(createSelectClause.getWith(), innerQuery, Optional.empty(), Optional.empty(), Optional.of(new Limit(new LongLiteral("0"))));
+            zeroRowsQuery = new io.trino.sql.tree.Query(ImmutableList.of(), createSelectClause.getWith(), innerQuery, Optional.empty(), Optional.empty(), Optional.of(new Limit(new LongLiteral("0"))));
         }
 
         ImmutableList.Builder<Column> columns = ImmutableList.builder();
@@ -258,7 +257,7 @@ public class QueryRewriter
 
     private static String dropTableSql(QualifiedName table)
     {
-        return formatSql(new DropTable(table, true));
+        return formatSql(new DropTable(new NodeLocation(1, 1), table, true));
     }
 
     private static String escapeLikeExpression(Connection connection, String value)
@@ -271,9 +270,9 @@ public class QueryRewriter
     public static class QueryRewriteException
             extends Exception
     {
-        public QueryRewriteException(String messageFormat, Object... args)
+        public QueryRewriteException(String message)
         {
-            super(format(messageFormat, args));
+            super(message);
         }
     }
 

@@ -13,19 +13,25 @@
  */
 package io.trino.sql.query;
 
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
+@TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestCopyAggregationStateInRowPatternMatching
 {
     // at each step of matching, the threads are forked because of the alternation.
     // at each fork, the aggregation state is copied
     // every thread is validated at the final step by the defining condition for label `X`
-    private static final String QUERY = """
+    private static final String QUERY =
+            """
             SELECT m.id, m.classy
             FROM (VALUES (1), (2), (3)) t(id)
                MATCH_RECOGNIZE (
@@ -37,19 +43,12 @@ public class TestCopyAggregationStateInRowPatternMatching
               ) AS m
             """;
 
-    private QueryAssertions assertions;
+    private final QueryAssertions assertions = new QueryAssertions();
 
-    @BeforeClass
-    public void init()
-    {
-        assertions = new QueryAssertions();
-    }
-
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void teardown()
     {
         assertions.close();
-        assertions = null;
     }
 
     @Test
@@ -57,7 +56,8 @@ public class TestCopyAggregationStateInRowPatternMatching
     {
         // test SingleArrayAggregationState.copy()
         assertThat(assertions.query(format(QUERY, "DEFINE X AS array_join(array_agg(CLASSIFIER()), '', '') = 'BAX' ")))
-                .matches("""
+                .matches(
+                        """
                         VALUES
                              (1, VARCHAR 'B'),
                              (2, 'A'),
@@ -70,7 +70,8 @@ public class TestCopyAggregationStateInRowPatternMatching
     {
         // test MinMaxByNStateFactory.SingleMinMaxByNState.copy()
         assertThat(assertions.query(format(QUERY, "DEFINE X AS array_join(min_by(CLASSIFIER(), id, 3), '', '') = 'BAX' ")))
-                .matches("""
+                .matches(
+                        """
                         VALUES
                              (1, VARCHAR 'B'),
                              (2, 'A'),
@@ -83,7 +84,8 @@ public class TestCopyAggregationStateInRowPatternMatching
     {
         // test MinMaxByNStateFactory.SingleMinMaxByNState.copy()
         assertThat(assertions.query(format(QUERY, "DEFINE X AS array_join(max_by(CLASSIFIER(), id, 3), '', '') = 'XAB' ")))
-                .matches("""
+                .matches(
+                        """
                         VALUES
                              (1, VARCHAR 'B'),
                              (2, 'A'),
@@ -96,7 +98,8 @@ public class TestCopyAggregationStateInRowPatternMatching
     {
         // test MinMaxNStateFactory.SingleMinMaxNState.copy()
         assertThat(assertions.query(format(QUERY, "DEFINE X AS array_join(min(CLASSIFIER(), 3), '', '') = 'ABX' ")))
-                .matches("""
+                .matches(
+                        """
                         VALUES
                              (1, VARCHAR 'A'),
                              (2, 'B'),
@@ -109,7 +112,8 @@ public class TestCopyAggregationStateInRowPatternMatching
     {
         // test MinMaxNStateFactory.SingleMinMaxNState.copy()
         assertThat(assertions.query(format(QUERY, "DEFINE X AS array_join(max(CLASSIFIER(), 3), '', '') = 'XBA' ")))
-                .matches("""
+                .matches(
+                        """
                         VALUES
                              (1, VARCHAR 'A'),
                              (2, 'B'),
@@ -122,7 +126,8 @@ public class TestCopyAggregationStateInRowPatternMatching
     {
         // test SingleMultimapAggregationState.copy()
         assertThat(assertions.query(format(QUERY, "DEFINE X AS array_join(element_at(multimap_agg(id, CLASSIFIER()), 1), '', '') = 'B' ")))
-                .matches("""
+                .matches(
+                        """
                         VALUES
                              (1, VARCHAR 'B'),
                              (2, 'A'),
@@ -135,7 +140,8 @@ public class TestCopyAggregationStateInRowPatternMatching
     {
         // test KeyValuePairsStateFactory.SingleState.copy()
         assertThat(assertions.query(format(QUERY, "DEFINE X AS element_at(map_agg(id, CLASSIFIER()), 1) = 'B' ")))
-                .matches("""
+                .matches(
+                        """
                         VALUES
                              (1, VARCHAR 'B'),
                              (2, 'A'),
@@ -146,7 +152,8 @@ public class TestCopyAggregationStateInRowPatternMatching
     @Test
     public void testMapUnion()
     {
-        String query = """
+        String query =
+                """
                 SELECT m.id, m.classy
                 FROM (VALUES ('B'), ('C'), ('D')) t(id)
                    MATCH_RECOGNIZE (
@@ -160,7 +167,8 @@ public class TestCopyAggregationStateInRowPatternMatching
 
         // test KeyValuePairsStateFactory.SingleState.copy()
         assertThat(assertions.query(format(query, "DEFINE X AS element_at(map_union(MAP(ARRAY[id], ARRAY[id])), 'B') = FIRST(CLASSIFIER()) ")))
-                .matches("""
+                .matches(
+                        """
                         VALUES
                              ('B', VARCHAR 'B'),
                              ('C', 'A'),
@@ -173,7 +181,8 @@ public class TestCopyAggregationStateInRowPatternMatching
     {
         // test LongDecimalWithOverflowAndLongStateFactory.SingleLongDecimalWithOverflowAndLongState.copy()
         assertThat(assertions.query(format(QUERY, "DEFINE X AS avg(CAST(B.id AS decimal(2, 1))) = 1e0 ")))
-                .matches("""
+                .matches(
+                        """
                         VALUES
                              (1, VARCHAR 'B'),
                              (2, 'A'),
@@ -181,7 +190,8 @@ public class TestCopyAggregationStateInRowPatternMatching
                         """);
 
         assertThat(assertions.query(format(QUERY, "DEFINE X AS avg(CAST(B.id AS decimal(30, 20))) = 1e0 ")))
-                .matches("""
+                .matches(
+                        """
                         VALUES
                              (1, VARCHAR 'B'),
                              (2, 'A'),
@@ -194,7 +204,8 @@ public class TestCopyAggregationStateInRowPatternMatching
     {
         // test LongDecimalWithOverflowStateFactory.SingleLongDecimalWithOverflowState.copy()
         assertThat(assertions.query(format(QUERY, "DEFINE X AS sum(CAST(B.id AS decimal(2, 1))) = 1.0 ")))
-                .matches("""
+                .matches(
+                        """
                         VALUES
                              (1, VARCHAR 'B'),
                              (2, 'A'),
@@ -202,7 +213,8 @@ public class TestCopyAggregationStateInRowPatternMatching
                         """);
 
         assertThat(assertions.query(format(QUERY, "DEFINE X AS sum(CAST(B.id AS decimal(30, 20))) = 1.0 ")))
-                .matches("""
+                .matches(
+                        """
                         VALUES
                              (1, VARCHAR 'B'),
                              (2, 'A'),

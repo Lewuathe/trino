@@ -13,12 +13,14 @@
  */
 package io.trino.plugin.jdbc;
 
+import io.trino.plugin.jdbc.JdbcProcedureHandle.ProcedureQuery;
 import io.trino.plugin.jdbc.expression.ParameterizedExpression;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.JoinType;
 import io.trino.spi.predicate.TupleDomain;
 
+import java.sql.CallableStatement;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
@@ -45,6 +47,17 @@ public interface QueryBuilder
             Connection connection,
             JoinType joinType,
             PreparedQuery leftSource,
+            Map<JdbcColumnHandle, String> leftProjections,
+            PreparedQuery rightSource,
+            Map<JdbcColumnHandle, String> rightProjections,
+            List<ParameterizedExpression> joinConditions);
+
+    PreparedQuery legacyPrepareJoinQuery(
+            JdbcClient client,
+            ConnectorSession session,
+            Connection connection,
+            JoinType joinType,
+            PreparedQuery leftSource,
             PreparedQuery rightSource,
             List<JdbcJoinCondition> joinConditions,
             Map<JdbcColumnHandle, String> leftAssignments,
@@ -58,11 +71,27 @@ public interface QueryBuilder
             TupleDomain<ColumnHandle> tupleDomain,
             Optional<ParameterizedExpression> additionalPredicate);
 
+    PreparedQuery prepareUpdateQuery(
+            JdbcClient client,
+            ConnectorSession session,
+            Connection connection,
+            JdbcNamedRelationHandle baseRelation,
+            TupleDomain<ColumnHandle> tupleDomain,
+            Optional<ParameterizedExpression> additionalPredicate,
+            List<JdbcAssignmentItem> assignments);
+
     PreparedStatement prepareStatement(
             JdbcClient client,
             ConnectorSession session,
             Connection connection,
             PreparedQuery preparedQuery,
             Optional<Integer> columnCount)
+            throws SQLException;
+
+    CallableStatement callProcedure(
+            JdbcClient client,
+            ConnectorSession session,
+            Connection connection,
+            ProcedureQuery procedureQuery)
             throws SQLException;
 }

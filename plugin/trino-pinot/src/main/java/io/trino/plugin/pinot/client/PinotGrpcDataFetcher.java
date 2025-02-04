@@ -17,20 +17,19 @@ import com.google.common.collect.AbstractIterator;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Closer;
 import com.google.common.net.HostAndPort;
+import com.google.inject.Inject;
 import io.trino.plugin.pinot.PinotErrorCode;
 import io.trino.plugin.pinot.PinotException;
 import io.trino.plugin.pinot.PinotSplit;
 import io.trino.plugin.pinot.query.PinotProxyGrpcRequestBuilder;
-import io.trino.spi.connector.ConnectorSession;
+import jakarta.annotation.PreDestroy;
 import org.apache.pinot.common.config.GrpcConfig;
+import org.apache.pinot.common.datatable.DataTable;
 import org.apache.pinot.common.datatable.DataTableFactory;
 import org.apache.pinot.common.proto.Server;
 import org.apache.pinot.common.utils.grpc.GrpcQueryClient;
 import org.apache.pinot.spi.utils.CommonConstants.Query.Response.MetadataKeys;
 import org.apache.pinot.spi.utils.CommonConstants.Query.Response.ResponseType;
-
-import javax.annotation.PreDestroy;
-import javax.inject.Inject;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -41,7 +40,10 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.plugin.pinot.PinotErrorCode.PINOT_EXCEPTION;
 import static java.lang.Boolean.FALSE;
+import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static org.apache.pinot.common.config.GrpcConfig.CONFIG_MAX_INBOUND_MESSAGE_BYTES_SIZE;
 import static org.apache.pinot.common.config.GrpcConfig.CONFIG_USE_PLAIN_TEXT;
@@ -96,7 +98,7 @@ public class PinotGrpcDataFetcher
     {
         long startTimeNanos = System.nanoTime();
         String serverHost = split.getSegmentHost().orElseThrow(() -> new PinotException(PinotErrorCode.PINOT_INVALID_PQL_GENERATED, Optional.empty(), "Expected the segment split to contain the host"));
-        this.responseIterator = pinotGrpcClient.queryPinot(null, query, serverHost, split.getSegments());
+        this.responseIterator = pinotGrpcClient.queryPinot(query, serverHost, split.getSegments());
         readTimeNanos += System.nanoTime() - startTimeNanos;
         isPinotDataFetched = true;
     }
@@ -105,9 +107,9 @@ public class PinotGrpcDataFetcher
     public PinotDataTableWithSize getNextDataTable()
     {
         PinotDataTableWithSize dataTableWithSize = responseIterator.next();
-        estimatedMemoryUsageInBytes = dataTableWithSize.getEstimatedSizeInBytes();
-        rowCountChecker.checkTooManyRows(dataTableWithSize.getDataTable());
-        checkExceptions(dataTableWithSize.getDataTable(), split, query);
+        estimatedMemoryUsageInBytes = dataTableWithSize.estimatedSizeInBytes();
+        rowCountChecker.checkTooManyRows(dataTableWithSize.dataTable());
+        checkExceptions(dataTableWithSize.dataTable(), split, query);
         return dataTableWithSize;
     }
 
@@ -134,7 +136,7 @@ public class PinotGrpcDataFetcher
         }
 
         @Override
-        public PinotDataFetcher create(ConnectorSession session, String query, PinotSplit split)
+        public PinotDataFetcher create(String query, PinotSplit split)
         {
             return new PinotGrpcDataFetcher(queryClient, split, query, new RowCountChecker(limitForSegmentQueries, query));
         }
@@ -237,13 +239,13 @@ public class PinotGrpcDataFetcher
             this.proxyUri = pinotGrpcServerQueryClientConfig.getProxyUri();
         }
 
-        public Iterator<PinotDataTableWithSize> queryPinot(ConnectorSession session, String query, String serverHost, List<String> segments)
+        public Iterator<PinotDataTableWithSize> queryPinot(String query, String serverHost, List<String> segments)
         {
             HostAndPort mappedHostAndPort = pinotHostMapper.getServerGrpcHostAndPort(serverHost, grpcPort);
             // GrpcQueryClient does not implement Closeable. The idle timeout is 30 minutes (grpc default).
             GrpcQueryClient client = clientCache.computeIfAbsent(mappedHostAndPort, hostAndPort -> {
                 GrpcQueryClient queryClient = proxyUri.isPresent() ? grpcQueryClientFactory.create(HostAndPort.fromString(proxyUri.get())) : grpcQueryClientFactory.create(hostAndPort);
-                closer.register(queryClient::close);
+                closer.register(queryClient);
                 return queryClient;
             });
             PinotProxyGrpcRequestBuilder grpcRequestBuilder = new PinotProxyGrpcRequestBuilder()
@@ -255,17 +257,19 @@ public class PinotGrpcDataFetcher
                 grpcRequestBuilder.setHostName(mappedHostAndPort.getHost()).setPort(grpcPort);
             }
             Server.ServerRequest serverRequest = grpcRequestBuilder.build();
-            return new ResponseIterator(client.submit(serverRequest));
+            return new ResponseIterator(client.submit(serverRequest), query);
         }
 
         public static class ResponseIterator
                 extends AbstractIterator<PinotDataTableWithSize>
         {
             private final Iterator<Server.ServerResponse> responseIterator;
+            private final String query;
 
-            public ResponseIterator(Iterator<Server.ServerResponse> responseIterator)
+            public ResponseIterator(Iterator<Server.ServerResponse> responseIterator, String query)
             {
                 this.responseIterator = requireNonNull(responseIterator, "responseIterator is null");
+                this.query = requireNonNull(query, "query is null");
             }
 
             @Override
@@ -280,12 +284,22 @@ public class PinotGrpcDataFetcher
                     return endOfData();
                 }
                 ByteBuffer buffer = response.getPayload().asReadOnlyByteBuffer();
+                DataTable dataTable;
                 try {
-                    return new PinotDataTableWithSize(DataTableFactory.getDataTable(buffer), buffer.remaining());
+                    dataTable = DataTableFactory.getDataTable(buffer);
                 }
                 catch (IOException e) {
                     throw new UncheckedIOException(e);
                 }
+                if (!dataTable.getExceptions().isEmpty()) {
+                    List<String> exceptions = dataTable.getExceptions().entrySet().stream()
+                            .map(entry -> format("Error code: %d Error message: %s", entry.getKey(), entry.getValue()))
+                            .collect(toImmutableList());
+
+                    throw new PinotException(PINOT_EXCEPTION, Optional.of(query), format("Encountered %d exceptions: %s", exceptions.size(), exceptions));
+                }
+
+                return new PinotDataTableWithSize(dataTable, buffer.remaining());
             }
         }
     }

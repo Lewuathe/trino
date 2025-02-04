@@ -13,56 +13,21 @@
  */
 package io.trino.metadata;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorTransactionHandle;
-import io.trino.spi.function.SchemaFunctionName;
-import io.trino.spi.ptf.ConnectorTableFunctionHandle;
+import io.trino.spi.function.table.ConnectorTableFunctionHandle;
 
 import static java.util.Objects.requireNonNull;
 
-public class TableFunctionHandle
+public record TableFunctionHandle(
+        CatalogHandle catalogHandle,
+        ConnectorTableFunctionHandle functionHandle,
+        ConnectorTransactionHandle transactionHandle)
 {
-    private final CatalogHandle catalogHandle;
-    private final SchemaFunctionName schemaFunctionName;
-    private final ConnectorTableFunctionHandle functionHandle;
-    private final ConnectorTransactionHandle transactionHandle;
-
-    @JsonCreator
-    public TableFunctionHandle(
-            @JsonProperty("catalogHandle") CatalogHandle catalogHandle,
-            @JsonProperty("schemaFunctionName") SchemaFunctionName schemaFunctionName,
-            @JsonProperty("functionHandle") ConnectorTableFunctionHandle functionHandle,
-            @JsonProperty("transactionHandle") ConnectorTransactionHandle transactionHandle)
+    public TableFunctionHandle
     {
-        this.catalogHandle = requireNonNull(catalogHandle, "catalogHandle is null");
-        this.schemaFunctionName = requireNonNull(schemaFunctionName, "schemaFunctionName is null");
-        this.functionHandle = requireNonNull(functionHandle, "functionHandle is null");
-        this.transactionHandle = requireNonNull(transactionHandle, "transactionHandle is null");
-    }
-
-    @JsonProperty
-    public CatalogHandle getCatalogHandle()
-    {
-        return catalogHandle;
-    }
-
-    @JsonProperty
-    public SchemaFunctionName getSchemaFunctionName()
-    {
-        return schemaFunctionName;
-    }
-
-    @JsonProperty
-    public ConnectorTableFunctionHandle getFunctionHandle()
-    {
-        return functionHandle;
-    }
-
-    @JsonProperty
-    public ConnectorTransactionHandle getTransactionHandle()
-    {
-        return transactionHandle;
+        requireNonNull(catalogHandle, "catalogHandle is null");
+        requireNonNull(functionHandle, "functionHandle is null");
+        requireNonNull(transactionHandle, "transactionHandle is null");
     }
 }

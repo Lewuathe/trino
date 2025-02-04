@@ -13,10 +13,9 @@
  */
 package io.trino.plugin.base.classloader;
 
+import com.google.inject.Inject;
 import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.connector.ConnectorSplitSource;
-
-import javax.inject.Inject;
 
 import java.util.List;
 import java.util.Optional;
@@ -40,7 +39,7 @@ public class ClassLoaderSafeConnectorSplitSource
     @Override
     public CompletableFuture<ConnectorSplitBatch> getNextBatch(int maxSize)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getNextBatch(maxSize);
         }
     }
@@ -48,7 +47,7 @@ public class ClassLoaderSafeConnectorSplitSource
     @Override
     public Optional<List<Object>> getTableExecuteSplitsInfo()
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getTableExecuteSplitsInfo();
         }
     }
@@ -56,7 +55,7 @@ public class ClassLoaderSafeConnectorSplitSource
     @Override
     public void close()
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.close();
         }
     }
@@ -64,7 +63,7 @@ public class ClassLoaderSafeConnectorSplitSource
     @Override
     public boolean isFinished()
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.isFinished();
         }
     }

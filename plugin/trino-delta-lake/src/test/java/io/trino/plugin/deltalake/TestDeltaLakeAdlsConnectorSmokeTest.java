@@ -13,6 +13,7 @@
  */
 package io.trino.plugin.deltalake;
 
+import com.azure.core.util.HttpClientOptions;
 import com.azure.storage.blob.BlobContainerClient;
 import com.azure.storage.blob.BlobServiceClient;
 import com.azure.storage.blob.BlobServiceClientBuilder;
@@ -22,11 +23,13 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.io.ByteSource;
 import com.google.common.io.Resources;
 import com.google.common.reflect.ClassPath;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.nio.NioEventLoopGroup;
 import io.trino.plugin.hive.containers.HiveHadoop;
-import io.trino.plugin.hive.containers.HiveMinioDataLake;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.Parameters;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.TestInstance;
+import reactor.netty.resources.ConnectionProvider;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -43,43 +46,50 @@ import java.util.regex.Pattern;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
-import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
-import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.createAbfsDeltaLakeQueryRunner;
+import static io.trino.filesystem.azure.AzureFileSystemFactory.createAzureHttpClient;
+import static io.trino.plugin.hive.containers.HiveHadoop.HIVE3_IMAGE;
+import static io.trino.testing.TestingProperties.requiredNonEmptySystemProperty;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static java.util.Objects.requireNonNull;
 import static java.util.regex.Matcher.quoteReplacement;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.testcontainers.containers.Network.newNetwork;
 
+@TestInstance(PER_CLASS)
 public class TestDeltaLakeAdlsConnectorSmokeTest
         extends BaseDeltaLakeConnectorSmokeTest
 {
     private final String container;
     private final String account;
     private final String accessKey;
-    private final BlobContainerClient azureContainerClient;
     private final String adlsDirectory;
+    private BlobContainerClient azureContainerClient;
 
-    @Parameters({
-            "hive.hadoop2.azure-abfs-container",
-            "hive.hadoop2.azure-abfs-account",
-            "hive.hadoop2.azure-abfs-access-key"})
-    public TestDeltaLakeAdlsConnectorSmokeTest(String container, String account, String accessKey)
+    public TestDeltaLakeAdlsConnectorSmokeTest()
     {
-        this.container = requireNonNull(container, "container is null");
-        this.account = requireNonNull(account, "account is null");
-        this.accessKey = requireNonNull(accessKey, "accessKey is null");
-
-        String connectionString = format("DefaultEndpointsProtocol=https;AccountName=%s;AccountKey=%s;EndpointSuffix=core.windows.net", account, accessKey);
-        BlobServiceClient blobServiceClient = new BlobServiceClientBuilder().connectionString(connectionString).buildClient();
-        this.azureContainerClient = blobServiceClient.getBlobContainerClient(container);
+        this.container = requiredNonEmptySystemProperty("testing.azure-abfs-container");
+        this.account = requiredNonEmptySystemProperty("testing.azure-abfs-account");
+        this.accessKey = requiredNonEmptySystemProperty("testing.azure-abfs-access-key");
         this.adlsDirectory = format("abfs://%s@%s.dfs.core.windows.net/%s/", container, account, bucketName);
     }
 
     @Override
-    protected HiveMinioDataLake createHiveMinioDataLake()
+    protected HiveHadoop createHiveHadoop()
             throws Exception
     {
+        String connectionString = format("DefaultEndpointsProtocol=https;AccountName=%s;AccountKey=%s;EndpointSuffix=core.windows.net", account, accessKey);
+        ConnectionProvider provider = ConnectionProvider.create("TestDeltaLakeAdsl");
+        closeAfterClass(provider::dispose);
+
+        EventLoopGroup eventLoopGroup = new NioEventLoopGroup();
+        closeAfterClass(eventLoopGroup::shutdownGracefully);
+
+        BlobServiceClient blobServiceClient = new BlobServiceClientBuilder().connectionString(connectionString)
+                .httpClient(createAzureHttpClient(provider, eventLoopGroup, new HttpClientOptions()))
+                .buildClient();
+        this.azureContainerClient = blobServiceClient.getBlobContainerClient(container);
+
         String abfsSpecificCoreSiteXmlContent = Resources.toString(Resources.getResource("io/trino/plugin/deltalake/hdp3.1-core-site.xml.abfs-template"), UTF_8)
                 .replace("%ABFS_ACCESS_KEY%", accessKey)
                 .replace("%ABFS_ACCOUNT%", account);
@@ -89,28 +99,39 @@ public class TestDeltaLakeAdlsConnectorSmokeTest
         hadoopCoreSiteXmlTempFile.toFile().deleteOnExit();
         Files.writeString(hadoopCoreSiteXmlTempFile, abfsSpecificCoreSiteXmlContent);
 
-        HiveMinioDataLake hiveMinioDataLake = new HiveMinioDataLake(
-                bucketName,
-                ImmutableMap.of("/etc/hadoop/conf/core-site.xml", hadoopCoreSiteXmlTempFile.normalize().toAbsolutePath().toString()),
-                HiveHadoop.HIVE3_IMAGE);
-        hiveMinioDataLake.start();
-        return hiveMinioDataLake;
+        HiveHadoop hiveHadoop = HiveHadoop.builder()
+                .withImage(HIVE3_IMAGE)
+                .withNetwork(closeAfterClass(newNetwork()))
+                .withFilesToMount(ImmutableMap.of("/etc/hadoop/conf/core-site.xml", hadoopCoreSiteXmlTempFile.normalize().toAbsolutePath().toString()))
+                .build();
+        hiveHadoop.start();
+        return hiveHadoop; // closed by superclass
     }
 
     @Override
-    protected QueryRunner createDeltaLakeQueryRunner(Map<String, String> connectorProperties)
-            throws Exception
+    protected Map<String, String> hiveStorageConfiguration()
     {
-        return createAbfsDeltaLakeQueryRunner(DELTA_CATALOG, SCHEMA, ImmutableMap.of(), connectorProperties, hiveMinioDataLake.getHiveHadoop());
+        return ImmutableMap.<String, String>builder()
+                .put("fs.hadoop.enabled", "false")
+                .put("fs.native-azure.enabled", "true")
+                .put("azure.auth-type", "ACCESS_KEY")
+                .put("azure.access-key", accessKey)
+                .buildOrThrow();
     }
 
-    @AfterClass(alwaysRun = true)
+    @Override
+    protected Map<String, String> deltaStorageConfiguration()
+    {
+        return hiveStorageConfiguration();
+    }
+
+    @AfterAll
     public void removeTestData()
     {
         if (adlsDirectory != null) {
-            hiveMinioDataLake.getHiveHadoop().executeInContainerFailOnError("hadoop", "fs", "-rm", "-f", "-r", adlsDirectory);
+            hiveHadoop.executeInContainerFailOnError("hadoop", "fs", "-rm", "-f", "-r", adlsDirectory);
         }
-        assertThat(azureContainerClient.listBlobsByHierarchy(bucketName + "/").stream()).hasSize(0);
+        assertThat(azureContainerClient.listBlobsByHierarchy(bucketName + "/")).isEmpty();
     }
 
     @Override
@@ -119,13 +140,14 @@ public class TestDeltaLakeAdlsConnectorSmokeTest
         String targetDirectory = bucketName + "/" + table;
 
         try {
-            List<ClassPath.ResourceInfo> resources = ClassPath.from(TestDeltaLakeAdlsConnectorSmokeTest.class.getClassLoader())
+            List<ClassPath.ResourceInfo> resources = ClassPath.from(getClass().getClassLoader())
                     .getResources()
                     .stream()
                     .filter(resourceInfo -> resourceInfo.getResourceName().startsWith(resourcePath + "/"))
                     .collect(toImmutableList());
             for (ClassPath.ResourceInfo resourceInfo : resources) {
-                String fileName = resourceInfo.getResourceName().replaceFirst("^" + Pattern.quote(resourcePath), quoteReplacement(targetDirectory));
+                String fileName = resourceInfo.getResourceName()
+                        .replaceFirst("^" + Pattern.quote(resourcePath), quoteReplacement(targetDirectory));
                 ByteSource byteSource = resourceInfo.asByteSource();
                 azureContainerClient.getBlobClient(fileName).upload(byteSource.openBufferedStream(), byteSource.size());
             }
@@ -134,7 +156,7 @@ public class TestDeltaLakeAdlsConnectorSmokeTest
             throw new UncheckedIOException(e);
         }
 
-        queryRunner.execute(format("CALL system.register_table('%s', '%s', '%s')", SCHEMA, table, getLocationForTable(bucketName, table)));
+        queryRunner.execute(format("CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')", table, getLocationForTable(bucketName, table)));
     }
 
     @Override
@@ -150,10 +172,9 @@ public class TestDeltaLakeAdlsConnectorSmokeTest
     }
 
     @Override
-    protected List<String> listCheckpointFiles(String transactionLogDirectory)
+    protected List<String> listFiles(String directory)
     {
-        return listAllFilesRecursive(transactionLogDirectory).stream()
-                .filter(path -> path.contains("checkpoint.parquet"))
+        return listAllFilesRecursive(directory).stream()
                 .collect(toImmutableList());
     }
 
@@ -173,6 +194,14 @@ public class TestDeltaLakeAdlsConnectorSmokeTest
         return allPaths.stream()
                 .filter(path -> !path.endsWith("/") && !directories.contains(path))
                 .collect(toImmutableList());
+    }
+
+    @Override
+    protected void deleteFile(String filePath)
+    {
+        String blobName = bucketName + "/" + filePath.substring(bucketUrl().length());
+        azureContainerClient.getBlobClient(blobName)
+                .delete();
     }
 
     @Override

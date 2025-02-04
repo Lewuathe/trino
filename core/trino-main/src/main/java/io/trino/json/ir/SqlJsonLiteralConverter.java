@@ -26,7 +26,6 @@ import com.fasterxml.jackson.databind.node.ShortNode;
 import com.fasterxml.jackson.databind.node.TextNode;
 import com.google.common.primitives.Shorts;
 import io.airlift.slice.Slice;
-import io.trino.spi.TrinoException;
 import io.trino.spi.type.CharType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.Int128;
@@ -38,7 +37,6 @@ import java.math.BigInteger;
 import java.util.Optional;
 
 import static io.airlift.slice.Slices.utf8Slice;
-import static io.trino.spi.StandardErrorCode.INVALID_JSON_LITERAL;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.Chars.padSpaces;
@@ -55,7 +53,6 @@ import static io.trino.spi.type.VarcharType.VARCHAR;
 import static java.lang.Float.floatToRawIntBits;
 import static java.lang.Float.intBitsToFloat;
 import static java.lang.Math.toIntExact;
-import static java.lang.String.format;
 
 public final class SqlJsonLiteralConverter
 {
@@ -83,43 +80,35 @@ public final class SqlJsonLiteralConverter
     public static Optional<TypedValue> getNumericTypedValue(JsonNode jsonNode)
     {
         if (jsonNode.getNodeType() == JsonNodeType.NUMBER) {
-            if (jsonNode instanceof BigIntegerNode) {
-                if (jsonNode.canConvertToInt()) {
-                    return Optional.of(new TypedValue(INTEGER, jsonNode.longValue()));
+            return switch (jsonNode) {
+                case BigIntegerNode _ -> {
+                    if (jsonNode.canConvertToInt()) {
+                        yield Optional.of(new TypedValue(INTEGER, jsonNode.longValue()));
+                    }
+                    if (jsonNode.canConvertToLong()) {
+                        yield Optional.of(new TypedValue(BIGINT, jsonNode.longValue()));
+                    }
+                    throw new JsonLiteralConversionException(jsonNode, "value too big");
                 }
-                if (jsonNode.canConvertToLong()) {
-                    return Optional.of(new TypedValue(BIGINT, jsonNode.longValue()));
+                case DecimalNode _ -> {
+                    BigDecimal jsonDecimal = jsonNode.decimalValue();
+                    int precision = jsonDecimal.precision();
+                    if (precision > MAX_PRECISION) {
+                        throw new JsonLiteralConversionException(jsonNode, "precision too big");
+                    }
+                    int scale = jsonDecimal.scale();
+                    DecimalType decimalType = createDecimalType(precision, scale);
+                    Object value = decimalType.isShort() ? encodeShortScaledValue(jsonDecimal, scale) : encodeScaledValue(jsonDecimal, scale);
+                    yield Optional.of(TypedValue.fromValueAsObject(decimalType, value));
                 }
-                throw conversionError(jsonNode, "value too big");
-            }
-            if (jsonNode instanceof DecimalNode) {
-                BigDecimal jsonDecimal = jsonNode.decimalValue();
-                int precision = jsonDecimal.precision();
-                if (precision > MAX_PRECISION) {
-                    throw conversionError(jsonNode, "precision too big");
-                }
-                int scale = jsonDecimal.scale();
-                DecimalType decimalType = createDecimalType(precision, scale);
-                Object value = decimalType.isShort() ? encodeShortScaledValue(jsonDecimal, scale) : encodeScaledValue(jsonDecimal, scale);
-                return Optional.of(TypedValue.fromValueAsObject(decimalType, value));
-            }
-            if (jsonNode instanceof DoubleNode) {
-                return Optional.of(new TypedValue(DOUBLE, jsonNode.doubleValue()));
-            }
-            if (jsonNode instanceof FloatNode) {
-                return Optional.of(new TypedValue(REAL, floatToRawIntBits(jsonNode.floatValue())));
-            }
-            if (jsonNode instanceof IntNode) {
-                return Optional.of(new TypedValue(INTEGER, jsonNode.longValue()));
-            }
-            if (jsonNode instanceof LongNode) {
-                return Optional.of(new TypedValue(BIGINT, jsonNode.longValue()));
-            }
-            if (jsonNode instanceof ShortNode) {
-                return Optional.of(new TypedValue(SMALLINT, jsonNode.longValue()));
-            }
+                case DoubleNode _ -> Optional.of(new TypedValue(DOUBLE, jsonNode.doubleValue()));
+                case FloatNode _ -> Optional.of(new TypedValue(REAL, floatToRawIntBits(jsonNode.floatValue())));
+                case IntNode _ -> Optional.of(new TypedValue(INTEGER, jsonNode.longValue()));
+                case LongNode _ -> Optional.of(new TypedValue(BIGINT, jsonNode.longValue()));
+                case ShortNode _ -> Optional.of(new TypedValue(SMALLINT, jsonNode.longValue()));
+                default -> Optional.empty();
+            };
         }
-
         return Optional.empty();
     }
 
@@ -129,8 +118,8 @@ public final class SqlJsonLiteralConverter
         if (type.equals(BOOLEAN)) {
             return Optional.of(BooleanNode.valueOf(typedValue.getBooleanValue()));
         }
-        if (type instanceof CharType) {
-            return Optional.of(TextNode.valueOf(padSpaces((Slice) typedValue.getObjectValue(), (CharType) typedValue.getType()).toStringUtf8()));
+        if (type instanceof CharType charType) {
+            return Optional.of(TextNode.valueOf(padSpaces((Slice) typedValue.getObjectValue(), charType).toStringUtf8()));
         }
         if (type instanceof VarcharType) {
             return Optional.of(TextNode.valueOf(((Slice) typedValue.getObjectValue()).toStringUtf8()));
@@ -147,15 +136,15 @@ public final class SqlJsonLiteralConverter
         if (type.equals(TINYINT)) {
             return Optional.of(ShortNode.valueOf(Shorts.checkedCast(typedValue.getLongValue())));
         }
-        if (type instanceof DecimalType) {
+        if (type instanceof DecimalType decimalType) {
             BigInteger unscaledValue;
-            if (((DecimalType) type).isShort()) {
+            if (decimalType.isShort()) {
                 unscaledValue = BigInteger.valueOf(typedValue.getLongValue());
             }
             else {
                 unscaledValue = ((Int128) typedValue.getObjectValue()).toBigInteger();
             }
-            return Optional.of(DecimalNode.valueOf(new BigDecimal(unscaledValue, ((DecimalType) type).getScale())));
+            return Optional.of(DecimalNode.valueOf(new BigDecimal(unscaledValue, decimalType.getScale())));
         }
         if (type.equals(DOUBLE)) {
             return Optional.of(DoubleNode.valueOf(typedValue.getDoubleValue()));
@@ -165,19 +154,5 @@ public final class SqlJsonLiteralConverter
         }
 
         return Optional.empty();
-    }
-
-    public static TrinoException conversionError(JsonNode jsonNode, String cause)
-    {
-        return new JsonLiteralConversionError(jsonNode, cause);
-    }
-
-    public static class JsonLiteralConversionError
-            extends TrinoException
-    {
-        public JsonLiteralConversionError(JsonNode jsonNode, String cause)
-        {
-            super(INVALID_JSON_LITERAL, format("cannot convert %s to Trino value (%s)", jsonNode, cause));
-        }
     }
 }

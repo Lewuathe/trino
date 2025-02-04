@@ -31,8 +31,7 @@ import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.Decimals;
 import io.trino.spi.type.Int128Math;
 import io.trino.spi.type.Type;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.io.IOException;
 import java.time.ZoneId;
@@ -50,7 +49,6 @@ import static io.trino.orc.reader.ReaderUtils.unpackInt128Nulls;
 import static io.trino.orc.reader.ReaderUtils.unpackLongNulls;
 import static io.trino.orc.reader.ReaderUtils.verifyStreamType;
 import static io.trino.orc.stream.MissingInputStreamSource.missingStreamSource;
-import static io.trino.spi.type.DoubleType.DOUBLE;
 import static java.util.Objects.requireNonNull;
 
 public class DecimalColumnReader
@@ -133,7 +131,7 @@ public class DecimalColumnReader
                 block = readNullBlock(isNull, nextBatchSize - nullCount);
             }
             else {
-                block = RunLengthEncodedBlock.create(DOUBLE, null, nextBatchSize);
+                block = RunLengthEncodedBlock.create(type, null, nextBatchSize);
             }
         }
 

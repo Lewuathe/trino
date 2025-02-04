@@ -16,15 +16,15 @@ package io.trino.operator;
 import com.google.common.base.Suppliers;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
-import io.trino.Session;
 import io.trino.memory.context.MemoryTrackingContext;
 import io.trino.metadata.Split;
 import io.trino.spi.Page;
 import io.trino.spi.metrics.Metrics;
 import io.trino.sql.planner.plan.PlanNodeId;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.Map;
 
 import static io.trino.operator.WorkProcessor.ProcessState.blocked;
 import static io.trino.operator.WorkProcessor.ProcessState.finished;
@@ -52,27 +52,14 @@ public class WorkProcessorSourceOperatorAdapter
     private long previousReadTimeNanos;
     private long previousDynamicFilterSplitsProcessed;
 
-    public interface AdapterWorkProcessorSourceOperatorFactory
-            extends WorkProcessorSourceOperatorFactory
-    {
-        default WorkProcessorSourceOperator createAdapterOperator(
-                Session session,
-                MemoryTrackingContext memoryTrackingContext,
-                DriverYieldSignal yieldSignal,
-                WorkProcessor<Split> splits)
-        {
-            return create(session, memoryTrackingContext, yieldSignal, splits);
-        }
-    }
-
-    public WorkProcessorSourceOperatorAdapter(OperatorContext operatorContext, AdapterWorkProcessorSourceOperatorFactory sourceOperatorFactory)
+    public WorkProcessorSourceOperatorAdapter(OperatorContext operatorContext, WorkProcessorSourceOperatorFactory sourceOperatorFactory)
     {
         this.operatorContext = requireNonNull(operatorContext, "operatorContext is null");
         this.sourceId = sourceOperatorFactory.getSourceId();
         this.splitBuffer = new SplitBuffer();
         this.sourceOperator = sourceOperatorFactory
-                .createAdapterOperator(
-                        operatorContext.getSession(),
+                .create(
+                        operatorContext,
                         new MemoryTrackingContext(
                                 operatorContext.aggregateUserMemoryContext(),
                                 operatorContext.aggregateRevocableMemoryContext()),
@@ -98,8 +85,8 @@ public class WorkProcessorSourceOperatorAdapter
             return;
         }
 
-        Object splitInfo = split.getInfo();
-        if (splitInfo != null) {
+        Map<String, String> splitInfo = split.getInfo();
+        if (!splitInfo.isEmpty()) {
             operatorContext.setInfoSupplier(Suppliers.ofInstance(new SplitOperatorInfo(split.getCatalogHandle(), splitInfo)));
         }
 
@@ -237,7 +224,7 @@ public class WorkProcessorSourceOperatorAdapter
     private static class SplitBuffer
             implements WorkProcessor.Process<Split>
     {
-        private final List<Split> pendingSplits = new ArrayList<>();
+        private final Deque<Split> pendingSplits = new ArrayDeque<>();
 
         private SettableFuture<Void> blockedOnSplits = SettableFuture.create();
         private boolean noMoreSplits;
@@ -254,7 +241,7 @@ public class WorkProcessorSourceOperatorAdapter
                 return blocked(blockedOnSplits);
             }
 
-            return ofResult(pendingSplits.remove(0));
+            return ofResult(pendingSplits.remove());
         }
 
         void add(Split split)

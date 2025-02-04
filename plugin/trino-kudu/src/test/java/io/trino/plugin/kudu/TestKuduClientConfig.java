@@ -13,9 +13,10 @@
  */
 package io.trino.plugin.kudu;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.units.Duration;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
@@ -31,36 +32,39 @@ public class TestKuduClientConfig
     public void testDefaults()
     {
         assertRecordedDefaults(recordDefaults(KuduClientConfig.class)
-                .setMasterAddresses("")
+                .setMasterAddresses(ImmutableList.of())
                 .setDefaultAdminOperationTimeout(new Duration(30, SECONDS))
                 .setDefaultOperationTimeout(new Duration(30, SECONDS))
                 .setDisableStatistics(false)
                 .setSchemaEmulationEnabled(false)
                 .setSchemaEmulationPrefix("presto::")
-                .setDynamicFilteringWaitTimeout(new Duration(0, MINUTES)));
+                .setDynamicFilteringWaitTimeout(new Duration(0, MINUTES))
+                .setAllowLocalScheduling(false));
     }
 
     @Test
     public void testExplicitPropertyMappingsWithCredentialsKey()
     {
         Map<String, String> properties = ImmutableMap.<String, String>builder()
-                .put("kudu.client.master-addresses", "localhost")
+                .put("kudu.client.master-addresses", "localhost,localhost2")
                 .put("kudu.client.default-admin-operation-timeout", "1m")
                 .put("kudu.client.default-operation-timeout", "5m")
                 .put("kudu.client.disable-statistics", "true")
                 .put("kudu.schema-emulation.enabled", "true")
                 .put("kudu.schema-emulation.prefix", "trino::")
                 .put("kudu.dynamic-filtering.wait-timeout", "30m")
+                .put("kudu.allow-local-scheduling", "true")
                 .buildOrThrow();
 
         KuduClientConfig expected = new KuduClientConfig()
-                .setMasterAddresses("localhost")
+                .setMasterAddresses(ImmutableList.of("localhost", "localhost2"))
                 .setDefaultAdminOperationTimeout(new Duration(1, MINUTES))
                 .setDefaultOperationTimeout(new Duration(5, MINUTES))
                 .setDisableStatistics(true)
                 .setSchemaEmulationEnabled(true)
                 .setSchemaEmulationPrefix("trino::")
-                .setDynamicFilteringWaitTimeout(new Duration(30, MINUTES));
+                .setDynamicFilteringWaitTimeout(new Duration(30, MINUTES))
+                .setAllowLocalScheduling(true);
 
         assertFullMapping(properties, expected);
     }

@@ -18,7 +18,7 @@ import com.google.common.base.Splitter;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.collect.ImmutableMap;
-import io.trino.collect.cache.NonEvictableLoadingCache;
+import io.trino.cache.NonEvictableLoadingCache;
 import io.trino.plugin.password.Credential;
 import io.trino.spi.TrinoException;
 
@@ -29,7 +29,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static io.trino.collect.cache.SafeCaches.buildNonEvictableCache;
+import static io.trino.cache.SafeCaches.buildNonEvictableCache;
 import static io.trino.plugin.password.file.EncryptionUtil.doesBCryptPasswordMatch;
 import static io.trino.plugin.password.file.EncryptionUtil.doesPBKDF2PasswordMatch;
 import static io.trino.plugin.password.file.EncryptionUtil.getHashingAlgorithm;
@@ -114,13 +114,10 @@ public class PasswordStore
 
     private static HashedPassword getHashedPassword(String hashedPassword)
     {
-        switch (getHashingAlgorithm(hashedPassword)) {
-            case BCRYPT:
-                return password -> doesBCryptPasswordMatch(password, hashedPassword);
-            case PBKDF2:
-                return password -> doesPBKDF2PasswordMatch(password, hashedPassword);
-        }
-        throw new HashedPasswordException("Hashing algorithm of password cannot be determined");
+        return switch (getHashingAlgorithm(hashedPassword)) {
+            case BCRYPT -> password -> doesBCryptPasswordMatch(password, hashedPassword);
+            case PBKDF2 -> password -> doesPBKDF2PasswordMatch(password, hashedPassword);
+        };
     }
 
     public interface HashedPassword

@@ -13,6 +13,7 @@
  */
 package io.trino.hive.formats.encodings.binary;
 
+import com.google.common.math.IntMath;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceOutput;
 import io.trino.hive.formats.ReadWriteUtils;
@@ -68,7 +69,7 @@ public class TimestampEncoding
     public Block decodeColumn(ColumnData columnData)
     {
         int size = columnData.rowCount();
-        BlockBuilder builder = type.createBlockBuilder(null, size);
+        BlockBuilder builder = type.createFixedSizeBlockBuilder(size);
 
         Slice slice = columnData.getSlice();
         for (int i = 0; i < size; i++) {
@@ -168,7 +169,7 @@ public class TimestampEncoding
         nanos = temp;
 
         if (nanosDigits < 9) {
-            nanos *= Math.pow(10, 9 - nanosDigits);
+            nanos *= IntMath.pow(10, 9 - nanosDigits);
         }
         return nanos;
     }

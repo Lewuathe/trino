@@ -19,9 +19,11 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import io.trino.hive.thrift.metastore.ColumnStatisticsData;
 import io.trino.hive.thrift.metastore.ColumnStatisticsObj;
+import io.trino.hive.thrift.metastore.DataOperationType;
 import io.trino.hive.thrift.metastore.Database;
 import io.trino.hive.thrift.metastore.EnvironmentContext;
 import io.trino.hive.thrift.metastore.FieldSchema;
+import io.trino.hive.thrift.metastore.Function;
 import io.trino.hive.thrift.metastore.HiveObjectPrivilege;
 import io.trino.hive.thrift.metastore.HiveObjectRef;
 import io.trino.hive.thrift.metastore.LockRequest;
@@ -36,22 +38,24 @@ import io.trino.hive.thrift.metastore.RolePrincipalGrant;
 import io.trino.hive.thrift.metastore.SerDeInfo;
 import io.trino.hive.thrift.metastore.StorageDescriptor;
 import io.trino.hive.thrift.metastore.Table;
-import io.trino.plugin.hive.acid.AcidOperation;
+import io.trino.hive.thrift.metastore.TableMeta;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.testng.services.ManageTestResources;
-import org.apache.hadoop.hive.metastore.TableType;
 import org.apache.hadoop.hive.metastore.Warehouse;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.thrift.TException;
 
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.hive.thrift.metastore.PrincipalType.ROLE;
 import static io.trino.hive.thrift.metastore.PrincipalType.USER;
+import static io.trino.plugin.hive.TableType.MANAGED_TABLE;
 
 @ManageTestResources.Suppress(because = "close() is no-op and instance's resources are negligible")
 public class MockThriftMetastoreClient
@@ -83,6 +87,7 @@ public class MockThriftMetastoreClient
     private final Map<SchemaTableName, Map<String, Map<String, ColumnStatisticsObj>>> databaseTablePartitionColumnStatistics = new HashMap<>();
 
     private boolean throwException;
+    private boolean returnTable = true;
 
     public MockThriftMetastoreClient()
     {
@@ -92,35 +97,27 @@ public class MockThriftMetastoreClient
 
     public void mockColumnStats(String database, String table, Map<String, ColumnStatisticsData> columnStatistics)
     {
-        this.columnStatistics.compute(new SchemaTableName(database, table), (ignored, oldColumnStats) -> {
-            if (oldColumnStats == null) {
-                oldColumnStats = new HashMap<>();
-            }
-            oldColumnStats.putAll(Maps.transformEntries(columnStatistics, (columnName, stats) -> {
-                ColumnStatisticsObj statsObj = new ColumnStatisticsObj();
-                statsObj.setColName(columnName);
-                statsObj.setStatsData(stats);
-                return statsObj;
-            }));
-            return oldColumnStats;
-        });
+        this.columnStatistics.put(
+                new SchemaTableName(database, table),
+                Maps.transformEntries(columnStatistics, (columnName, stats) -> {
+                    ColumnStatisticsObj statsObj = new ColumnStatisticsObj();
+                    statsObj.setColName(columnName);
+                    statsObj.setStatsData(stats);
+                    return statsObj;
+                }));
     }
 
     public void mockPartitionColumnStats(String database, String table, String partitionName, Map<String, ColumnStatisticsData> columnStatistics)
     {
         Map<String, Map<String, ColumnStatisticsObj>> tablePartitionColumnStatistics = databaseTablePartitionColumnStatistics.computeIfAbsent(new SchemaTableName(database, table), key -> new HashMap<>());
-        tablePartitionColumnStatistics.compute(partitionName, (ignored, oldColumnStats) -> {
-            if (oldColumnStats == null) {
-                oldColumnStats = new HashMap<>();
-            }
-            oldColumnStats.putAll(Maps.transformEntries(columnStatistics, (columnName, stats) -> {
-                ColumnStatisticsObj statsObj = new ColumnStatisticsObj();
-                statsObj.setColName(columnName);
-                statsObj.setStatsData(stats);
-                return statsObj;
-            }));
-            return oldColumnStats;
-        });
+        tablePartitionColumnStatistics.put(
+                partitionName,
+                Maps.transformEntries(columnStatistics, (columnName, stats) -> {
+                    ColumnStatisticsObj statsObj = new ColumnStatisticsObj();
+                    statsObj.setColName(columnName);
+                    statsObj.setStatsData(stats);
+                    return statsObj;
+                }));
     }
 
     private static ColumnStatisticsData createLongColumnStats()
@@ -130,19 +127,14 @@ public class MockThriftMetastoreClient
         return data;
     }
 
-    private static ColumnStatisticsObj createTestStats()
-    {
-        ColumnStatisticsObj stats = new ColumnStatisticsObj();
-        ColumnStatisticsData data = new ColumnStatisticsData();
-        data.setLongStats(new LongColumnStatsData());
-        stats.setStatsData(data);
-        stats.setColName(TEST_COLUMN);
-        return stats;
-    }
-
     public void setThrowException(boolean throwException)
     {
         this.throwException = throwException;
+    }
+
+    public void setReturnTable(boolean returnTable)
+    {
+        this.returnTable = returnTable;
     }
 
     public int getAccessCount()
@@ -161,26 +153,20 @@ public class MockThriftMetastoreClient
     }
 
     @Override
-    public List<String> getAllTables(String dbName)
+    public List<TableMeta> getTableMeta(String databaseName)
     {
         accessCount.incrementAndGet();
         if (throwException) {
             throw new RuntimeException();
         }
-        if (!dbName.equals(TEST_DATABASE)) {
+        if (!databaseName.equals(TEST_DATABASE)) {
             return ImmutableList.of(); // As specified by Hive specification
         }
-        return ImmutableList.of(TEST_TABLE);
+        return ImmutableList.of(new TableMeta(TEST_DATABASE, TEST_TABLE, MANAGED_TABLE.name()));
     }
 
     @Override
-    public List<String> getAllViews(String databaseName)
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public List<String> getTablesWithParameter(String databaseName, String parameterKey, String parameterValue)
+    public List<String> getTableNamesWithParameters(String databaseName, String parameterKey, Set<String> parameterValues)
     {
         throw new UnsupportedOperationException();
     }
@@ -207,7 +193,7 @@ public class MockThriftMetastoreClient
         if (throwException) {
             throw new RuntimeException();
         }
-        if (!dbName.equals(TEST_DATABASE) || !tableName.equals(TEST_TABLE)) {
+        if (!returnTable || !dbName.equals(TEST_DATABASE) || !tableName.equals(TEST_TABLE)) {
             throw new NoSuchObjectException();
         }
         return new Table(
@@ -219,10 +205,10 @@ public class MockThriftMetastoreClient
                 0,
                 DEFAULT_STORAGE_DESCRIPTOR,
                 ImmutableList.of(new FieldSchema("key", "string", null)),
-                ImmutableMap.of(),
+                ImmutableMap.of("numRows", "2398040535435"),
                 "",
                 "",
-                TableType.MANAGED_TABLE.name());
+                MANAGED_TABLE.name());
     }
 
     @Override
@@ -242,11 +228,14 @@ public class MockThriftMetastoreClient
 
         Map<String, ColumnStatisticsObj> columnStatistics = this.columnStatistics.get(new SchemaTableName(databaseName, tableName));
 
-        if (columnStatistics == null || !columnStatistics.keySet().containsAll(columnNames)) {
-            throw new NoSuchObjectException();
+        if (columnStatistics == null) {
+            return ImmutableList.of();
         }
 
-        return columnNames.stream().map(columnStatistics::get).collect(toImmutableList());
+        return columnNames.stream()
+                .filter(columnStatistics::containsKey)
+                .map(columnStatistics::get)
+                .collect(toImmutableList());
     }
 
     @Override
@@ -277,10 +266,13 @@ public class MockThriftMetastoreClient
 
         for (String partition : partitionNames) {
             Map<String, ColumnStatisticsObj> columnStatistics = tablePartitionColumnStatistics.get(partition);
-            if (columnStatistics == null || !columnStatistics.keySet().containsAll(columnNames)) {
-                throw new NoSuchObjectException();
+            if (columnStatistics == null) {
+                continue;
             }
-            result.put(partition, ImmutableList.copyOf(columnStatistics.values()));
+            result.put(partition, columnNames.stream()
+                    .filter(columnStatistics::containsKey)
+                    .map(columnStatistics::get)
+                    .collect(toImmutableList()));
         }
 
         return result.buildOrThrow();
@@ -339,7 +331,7 @@ public class MockThriftMetastoreClient
                 !ImmutableSet.of(TEST_PARTITION_VALUES1, TEST_PARTITION_VALUES2, TEST_PARTITION_VALUES3).contains(partitionValues)) {
             throw new NoSuchObjectException();
         }
-        return new Partition(partitionValues, TEST_DATABASE, TEST_TABLE, 0, 0, DEFAULT_STORAGE_DESCRIPTOR, ImmutableMap.of());
+        return new Partition(partitionValues, TEST_DATABASE, TEST_TABLE, 0, 0, DEFAULT_STORAGE_DESCRIPTOR, ImmutableMap.of("numRows", "2398040535435"));
     }
 
     @Override
@@ -378,13 +370,13 @@ public class MockThriftMetastoreClient
     @Override
     public void createDatabase(Database database)
     {
-        throw new UnsupportedOperationException();
+        // No-op, make sure the cache invalidation logic in CachingHiveMetastore will be passed through
     }
 
     @Override
     public void dropDatabase(String databaseName, boolean deleteData, boolean cascade)
     {
-        throw new UnsupportedOperationException();
+        // No-op, make sure the cache invalidation logic in CachingHiveMetastore will be passed through
     }
 
     @Override
@@ -396,7 +388,7 @@ public class MockThriftMetastoreClient
     @Override
     public void createTable(Table table)
     {
-        throw new UnsupportedOperationException();
+        // No-op, make sure the cache invalidation logic in CachingHiveMetastore will be passed through
     }
 
     @Override
@@ -489,12 +481,6 @@ public class MockThriftMetastoreClient
     }
 
     @Override
-    public List<RolePrincipalGrant> listGrantedPrincipals(String role)
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
     public List<RolePrincipalGrant> listRoleGrants(String name, PrincipalType principalType)
     {
         accessCount.incrementAndGet();
@@ -571,7 +557,7 @@ public class MockThriftMetastoreClient
     }
 
     @Override
-    public void addDynamicPartitions(String dbName, String tableName, List<String> partitionNames, long transactionId, long writeId, AcidOperation operation)
+    public void addDynamicPartitions(String dbName, String tableName, List<String> partitionNames, long transactionId, long writeId, DataOperationType operation)
     {
         throw new UnsupportedOperationException();
     }
@@ -584,6 +570,36 @@ public class MockThriftMetastoreClient
 
     @Override
     public String getDelegationToken(String userName)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Function getFunction(String databaseName, String functionName)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Collection<String> getFunctions(String databaseName, String functionNamePattern)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void createFunction(Function function)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void alterFunction(Function function)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void dropFunction(String databaseName, String functionName)
     {
         throw new UnsupportedOperationException();
     }

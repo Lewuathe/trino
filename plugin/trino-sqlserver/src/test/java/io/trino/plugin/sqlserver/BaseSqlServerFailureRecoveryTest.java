@@ -14,16 +14,17 @@
 package io.trino.plugin.sqlserver;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.inject.Module;
 import io.trino.operator.RetryPolicy;
 import io.trino.plugin.exchange.filesystem.FileSystemExchangePlugin;
 import io.trino.plugin.jdbc.BaseJdbcFailureRecoveryTest;
 import io.trino.testing.QueryRunner;
 import io.trino.tpch.TpchTable;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
-
-import static io.trino.plugin.sqlserver.SqlServerQueryRunner.createSqlServerQueryRunner;
+import java.util.Optional;
 
 public abstract class BaseSqlServerFailureRecoveryTest
         extends BaseJdbcFailureRecoveryTest
@@ -37,19 +38,36 @@ public abstract class BaseSqlServerFailureRecoveryTest
     protected QueryRunner createQueryRunner(
             List<TpchTable<?>> requiredTpchTables,
             Map<String, String> configProperties,
-            Map<String, String> coordinatorProperties)
+            Map<String, String> coordinatorProperties,
+            Module failureInjectionModule)
             throws Exception
     {
-        return createSqlServerQueryRunner(
-                closeAfterClass(new TestingSqlServer()),
-                configProperties,
-                coordinatorProperties,
-                Map.of(),
-                requiredTpchTables,
-                runner -> {
+        return SqlServerQueryRunner.builder(closeAfterClass(new TestingSqlServer()))
+                .setExtraProperties(configProperties)
+                .setCoordinatorProperties(coordinatorProperties)
+                .setAdditionalSetup(runner -> {
                     runner.installPlugin(new FileSystemExchangePlugin());
                     runner.loadExchangeManager("filesystem", ImmutableMap.of(
                             "exchange.base-directories", System.getProperty("java.io.tmpdir") + "/trino-local-file-system-exchange-manager"));
-                });
+                })
+                .setAdditionalModule(failureInjectionModule)
+                .setInitialTables(requiredTpchTables)
+                .build();
+    }
+
+    @Test
+    @Override
+    protected void testUpdate()
+    {
+        // This simple update on JDBC ends up as a very simple, single-fragment, coordinator-only plan,
+        // which has no ability to recover from errors. This test simply verifies that's still the case.
+        Optional<String> setupQuery = Optional.of("CREATE TABLE <table> AS SELECT * FROM orders");
+        String testQuery = "UPDATE <table> SET shippriority = 101 WHERE custkey = 1";
+        Optional<String> cleanupQuery = Optional.of("DROP TABLE <table>");
+
+        assertThatQuery(testQuery)
+                .withSetupQuery(setupQuery)
+                .withCleanupQuery(cleanupQuery)
+                .isCoordinatorOnly();
     }
 }

@@ -13,9 +13,11 @@
  */
 package io.trino.metadata;
 
+import com.google.common.collect.Multimap;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.slice.Slice;
 import io.trino.Session;
+import io.trino.spi.RefreshType;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.AggregationApplicationResult;
@@ -25,29 +27,43 @@ import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
+import io.trino.spi.connector.ColumnPosition;
 import io.trino.spi.connector.ConnectorCapabilities;
 import io.trino.spi.connector.ConnectorOutputMetadata;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
+import io.trino.spi.connector.EntityKindAndName;
+import io.trino.spi.connector.EntityPrivilege;
 import io.trino.spi.connector.JoinApplicationResult;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
 import io.trino.spi.connector.LimitApplicationResult;
 import io.trino.spi.connector.MaterializedViewFreshness;
 import io.trino.spi.connector.ProjectionApplicationResult;
+import io.trino.spi.connector.RelationCommentMetadata;
+import io.trino.spi.connector.RelationType;
 import io.trino.spi.connector.RowChangeParadigm;
 import io.trino.spi.connector.SampleApplicationResult;
 import io.trino.spi.connector.SampleType;
+import io.trino.spi.connector.SaveMode;
+import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SortItem;
 import io.trino.spi.connector.SystemTable;
 import io.trino.spi.connector.TableColumnsMetadata;
 import io.trino.spi.connector.TableFunctionApplicationResult;
 import io.trino.spi.connector.TableScanRedirectApplicationResult;
 import io.trino.spi.connector.TopNApplicationResult;
+import io.trino.spi.connector.WriterScalingOptions;
 import io.trino.spi.expression.ConnectorExpression;
+import io.trino.spi.expression.Constant;
 import io.trino.spi.function.AggregationFunctionMetadata;
+import io.trino.spi.function.BoundSignature;
+import io.trino.spi.function.CatalogSchemaFunctionName;
+import io.trino.spi.function.FunctionDependencyDeclaration;
+import io.trino.spi.function.FunctionId;
 import io.trino.spi.function.FunctionMetadata;
+import io.trino.spi.function.LanguageFunction;
 import io.trino.spi.function.OperatorType;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.security.GrantInfo;
@@ -61,7 +77,6 @@ import io.trino.spi.statistics.TableStatisticsMetadata;
 import io.trino.spi.type.Type;
 import io.trino.sql.analyzer.TypeSignatureProvider;
 import io.trino.sql.planner.PartitioningHandle;
-import io.trino.sql.tree.QualifiedName;
 
 import java.util.Collection;
 import java.util.List;
@@ -70,6 +85,7 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.function.UnaryOperator;
 
 import static io.trino.spi.function.OperatorType.CAST;
 
@@ -107,13 +123,17 @@ public interface Metadata
     TableProperties getTableProperties(Session session, TableHandle handle);
 
     /**
-     * Return a table handle whose partitioning is converted to the provided partitioning handle,
-     * but otherwise identical to the provided table handle.
-     * The provided table handle must be one that the connector can transparently convert to from
-     * the original partitioning handle associated with the provided table handle,
-     * as promised by {@link #getCommonPartitioning}.
+     * Attempt to push down partitioning into the table. If a connector can provide
+     * data for the table using the specified partitioning, it should return a
+     * table handle that when passed to {@link #getTableProperties(Session, TableHandle)}
+     * will return TableProperties compatible with the specified partitioning.
+     * The returned table handle does not have to use the exact partitioning, but
+     * must be compatible with the specified partitioning, meaning that a table with
+     * specified partitioning can be repartitioned on the partitioning of the returned
+     * table handle. If the partitioning handle is not specified, any partitioning
+     * function can be applied as long as it uses the specified columns.
      */
-    TableHandle makeCompatiblePartitioning(Session session, TableHandle table, PartitioningHandle partitioningHandle);
+    Optional<TableHandle> applyPartitioning(Session session, TableHandle tableHandle, Optional<PartitioningHandle> partitioning, List<ColumnHandle> columns);
 
     /**
      * Return a partitioning handle which the connector can transparently convert both {@code left} and {@code right} into.
@@ -121,6 +141,8 @@ public interface Metadata
     Optional<PartitioningHandle> getCommonPartitioning(Session session, PartitioningHandle left, PartitioningHandle right);
 
     Optional<Object> getInfo(Session session, TableHandle handle);
+
+    CatalogSchemaTableName getTableName(Session session, TableHandle tableHandle);
 
     /**
      * Return table schema definition for the specified table handle.
@@ -152,6 +174,12 @@ public interface Metadata
     List<QualifiedObjectName> listTables(Session session, QualifiedTablePrefix prefix);
 
     /**
+     * Get the relation names that match the specified table prefix (never null).
+     * This includes all relations (e.g. tables, views, materialized views).
+     */
+    Map<SchemaTableName, RelationType> getRelationTypes(Session session, QualifiedTablePrefix prefix);
+
+    /**
      * Gets all of the columns on the specified table, or an empty map if the columns cannot be enumerated.
      *
      * @throws RuntimeException if table handle is no longer valid
@@ -169,7 +197,13 @@ public interface Metadata
      * Gets the columns metadata for all tables that match the specified prefix.
      * TODO: consider returning a stream for more efficient processing
      */
-    List<TableColumnsMetadata> listTableColumns(Session session, QualifiedTablePrefix prefix);
+    List<TableColumnsMetadata> listTableColumns(Session session, QualifiedTablePrefix prefix, UnaryOperator<Set<SchemaTableName>> relationFilter);
+
+    /**
+     * Gets the comments metadata for all relations (tables, views, materialized views) that match the specified prefix.
+     * TODO: consider returning a stream for more efficient processing
+     */
+    List<RelationCommentMetadata> listRelationComments(Session session, String catalogName, Optional<String> schemaName, UnaryOperator<Set<SchemaTableName>> relationFilter);
 
     /**
      * Creates a schema.
@@ -181,7 +215,7 @@ public interface Metadata
     /**
      * Drops the specified schema.
      */
-    void dropSchema(Session session, CatalogSchemaName schema);
+    void dropSchema(Session session, CatalogSchemaName schema, boolean cascade);
 
     /**
      * Renames the specified schema.
@@ -196,9 +230,9 @@ public interface Metadata
     /**
      * Creates a table using the specified table metadata.
      *
-     * @throws TrinoException with {@code ALREADY_EXISTS} if the table already exists and {@param ignoreExisting} is not set
+     * @throws TrinoException with {@code ALREADY_EXISTS} if the table already exists and {@code saveMode} is set to FAIL.
      */
-    void createTable(Session session, String catalogName, ConnectorTableMetadata tableMetadata, boolean ignoreExisting);
+    void createTable(Session session, String catalogName, ConnectorTableMetadata tableMetadata, SaveMode saveMode);
 
     /**
      * Rename the specified table.
@@ -233,17 +267,37 @@ public interface Metadata
     /**
      * Rename the specified column.
      */
-    void renameColumn(Session session, TableHandle tableHandle, ColumnHandle source, String target);
+    void renameColumn(Session session, TableHandle tableHandle, CatalogSchemaTableName table, ColumnHandle source, String target);
+
+    /**
+     * Rename the specified field.
+     */
+    void renameField(Session session, TableHandle tableHandle, List<String> fieldPath, String target);
 
     /**
      * Add the specified column to the table.
      */
-    void addColumn(Session session, TableHandle tableHandle, ColumnMetadata column);
+    void addColumn(Session session, TableHandle tableHandle, CatalogSchemaTableName table, ColumnMetadata column, ColumnPosition position);
+
+    /**
+     * Add the specified field to the column.
+     */
+    void addField(Session session, TableHandle tableHandle, List<String> parentPath, String fieldName, Type type, boolean ignoreExisting);
 
     /**
      * Set the specified type to the column.
      */
     void setColumnType(Session session, TableHandle tableHandle, ColumnHandle column, Type type);
+
+    /**
+     * Set the specified type to the field.
+     */
+    void setFieldType(Session session, TableHandle tableHandle, List<String> fieldPath, Type type);
+
+    /**
+     * Drop a not null constraint on the specified column.
+     */
+    void dropNotNullConstraint(Session session, TableHandle tableHandle, ColumnHandle column);
 
     /**
      * Set the authorization (owner) of specified table's user/role
@@ -253,7 +307,7 @@ public interface Metadata
     /**
      * Drop the specified column.
      */
-    void dropColumn(Session session, TableHandle tableHandle, ColumnHandle column);
+    void dropColumn(Session session, TableHandle tableHandle, CatalogSchemaTableName table, ColumnHandle column);
 
     /**
      * Drop the specified field from the column.
@@ -275,9 +329,14 @@ public interface Metadata
     Optional<TableLayout> getNewTableLayout(Session session, String catalogName, ConnectorTableMetadata tableMetadata);
 
     /**
+     * Return the effective {@link io.trino.spi.type.Type} that is supported by the connector for the given type, if {@link Optional#empty()} is returned, the type will be used as is during table creation which may or may not be supported by the connector.
+     */
+    Optional<Type> getSupportedType(Session session, CatalogHandle catalogHandle, Map<String, Object> tableProperties, Type type);
+
+    /**
      * Begin the atomic creation of a table with data.
      */
-    OutputTableHandle beginCreateTable(Session session, String catalogName, ConnectorTableMetadata tableMetadata, Optional<TableLayout> layout);
+    OutputTableHandle beginCreateTable(Session session, String catalogName, ConnectorTableMetadata tableMetadata, Optional<TableLayout> layout, boolean replace);
 
     /**
      * Finish a table creation with data after the data is written.
@@ -307,6 +366,11 @@ public interface Metadata
     void finishStatisticsCollection(Session session, AnalyzeTableHandle tableHandle, Collection<ComputedStatistics> computedStatistics);
 
     /**
+     * Initialize before query begins
+     */
+    void beginQuery(Session session);
+
+    /**
      * Cleanup after a query. This is the very last notification after the query finishes, regardless if it succeeds or fails.
      * An exception thrown in this method will not affect the result of the query.
      */
@@ -325,7 +389,7 @@ public interface Metadata
     /**
      * Finish insert query
      */
-    Optional<ConnectorOutputMetadata> finishInsert(Session session, InsertTableHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics);
+    Optional<ConnectorOutputMetadata> finishInsert(Session session, InsertTableHandle tableHandle, List<TableHandle> sourceTableHandles, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics);
 
     /**
      * Returns true if materialized view refresh should be delegated to connector
@@ -340,7 +404,7 @@ public interface Metadata
     /**
      * Begin refresh materialized view query
      */
-    InsertTableHandle beginRefreshMaterializedView(Session session, TableHandle tableHandle, List<TableHandle> sourceTableHandles);
+    InsertTableHandle beginRefreshMaterializedView(Session session, TableHandle tableHandle, List<TableHandle> sourceTableHandles, RefreshType refreshType);
 
     /**
      * Finish refresh materialized view query
@@ -351,7 +415,18 @@ public interface Metadata
             InsertTableHandle insertTableHandle,
             Collection<Slice> fragments,
             Collection<ComputedStatistics> computedStatistics,
-            List<TableHandle> sourceTableHandles);
+            List<TableHandle> sourceTableHandles,
+            List<String> sourceTableFunctions);
+
+    /**
+     * Push update into connector
+     */
+    Optional<TableHandle> applyUpdate(Session session, TableHandle tableHandle, Map<ColumnHandle, Constant> assignments);
+
+    /**
+     * Execute update in connector
+     */
+    OptionalLong executeUpdate(Session session, TableHandle tableHandle);
 
     /**
      * Push delete into connector
@@ -383,13 +458,15 @@ public interface Metadata
 
     /**
      * Begin merge query
+     *
+     * @param updateCaseColumnHandles The merge update case number to the assignment target columns mapping
      */
-    MergeHandle beginMerge(Session session, TableHandle tableHandle);
+    MergeHandle beginMerge(Session session, TableHandle tableHandle, Multimap<Integer, ColumnHandle> updateCaseColumnHandles);
 
     /**
      * Finish merge query
      */
-    void finishMerge(Session session, MergeHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics);
+    void finishMerge(Session session, MergeHandle tableHandle, List<TableHandle> sourceTableHandles, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics);
 
     /**
      * Returns a catalog handle for the specified catalog name.
@@ -411,18 +488,17 @@ public interface Metadata
      */
     Map<QualifiedObjectName, ViewInfo> getViews(Session session, QualifiedTablePrefix prefix);
 
-    /**
-     * Is the specified table a view.
-     */
-    default boolean isView(Session session, QualifiedObjectName viewName)
-    {
-        return getView(session, viewName).isPresent();
-    }
+    boolean isView(Session session, QualifiedObjectName viewName);
 
     /**
      * Returns the view definition for the specified view name.
      */
     Optional<ViewDefinition> getView(Session session, QualifiedObjectName viewName);
+
+    /**
+     * Returns the view definition for the specified view name.
+     */
+    Map<String, Object> getViewProperties(Session session, QualifiedObjectName viewName);
 
     /**
      * Gets the schema properties for the specified schema.
@@ -437,7 +513,7 @@ public interface Metadata
     /**
      * Creates the specified view with the specified view definition.
      */
-    void createView(Session session, QualifiedObjectName viewName, ViewDefinition definition, boolean replace);
+    void createView(Session session, QualifiedObjectName viewName, ViewDefinition definition, Map<String, Object> properties, boolean replace);
 
     /**
      * Rename the specified view.
@@ -601,7 +677,7 @@ public interface Metadata
     void denyTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee);
 
     /**
-     * Revokes the specified privilege on the specified table from the specified user
+     * Revokes the specified privilege on the specified table from the specified user.
      */
     void revokeTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption);
 
@@ -610,42 +686,88 @@ public interface Metadata
      */
     List<GrantInfo> listTablePrivileges(Session session, QualifiedTablePrefix prefix);
 
+    /**
+     * Gets all the EntityPrivileges associated with an entityKind.  Defines ALL PRIVILEGES
+     * for the entityKind
+     */
+    default Set<EntityPrivilege> getAllEntityKindPrivileges(String entityKind)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    /**
+     * Grants the specified privileges to the specified user on the specified grantee.
+     * If the set of privileges is empty, it is interpreted as all privileges for the entityKind.
+     */
+    default void grantEntityPrivileges(Session session, EntityKindAndName entity, Set<EntityPrivilege> privileges, TrinoPrincipal grantee, boolean grantOption)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    /**
+     * Deny the specified privileges to the specified principal on the specified entity.
+     * If the set of privileges is empty, it is interpreted as all privileges for the entityKind.
+     */
+    default void denyEntityPrivileges(Session session, EntityKindAndName entity, Set<EntityPrivilege> privileges, TrinoPrincipal grantee)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    /**
+     * Revokes the specified privilege on the specified entity from the specified grantee.
+     * If the set of privileges is empty, it is interpreted as all privileges for the entityKind.
+     */
+    default void revokeEntityPrivileges(Session session, EntityKindAndName entity, Set<EntityPrivilege> privileges, TrinoPrincipal grantee, boolean grantOption)
+    {
+        throw new UnsupportedOperationException();
+    }
+
     //
     // Functions
     //
 
-    Collection<FunctionMetadata> listFunctions(Session session);
+    Collection<FunctionMetadata> listGlobalFunctions(Session session);
 
-    ResolvedFunction decodeFunction(QualifiedName name);
+    Collection<FunctionMetadata> listFunctions(Session session, CatalogSchemaName schema);
 
-    ResolvedFunction resolveFunction(Session session, QualifiedName name, List<TypeSignatureProvider> parameterTypes);
+    Collection<CatalogFunctionMetadata> getFunctions(Session session, CatalogSchemaFunctionName catalogSchemaFunctionName);
 
-    ResolvedFunction resolveOperator(Session session, OperatorType operatorType, List<? extends Type> argumentTypes)
+    ResolvedFunction resolveBuiltinFunction(String name, List<TypeSignatureProvider> parameterTypes);
+
+    ResolvedFunction resolveOperator(OperatorType operatorType, List<? extends Type> argumentTypes)
             throws OperatorNotFoundException;
 
-    default ResolvedFunction getCoercion(Session session, Type fromType, Type toType)
+    default ResolvedFunction getCoercion(Type fromType, Type toType)
     {
-        return getCoercion(session, CAST, fromType, toType);
+        return getCoercion(CAST, fromType, toType);
     }
 
-    ResolvedFunction getCoercion(Session session, OperatorType operatorType, Type fromType, Type toType);
+    ResolvedFunction getCoercion(OperatorType operatorType, Type fromType, Type toType);
 
-    ResolvedFunction getCoercion(Session session, QualifiedName name, Type fromType, Type toType);
-
-    /**
-     * Is the named function an aggregation function?  This does not need type parameters
-     * because overloads between aggregation and other function types are not allowed.
-     */
-    boolean isAggregationFunction(Session session, QualifiedName name);
-
-    FunctionMetadata getFunctionMetadata(Session session, ResolvedFunction resolvedFunction);
+    ResolvedFunction getCoercion(CatalogSchemaFunctionName name, Type fromType, Type toType);
 
     AggregationFunctionMetadata getAggregationFunctionMetadata(Session session, ResolvedFunction resolvedFunction);
+
+    FunctionDependencyDeclaration getFunctionDependencies(Session session, CatalogHandle catalogHandle, FunctionId functionId, BoundSignature boundSignature);
+
+    Collection<LanguageFunction> getLanguageFunctions(Session session, QualifiedObjectName name);
+
+    boolean languageFunctionExists(Session session, QualifiedObjectName name, String signatureToken);
+
+    void createLanguageFunction(Session session, QualifiedObjectName name, LanguageFunction function, boolean replace);
+
+    void dropLanguageFunction(Session session, QualifiedObjectName name, String signatureToken);
 
     /**
      * Creates the specified materialized view with the specified view definition.
      */
-    void createMaterializedView(Session session, QualifiedObjectName viewName, MaterializedViewDefinition definition, boolean replace, boolean ignoreExisting);
+    void createMaterializedView(
+            Session session,
+            QualifiedObjectName viewName,
+            MaterializedViewDefinition definition,
+            Map<String, Object> properties,
+            boolean replace,
+            boolean ignoreExisting);
 
     /**
      * Drops the specified materialized view.
@@ -675,6 +797,8 @@ public interface Metadata
      */
     Optional<MaterializedViewDefinition> getMaterializedView(Session session, QualifiedObjectName viewName);
 
+    Map<String, Object> getMaterializedViewProperties(Session session, QualifiedObjectName objectName, MaterializedViewDefinition materializedViewDefinition);
+
     /**
      * Method to get difference between the states of table at two different points in time/or as of given token-ids.
      * The method is used by the engine to determine if a materialized view is current with respect to the tables it depends on.
@@ -690,6 +814,11 @@ public interface Metadata
      * Sets the properties of the specified materialized view.
      */
     void setMaterializedViewProperties(Session session, QualifiedObjectName viewName, Map<String, Optional<Object>> properties);
+
+    /**
+     * Comments to the specified materialized view column.
+     */
+    void setMaterializedViewColumnComment(Session session, QualifiedObjectName viewName, String columnName, Optional<String> comment);
 
     /**
      * Returns the result of redirecting the table scan on a given table to a different table.
@@ -709,16 +838,6 @@ public interface Metadata
     RedirectionAwareTableHandle getRedirectionAwareTableHandle(Session session, QualifiedObjectName tableName, Optional<TableVersion> startVersion, Optional<TableVersion> endVersion);
 
     /**
-     * Returns true if the connector reports number of written bytes for an existing table. Otherwise, it returns false.
-     */
-    boolean supportsReportingWrittenBytes(Session session, TableHandle tableHandle);
-
-    /**
-     * Returns true if the connector reports number of written bytes for a new table. Otherwise, it returns false.
-     */
-    boolean supportsReportingWrittenBytes(Session session, QualifiedObjectName tableName, Map<String, Object> tableProperties);
-
-    /**
      * Returns a table handle for the specified table name with a specified version
      */
     Optional<TableHandle> getTableHandle(Session session, QualifiedObjectName tableName, Optional<TableVersion> startVersion, Optional<TableVersion> endVersion);
@@ -728,4 +847,23 @@ public interface Metadata
      * Note: It is ignored when retry policy is set to TASK
      */
     OptionalInt getMaxWriterTasks(Session session, String catalogName);
+
+    /**
+     * Workaround to lack of statistics about IO and CPU operations performed by the connector.
+     * In the long term, this should be replaced by improvements in the cost model.
+     *
+     * @return true if the cumulative cost of splitting a read of the specified tableHandle into multiple reads,
+     * each of which projects a subset of the required columns, is not significantly more than the cost of reading the specified tableHandle
+     */
+    boolean allowSplittingReadIntoMultipleSubQueries(Session session, TableHandle tableHandle);
+
+    /**
+     * Returns writer scaling options for the specified table. This method is called when table handle is not available during CTAS.
+     */
+    WriterScalingOptions getNewTableWriterScalingOptions(Session session, QualifiedObjectName tableName, Map<String, Object> tableProperties);
+
+    /**
+     * Returns writer scaling options for the specified table.
+     */
+    WriterScalingOptions getInsertWriterScalingOptions(Session session, TableHandle tableHandle);
 }

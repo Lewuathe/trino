@@ -18,7 +18,6 @@ import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
-import io.trino.client.QueryData;
 import io.trino.client.StatementClient;
 import org.gaul.modernizer_maven_annotations.SuppressModernizer;
 import org.jline.reader.Candidate;
@@ -28,6 +27,7 @@ import org.jline.reader.ParsedLine;
 
 import java.io.Closeable;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 
@@ -85,11 +85,8 @@ public class TableNameCompleter
         ImmutableList.Builder<String> cache = ImmutableList.builder();
         try (StatementClient client = queryRunner.startInternalQuery(query)) {
             while (client.isRunning() && !Thread.currentThread().isInterrupted()) {
-                QueryData results = client.currentData();
-                if (results.getData() != null) {
-                    for (List<Object> row : results.getData()) {
-                        cache.add((String) row.get(0));
-                    }
+                for (List<Object> row : client.currentRows()) {
+                    cache.add((String) row.get(0));
                 }
                 client.advance();
             }
@@ -99,13 +96,10 @@ public class TableNameCompleter
 
     public void populateCache()
     {
-        String schemaName = queryRunner.getSession().getSchema();
-        if (schemaName != null) {
-            executor.execute(() -> {
-                functionCache.refresh(schemaName);
-                tableCache.refresh(schemaName);
-            });
-        }
+        queryRunner.getSession().getSchema().ifPresent(schemaName -> executor.execute(() -> {
+            functionCache.refresh(schemaName);
+            tableCache.refresh(schemaName);
+        }));
     }
 
     @Override
@@ -114,21 +108,22 @@ public class TableNameCompleter
         String buffer = line.word().substring(0, line.wordCursor());
         int blankPos = findLastBlank(buffer);
         String prefix = buffer.substring(blankPos + 1);
-        String schemaName = queryRunner.getSession().getSchema();
+        Optional<String> schemaName = queryRunner.getSession().getSchema();
 
-        if (schemaName != null) {
-            List<String> functionNames = functionCache.getIfPresent(schemaName);
-            List<String> tableNames = tableCache.getIfPresent(schemaName);
+        if (schemaName.isEmpty()) {
+            return;
+        }
+        List<String> functionNames = functionCache.getIfPresent(schemaName.get());
+        List<String> tableNames = tableCache.getIfPresent(schemaName.get());
 
-            if (functionNames != null) {
-                for (String name : filterResults(functionNames, prefix)) {
-                    candidates.add(new Candidate(name));
-                }
+        if (functionNames != null) {
+            for (String name : filterResults(functionNames, prefix)) {
+                candidates.add(new Candidate(name));
             }
-            if (tableNames != null) {
-                for (String name : filterResults(tableNames, prefix)) {
-                    candidates.add(new Candidate(name));
-                }
+        }
+        if (tableNames != null) {
+            for (String name : filterResults(tableNames, prefix)) {
+                candidates.add(new Candidate(name));
             }
         }
     }

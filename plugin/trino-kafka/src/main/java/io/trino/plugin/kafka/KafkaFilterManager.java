@@ -15,6 +15,7 @@ package io.trino.plugin.kafka;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
+import com.google.inject.Inject;
 import io.trino.plugin.kafka.KafkaInternalFieldManager.InternalFieldId;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ColumnHandle;
@@ -34,8 +35,6 @@ import org.apache.kafka.clients.consumer.OffsetAndTimestamp;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.config.ConfigResource;
-
-import javax.inject.Inject;
 
 import java.util.Collections;
 import java.util.List;
@@ -90,7 +89,7 @@ public class KafkaFilterManager
         requireNonNull(partitionBeginOffsets, "partitionBeginOffsets is null");
         requireNonNull(partitionEndOffsets, "partitionEndOffsets is null");
 
-        TupleDomain<ColumnHandle> constraint = kafkaTableHandle.getConstraint();
+        TupleDomain<ColumnHandle> constraint = kafkaTableHandle.constraint();
         verify(!constraint.isNone(), "constraint is none");
 
         if (!constraint.isAll()) {
@@ -114,23 +113,23 @@ public class KafkaFilterManager
             if (offsetRanged.isPresent()) {
                 Range range = offsetRanged.get();
                 partitionBeginOffsets = overridePartitionBeginOffsets(partitionBeginOffsets,
-                        partition -> (range.getBegin() != INVALID_KAFKA_RANGE_INDEX) ? Optional.of(range.getBegin()) : Optional.empty());
+                        partition -> (range.begin() != INVALID_KAFKA_RANGE_INDEX) ? Optional.of(range.begin()) : Optional.empty());
                 partitionEndOffsets = overridePartitionEndOffsets(partitionEndOffsets,
-                        partition -> (range.getEnd() != INVALID_KAFKA_RANGE_INDEX) ? Optional.of(range.getEnd()) : Optional.empty());
+                        partition -> (range.end() != INVALID_KAFKA_RANGE_INDEX) ? Optional.of(range.end()) : Optional.empty());
             }
 
             // push down timestamp if possible
             if (offsetTimestampRanged.isPresent()) {
                 try (KafkaConsumer<byte[], byte[]> kafkaConsumer = consumerFactory.create(session)) {
                     // filter negative value to avoid java.lang.IllegalArgumentException when using KafkaConsumer offsetsForTimes
-                    if (offsetTimestampRanged.get().getBegin() > INVALID_KAFKA_RANGE_INDEX) {
+                    if (offsetTimestampRanged.get().begin() > INVALID_KAFKA_RANGE_INDEX) {
                         partitionBeginOffsets = overridePartitionBeginOffsets(partitionBeginOffsets,
-                                partition -> findOffsetsForTimestampGreaterOrEqual(kafkaConsumer, partition, offsetTimestampRanged.get().getBegin()));
+                                partition -> findOffsetsForTimestampGreaterOrEqual(kafkaConsumer, partition, offsetTimestampRanged.get().begin()));
                     }
-                    if (isTimestampUpperBoundPushdownEnabled(session, kafkaTableHandle.getTopicName())) {
-                        if (offsetTimestampRanged.get().getEnd() > INVALID_KAFKA_RANGE_INDEX) {
+                    if (isTimestampUpperBoundPushdownEnabled(session, kafkaTableHandle.topicName())) {
+                        if (offsetTimestampRanged.get().end() > INVALID_KAFKA_RANGE_INDEX) {
                             partitionEndOffsets = overridePartitionEndOffsets(partitionEndOffsets,
-                                    partition -> findOffsetsForTimestampGreaterOrEqual(kafkaConsumer, partition, offsetTimestampRanged.get().getEnd()));
+                                    partition -> findOffsetsForTimestampGreaterOrEqual(kafkaConsumer, partition, offsetTimestampRanged.get().end()));
                         }
                     }
                 }

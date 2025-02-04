@@ -41,7 +41,7 @@ public class Minio
 {
     private static final Logger log = Logger.get(Minio.class);
 
-    public static final String DEFAULT_IMAGE = "minio/minio:RELEASE.2022-10-05T14-58-27Z";
+    public static final String DEFAULT_IMAGE = "minio/minio:RELEASE.2025-01-20T14-49-07Z";
     public static final String DEFAULT_HOST_NAME = "minio";
 
     public static final int MINIO_API_PORT = 4566;
@@ -50,6 +50,7 @@ public class Minio
     // defaults
     public static final String MINIO_ACCESS_KEY = "accesskey";
     public static final String MINIO_SECRET_KEY = "secretkey";
+    public static final String MINIO_REGION = "us-east-1";
 
     public static Builder builder()
     {
@@ -111,6 +112,11 @@ public class Minio
 
     public void createBucket(String bucketName)
     {
+        createBucket(bucketName, false);
+    }
+
+    public void createBucket(String bucketName, boolean objectLock)
+    {
         try (MinioClient minioClient = createMinioClient()) {
             // use retry loop for minioClient.makeBucket as minio container tends to return "Server not initialized, please try again" error
             // for some time after starting up
@@ -119,14 +125,14 @@ public class Minio
                     .withMaxAttempts(Integer.MAX_VALUE) // limited by MaxDuration
                     .withDelay(Duration.of(10, SECONDS))
                     .build();
-            Failsafe.with(retryPolicy).run(() -> minioClient.makeBucket(bucketName));
+            Failsafe.with(retryPolicy).run(() -> minioClient.makeBucket(bucketName, objectLock));
         }
     }
 
     public void copyResources(String resourcePath, String bucketName, String target)
     {
         try (MinioClient minioClient = createMinioClient()) {
-            for (ClassPath.ResourceInfo resourceInfo : ClassPath.from(MinioClient.class.getClassLoader())
+            for (ClassPath.ResourceInfo resourceInfo : ClassPath.from(getClass().getClassLoader())
                     .getResources()) {
                 if (resourceInfo.getResourceName().startsWith(resourcePath)) {
                     String fileName = resourceInfo.getResourceName().replaceFirst("^" + Pattern.quote(resourcePath), quoteReplacement(target));

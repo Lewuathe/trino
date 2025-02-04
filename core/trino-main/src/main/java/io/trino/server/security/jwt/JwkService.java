@@ -21,10 +21,9 @@ import io.airlift.http.client.Request;
 import io.airlift.http.client.StringResponseHandler.StringResponse;
 import io.airlift.log.Logger;
 import io.airlift.units.Duration;
-
-import javax.annotation.PostConstruct;
-import javax.annotation.PreDestroy;
-import javax.annotation.processing.Generated;
+import jakarta.annotation.Generated;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 
 import java.io.IOException;
 import java.net.URI;

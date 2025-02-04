@@ -13,7 +13,6 @@
  */
 package org.apache.iceberg.rest;
 
-import com.google.common.collect.ImmutableMap;
 import io.airlift.http.server.HttpServerConfig;
 import io.airlift.http.server.HttpServerInfo;
 import io.airlift.http.server.testing.TestingHttpServer;
@@ -36,7 +35,7 @@ public class DelegatingRestSessionCatalog
 
     DelegatingRestSessionCatalog(RESTCatalogAdapter adapter, Catalog delegate)
     {
-        super(properties -> adapter);
+        super(properties -> adapter, null);
         this.adapter = requireNonNull(adapter, "adapter is null");
         this.delegate = requireNonNull(delegate, "delegate catalog is null");
     }
@@ -65,9 +64,9 @@ public class DelegatingRestSessionCatalog
                 .setHttpAcceptQueueSize(10)
                 .setHttpEnabled(true);
         HttpServerInfo httpServerInfo = new HttpServerInfo(config, nodeInfo);
-        RESTCatalogServlet servlet = new RESTCatalogServlet(adapter);
+        RestCatalogServlet servlet = new RestCatalogServlet(adapter);
 
-        return new TestingHttpServer(httpServerInfo, nodeInfo, config, servlet, ImmutableMap.of());
+        return new TestingHttpServer(httpServerInfo, nodeInfo, config, servlet, false, true, false);
     }
 
     public static Builder builder()

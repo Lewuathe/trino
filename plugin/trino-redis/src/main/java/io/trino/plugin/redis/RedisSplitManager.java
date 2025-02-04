@@ -15,6 +15,7 @@ package io.trino.plugin.redis;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.inject.Inject;
 import io.trino.spi.HostAddress;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplit;
@@ -26,8 +27,6 @@ import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.DynamicFilter;
 import io.trino.spi.connector.FixedSplitSource;
 import redis.clients.jedis.Jedis;
-
-import javax.inject.Inject;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -78,9 +77,9 @@ public class RedisSplitManager
         long numberOfKeys = 1;
         // when Redis keys are provides in a zset, create multiple
         // splits by splitting zset in chunks
-        if (redisTableHandle.getKeyDataFormat().equals("zset")) {
+        if (redisTableHandle.keyDataFormat().equals("zset")) {
             try (Jedis jedis = jedisManager.getJedisPool(nodes.get(0)).getResource()) {
-                numberOfKeys = jedis.zcount(redisTableHandle.getKeyName(), "-inf", "+inf");
+                numberOfKeys = jedis.zcount(redisTableHandle.keyName(), "-inf", "+inf");
             }
         }
 
@@ -97,12 +96,12 @@ public class RedisSplitManager
             }
 
             RedisSplit split = new RedisSplit(
-                    redisTableHandle.getSchemaName(),
-                    redisTableHandle.getTableName(),
-                    redisTableHandle.getKeyDataFormat(),
-                    redisTableHandle.getValueDataFormat(),
-                    redisTableHandle.getKeyName(),
-                    redisTableHandle.getConstraint(),
+                    redisTableHandle.schemaName(),
+                    redisTableHandle.tableName(),
+                    redisTableHandle.keyDataFormat(),
+                    redisTableHandle.valueDataFormat(),
+                    redisTableHandle.keyName(),
+                    redisTableHandle.constraint(),
                     startIndex,
                     endIndex,
                     nodes);

@@ -21,14 +21,13 @@ import java.util.List;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.tempto.assertions.QueryAssert.Row.row;
-import static io.trino.tempto.assertions.QueryAssert.assertThat;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.tests.product.TestGroups.ICEBERG_FORMAT_VERSION_COMPATIBILITY;
 import static io.trino.tests.product.TestGroups.PROFILE_SPECIFIC_TESTS;
 import static io.trino.tests.product.utils.QueryExecutors.onCompatibilityTestServer;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
 import static java.lang.String.format;
-import static org.testng.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestIcebergFormatVersionCompatibility
         extends ProductTest
@@ -52,7 +51,7 @@ public class TestIcebergFormatVersionCompatibility
         List<QueryAssert.Row> expected = onCompatibilityTestServer().executeQuery(format("SELECT * FROM %s", tableName)).rows().stream()
                 .map(row -> row(row.toArray()))
                 .collect(toImmutableList());
-        assertEquals(expected.size(), 3);
+        assertThat(expected).hasSize(3);
         assertThat(onTrino().executeQuery(format("SELECT * FROM %s FOR VERSION AS OF %d", tableName, latestSnapshotId))).containsOnly(expected);
 
         onCompatibilityTestServer().executeQuery(format("DROP TABLE %s", tableName));

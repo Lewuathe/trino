@@ -14,7 +14,10 @@
 package io.trino.sql;
 
 import io.trino.sql.tree.Expression;
+import io.trino.sql.tree.GenericLiteral;
+import io.trino.sql.tree.Identifier;
 import io.trino.sql.tree.IntervalLiteral;
+import io.trino.sql.tree.StringLiteral;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
@@ -28,6 +31,62 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestExpressionFormatter
 {
+    @Test
+    public void testIdentifier()
+    {
+        assertFormattedExpression(
+                new Identifier("abc"),
+                "abc");
+        assertFormattedExpression(
+                new Identifier("with a space"),
+                "\"with a space\"");
+        assertFormattedExpression(
+                new Identifier("with \" quote, $ dollar and ' apostrophe"),
+                "\"with \"\" quote, $ dollar and ' apostrophe\"");
+    }
+
+    @Test
+    public void testStringLiteral()
+    {
+        assertFormattedExpression(
+                new StringLiteral("test"),
+                "'test'");
+        assertFormattedExpression(
+                new StringLiteral("攻殻機動隊"),
+                "'攻殻機動隊'");
+        assertFormattedExpression(
+                new StringLiteral("😂"),
+                "'😂'");
+    }
+
+    @Test
+    public void testCharLiteral()
+    {
+        assertFormattedExpression(
+                new GenericLiteral("CHAR", "test"),
+                "CHAR 'test'");
+        assertFormattedExpression(
+                new GenericLiteral("CHAR", "攻殻機動隊"),
+                "CHAR '攻殻機動隊'");
+        assertFormattedExpression(
+                new GenericLiteral("CHAR", "😂"),
+                "CHAR '😂'");
+    }
+
+    @Test
+    public void testGenericLiteral()
+    {
+        assertFormattedExpression(
+                new GenericLiteral("VARCHAR", "test"),
+                "VARCHAR 'test'");
+        assertFormattedExpression(
+                new GenericLiteral("VARCHAR", "攻殻機動隊"),
+                "VARCHAR '攻殻機動隊'");
+        assertFormattedExpression(
+                new GenericLiteral("VARCHAR", "😂"),
+                "VARCHAR '😂'");
+    }
+
     @Test
     public void testIntervalLiteral()
     {

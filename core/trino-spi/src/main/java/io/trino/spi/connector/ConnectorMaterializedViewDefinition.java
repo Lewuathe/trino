@@ -17,13 +17,13 @@ import io.trino.spi.type.TypeId;
 
 import java.time.Duration;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.StringJoiner;
 
 import static io.trino.spi.connector.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.joining;
 
 public class ConnectorMaterializedViewDefinition
 {
@@ -35,30 +35,7 @@ public class ConnectorMaterializedViewDefinition
     private final Optional<Duration> gracePeriod;
     private final Optional<String> comment;
     private final Optional<String> owner;
-    private final Map<String, Object> properties;
-
-    @Deprecated
-    public ConnectorMaterializedViewDefinition(
-            String originalSql,
-            Optional<CatalogSchemaTableName> storageTable,
-            Optional<String> catalog,
-            Optional<String> schema,
-            List<Column> columns,
-            Optional<String> comment,
-            Optional<String> owner,
-            Map<String, Object> properties)
-    {
-        this(
-                originalSql,
-                storageTable,
-                catalog,
-                schema,
-                columns,
-                Optional.of(Duration.ZERO),
-                comment,
-                owner,
-                properties);
-    }
+    private final List<CatalogSchemaName> path;
 
     public ConnectorMaterializedViewDefinition(
             String originalSql,
@@ -69,7 +46,7 @@ public class ConnectorMaterializedViewDefinition
             Optional<Duration> gracePeriod,
             Optional<String> comment,
             Optional<String> owner,
-            Map<String, Object> properties)
+            List<CatalogSchemaName> path)
     {
         this.originalSql = requireNonNull(originalSql, "originalSql is null");
         this.storageTable = requireNonNull(storageTable, "storageTable is null");
@@ -80,7 +57,7 @@ public class ConnectorMaterializedViewDefinition
         this.gracePeriod = gracePeriod;
         this.comment = requireNonNull(comment, "comment is null");
         this.owner = requireNonNull(owner, "owner is null");
-        this.properties = requireNonNull(properties, "properties are null");
+        this.path = List.copyOf(path);
 
         if (catalog.isEmpty() && schema.isPresent()) {
             throw new IllegalArgumentException("catalog must be present if schema is present");
@@ -130,9 +107,9 @@ public class ConnectorMaterializedViewDefinition
         return owner;
     }
 
-    public Map<String, Object> getProperties()
+    public List<CatalogSchemaName> getPath()
     {
-        return properties;
+        return path;
     }
 
     @Override
@@ -147,8 +124,8 @@ public class ConnectorMaterializedViewDefinition
         gracePeriod.ifPresent(value -> joiner.add("gracePeriod=" + gracePeriod));
         comment.ifPresent(value -> joiner.add("comment=" + value));
         joiner.add("owner=" + owner);
-        joiner.add("properties=" + properties);
-        return getClass().getSimpleName() + joiner.toString();
+        joiner.add(path.stream().map(CatalogSchemaName::toString).collect(joining(", ", "path=(", ")")));
+        return getClass().getSimpleName() + joiner;
     }
 
     @Override
@@ -169,24 +146,26 @@ public class ConnectorMaterializedViewDefinition
                 Objects.equals(gracePeriod, that.gracePeriod) &&
                 Objects.equals(comment, that.comment) &&
                 Objects.equals(owner, that.owner) &&
-                Objects.equals(properties, that.properties);
+                Objects.equals(path, that.path);
     }
 
     @Override
     public int hashCode()
     {
-        return Objects.hash(originalSql, storageTable, catalog, schema, columns, gracePeriod, comment, owner, properties);
+        return Objects.hash(originalSql, storageTable, catalog, schema, columns, gracePeriod, comment, owner, path);
     }
 
     public static final class Column
     {
         private final String name;
         private final TypeId type;
+        private final Optional<String> comment;
 
-        public Column(String name, TypeId type)
+        public Column(String name, TypeId type, Optional<String> comment)
         {
             this.name = requireNonNull(name, "name is null");
             this.type = requireNonNull(type, "type is null");
+            this.comment = requireNonNull(comment, "comment is null");
         }
 
         public String getName()
@@ -197,6 +176,11 @@ public class ConnectorMaterializedViewDefinition
         public TypeId getType()
         {
             return type;
+        }
+
+        public Optional<String> getComment()
+        {
+            return comment;
         }
 
         @Override
@@ -216,13 +200,14 @@ public class ConnectorMaterializedViewDefinition
             }
             Column column = (Column) o;
             return Objects.equals(name, column.name) &&
-                    Objects.equals(type, column.type);
+                    Objects.equals(type, column.type) &&
+                    Objects.equals(comment, column.comment);
         }
 
         @Override
         public int hashCode()
         {
-            return Objects.hash(name, type);
+            return Objects.hash(name, type, comment);
         }
     }
 }

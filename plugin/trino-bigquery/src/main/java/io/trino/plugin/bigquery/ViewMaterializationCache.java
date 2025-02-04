@@ -22,19 +22,18 @@ import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
 import com.google.common.cache.CacheBuilder;
+import com.google.inject.Inject;
 import io.airlift.log.Logger;
 import io.airlift.units.Duration;
-import io.trino.collect.cache.NonEvictableCache;
+import io.trino.cache.NonEvictableCache;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.TableNotFoundException;
-
-import javax.inject.Inject;
 
 import java.util.Optional;
 import java.util.function.Supplier;
 
-import static io.trino.collect.cache.CacheUtils.uncheckedCacheGet;
-import static io.trino.collect.cache.SafeCaches.buildNonEvictableCache;
+import static io.trino.cache.CacheUtils.uncheckedCacheGet;
+import static io.trino.cache.SafeCaches.buildNonEvictableCache;
 import static io.trino.plugin.bigquery.BigQueryUtil.convertToBigQueryException;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
@@ -45,6 +44,8 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 public class ViewMaterializationCache
 {
     private static final Logger log = Logger.get(ViewMaterializationCache.class);
+
+    public static final String TEMP_TABLE_PREFIX = "_pbc_";
 
     private final NonEvictableCache<String, TableInfo> destinationTableCache;
     private final Optional<String> viewMaterializationProject;
@@ -63,19 +64,19 @@ public class ViewMaterializationCache
 
     public TableInfo getCachedTable(BigQueryClient client, String query, Duration viewExpiration, TableInfo remoteTableId)
     {
-        return uncheckedCacheGet(destinationTableCache, query, new DestinationTableBuilder(client, viewExpiration, query, createDestinationTable(remoteTableId.getTableId())));
+        return uncheckedCacheGet(destinationTableCache, query, new DestinationTableBuilder(client, viewExpiration, query, buildDestinationTable(remoteTableId.getTableId())));
     }
 
-    private TableId createDestinationTable(TableId remoteTableId)
+    private TableId buildDestinationTable(TableId remoteTableId)
     {
         String project = viewMaterializationProject.orElseGet(remoteTableId::getProject);
         String dataset = viewMaterializationDataset.orElseGet(remoteTableId::getDataset);
 
-        String name = format("_pbc_%s", randomUUID().toString().toLowerCase(ENGLISH).replace("-", ""));
+        String name = format("%s%s", TEMP_TABLE_PREFIX, randomUUID().toString().toLowerCase(ENGLISH).replace("-", ""));
         return TableId.of(project, dataset, name);
     }
 
-    private static class DestinationTableBuilder
+    public static class DestinationTableBuilder
             implements Supplier<TableInfo>
     {
         private final BigQueryClient bigQueryClient;

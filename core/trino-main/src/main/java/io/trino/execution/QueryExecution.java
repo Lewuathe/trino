@@ -21,13 +21,16 @@ import io.trino.exchange.ExchangeInput;
 import io.trino.execution.QueryPreparer.PreparedQuery;
 import io.trino.execution.QueryTracker.TrackedQuery;
 import io.trino.execution.StateMachine.StateChangeListener;
+import io.trino.execution.querystats.PlanOptimizersStatsCollector;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.server.BasicQueryInfo;
+import io.trino.server.ResultQueryInfo;
 import io.trino.server.protocol.Slug;
 import io.trino.spi.type.Type;
 import io.trino.sql.planner.Plan;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.Queue;
 import java.util.function.Consumer;
 
@@ -48,11 +51,13 @@ public interface QueryExecution
 
     void resultsConsumed();
 
-    Plan getQueryPlan();
+    Optional<Plan> getQueryPlan();
 
     BasicQueryInfo getBasicQueryInfo();
 
     QueryInfo getQueryInfo();
+
+    ResultQueryInfo getResultQueryInfo();
 
     Slug getSlug();
 
@@ -83,7 +88,7 @@ public interface QueryExecution
 
     interface QueryExecutionFactory<T extends QueryExecution>
     {
-        T createQueryExecution(PreparedQuery preparedQuery, QueryStateMachine stateMachine, Slug slug, WarningCollector warningCollector);
+        T createQueryExecution(PreparedQuery preparedQuery, QueryStateMachine stateMachine, Slug slug, WarningCollector warningCollector, PlanOptimizersStatsCollector planOptimizersStatsCollector);
     }
 
     /**

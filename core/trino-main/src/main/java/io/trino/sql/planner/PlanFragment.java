@@ -16,16 +16,19 @@ package io.trino.sql.planner;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import io.trino.connector.CatalogProperties;
+import com.google.errorprone.annotations.Immutable;
 import io.trino.cost.StatsAndCosts;
+import io.trino.metadata.LanguageFunctionProvider.LanguageFunctionData;
+import io.trino.spi.catalog.CatalogProperties;
+import io.trino.spi.function.FunctionId;
 import io.trino.spi.type.Type;
 import io.trino.sql.planner.plan.PlanFragmentId;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.sql.planner.plan.RemoteSourceNode;
-
-import javax.annotation.concurrent.Immutable;
+import io.trino.sql.planner.plan.TableScanNode;
 
 import java.util.List;
 import java.util.Map;
@@ -42,7 +45,7 @@ public class PlanFragment
 {
     private final PlanFragmentId id;
     private final PlanNode root;
-    private final Map<Symbol, Type> symbols;
+    private final Set<Symbol> symbols;
     private final PartitioningHandle partitioning;
     private final Optional<Integer> partitionCount;
     private final List<PlanNodeId> partitionedSources;
@@ -53,13 +56,15 @@ public class PlanFragment
     private final PartitioningScheme outputPartitioningScheme;
     private final StatsAndCosts statsAndCosts;
     private final List<CatalogProperties> activeCatalogs;
+    private final Map<FunctionId, LanguageFunctionData> languageFunctions;
     private final Optional<String> jsonRepresentation;
+    private final boolean containsTableScanNode;
 
     // Only for creating instances without the JSON representation embedded
     private PlanFragment(
             PlanFragmentId id,
             PlanNode root,
-            Map<Symbol, Type> symbols,
+            Set<Symbol> symbols,
             PartitioningHandle partitioning,
             Optional<Integer> partitionCount,
             List<PlanNodeId> partitionedSources,
@@ -69,7 +74,8 @@ public class PlanFragment
             List<RemoteSourceNode> remoteSourceNodes,
             PartitioningScheme outputPartitioningScheme,
             StatsAndCosts statsAndCosts,
-            List<CatalogProperties> activeCatalogs)
+            List<CatalogProperties> activeCatalogs,
+            Map<FunctionId, LanguageFunctionData> languageFunctions)
     {
         this.id = requireNonNull(id, "id is null");
         this.root = requireNonNull(root, "root is null");
@@ -84,20 +90,23 @@ public class PlanFragment
         this.outputPartitioningScheme = requireNonNull(outputPartitioningScheme, "outputPartitioningScheme is null");
         this.statsAndCosts = requireNonNull(statsAndCosts, "statsAndCosts is null");
         this.activeCatalogs = requireNonNull(activeCatalogs, "activeCatalogs is null");
+        this.languageFunctions = ImmutableMap.copyOf(languageFunctions);
         this.jsonRepresentation = Optional.empty();
+        this.containsTableScanNode = partitionedSourceNodes.stream().anyMatch(TableScanNode.class::isInstance);
     }
 
     @JsonCreator
     public PlanFragment(
             @JsonProperty("id") PlanFragmentId id,
             @JsonProperty("root") PlanNode root,
-            @JsonProperty("symbols") Map<Symbol, Type> symbols,
+            @JsonProperty("symbols") Set<Symbol> symbols,
             @JsonProperty("partitioning") PartitioningHandle partitioning,
             @JsonProperty("partitionCount") Optional<Integer> partitionCount,
             @JsonProperty("partitionedSources") List<PlanNodeId> partitionedSources,
             @JsonProperty("outputPartitioningScheme") PartitioningScheme outputPartitioningScheme,
             @JsonProperty("statsAndCosts") StatsAndCosts statsAndCosts,
             @JsonProperty("activeCatalogs") List<CatalogProperties> activeCatalogs,
+            @JsonProperty("languageFunctions") Map<FunctionId, LanguageFunctionData> languageFunctions,
             @JsonProperty("jsonRepresentation") Optional<String> jsonRepresentation)
     {
         this.id = requireNonNull(id, "id is null");
@@ -109,6 +118,7 @@ public class PlanFragment
         this.partitionedSourcesSet = ImmutableSet.copyOf(partitionedSources);
         this.statsAndCosts = requireNonNull(statsAndCosts, "statsAndCosts is null");
         this.activeCatalogs = requireNonNull(activeCatalogs, "activeCatalogs is null");
+        this.languageFunctions = ImmutableMap.copyOf(languageFunctions);
         this.jsonRepresentation = requireNonNull(jsonRepresentation, "jsonRepresentation is null");
 
         checkArgument(
@@ -120,7 +130,7 @@ public class PlanFragment
                 "Root node outputs (%s) does not include all fragment outputs (%s)", root.getOutputSymbols(), outputPartitioningScheme.getOutputLayout());
 
         types = outputPartitioningScheme.getOutputLayout().stream()
-                .map(symbols::get)
+                .map(Symbol::type)
                 .collect(toImmutableList());
 
         this.partitionedSourceNodes = findSources(root, partitionedSources);
@@ -130,6 +140,7 @@ public class PlanFragment
         this.remoteSourceNodes = remoteSourceNodes.build();
 
         this.outputPartitioningScheme = requireNonNull(outputPartitioningScheme, "partitioningScheme is null");
+        this.containsTableScanNode = partitionedSourceNodes.stream().anyMatch(TableScanNode.class::isInstance);
     }
 
     @JsonProperty
@@ -145,7 +156,7 @@ public class PlanFragment
     }
 
     @JsonProperty
-    public Map<Symbol, Type> getSymbols()
+    public Set<Symbol> getSymbols()
     {
         return symbols;
     }
@@ -192,6 +203,12 @@ public class PlanFragment
     }
 
     @JsonProperty
+    public Map<FunctionId, LanguageFunctionData> getLanguageFunctions()
+    {
+        return languageFunctions;
+    }
+
+    @JsonProperty
     public Optional<String> getJsonRepresentation()
     {
         // @reviewer: I believe this should be a json raw value, but that would make this class have a different deserialization constructor.
@@ -217,7 +234,8 @@ public class PlanFragment
                 this.remoteSourceNodes,
                 this.outputPartitioningScheme,
                 this.statsAndCosts,
-                this.activeCatalogs);
+                this.activeCatalogs,
+                this.languageFunctions);
     }
 
     public List<Type> getTypes()
@@ -271,7 +289,18 @@ public class PlanFragment
 
     public PlanFragment withBucketToPartition(Optional<int[]> bucketToPartition)
     {
-        return new PlanFragment(id, root, symbols, partitioning, partitionCount, partitionedSources, outputPartitioningScheme.withBucketToPartition(bucketToPartition), statsAndCosts, activeCatalogs, jsonRepresentation);
+        return new PlanFragment(
+                id,
+                root,
+                symbols,
+                partitioning,
+                partitionCount,
+                partitionedSources,
+                outputPartitioningScheme.withBucketToPartition(bucketToPartition),
+                statsAndCosts,
+                activeCatalogs,
+                languageFunctions,
+                jsonRepresentation);
     }
 
     @Override
@@ -284,5 +313,26 @@ public class PlanFragment
                 .add("partitionedSource", partitionedSources)
                 .add("outputPartitioningScheme", outputPartitioningScheme)
                 .toString();
+    }
+
+    public PlanFragment withActiveCatalogs(List<CatalogProperties> activeCatalogs)
+    {
+        return new PlanFragment(
+                this.id,
+                this.root,
+                this.symbols,
+                this.partitioning,
+                this.partitionCount,
+                this.partitionedSources,
+                this.outputPartitioningScheme,
+                this.statsAndCosts,
+                activeCatalogs,
+                this.languageFunctions,
+                this.jsonRepresentation);
+    }
+
+    public boolean containsTableScanNode()
+    {
+        return containsTableScanNode;
     }
 }

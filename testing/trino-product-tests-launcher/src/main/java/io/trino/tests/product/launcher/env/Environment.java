@@ -46,8 +46,6 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.io.UncheckedIOException;
-import java.io.UnsupportedEncodingException;
-import java.nio.charset.Charset;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collection;
@@ -60,6 +58,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkState;
@@ -73,12 +72,17 @@ import static io.trino.tests.product.launcher.env.DockerContainer.ensurePathExis
 import static io.trino.tests.product.launcher.env.EnvironmentContainers.COORDINATOR;
 import static io.trino.tests.product.launcher.env.EnvironmentContainers.TESTS;
 import static io.trino.tests.product.launcher.env.EnvironmentContainers.isTrinoContainer;
+import static io.trino.tests.product.launcher.env.EnvironmentListener.compose;
+import static io.trino.tests.product.launcher.env.EnvironmentListener.printStartupLogs;
 import static io.trino.tests.product.launcher.env.Environments.pruneEnvironment;
 import static io.trino.tests.product.launcher.env.common.Standard.CONTAINER_TRINO_ETC;
 import static java.lang.String.format;
+import static java.lang.System.getenv;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.time.Duration.ofMinutes;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newCachedThreadPool;
+import static java.util.function.UnaryOperator.identity;
 import static org.testcontainers.utility.MountableFile.forHostPath;
 
 public final class Environment
@@ -97,22 +101,26 @@ public final class Environment
     private final String name;
     private final int startupRetries;
     private final Map<String, DockerContainer> containers;
-    private final Optional<EnvironmentListener> listener;
+    private final EnvironmentListener listener;
     private final boolean attached;
+    private final boolean ipv6;
     private final Map<String, List<String>> configuredFeatures;
 
     private Environment(
             String name,
             int startupRetries,
             Map<String, DockerContainer> containers,
-            Optional<EnvironmentListener> listener,
+            EnvironmentListener listener,
             boolean attached,
-            Map<String, List<String>> configuredFeatures)
+            boolean ipv6,
+            Map<String, List<String>> configuredFeatures,
+            List<Supplier<String>> startupLogs)
     {
         this.name = requireNonNull(name, "name is null");
         this.startupRetries = startupRetries;
         this.containers = requireNonNull(containers, "containers is null");
-        this.listener = requireNonNull(listener, "listener is null");
+        this.ipv6 = ipv6;
+        this.listener = compose(requireNonNull(listener, "listener is null"), printStartupLogs(startupLogs));
         this.attached = attached;
         this.configuredFeatures = requireNonNull(configuredFeatures, "configuredFeatures is null");
     }
@@ -124,13 +132,19 @@ public final class Environment
                 .onFailedAttempt(event -> log.warn(event.getLastException(), "Could not start environment '%s'", this))
                 .onRetry(event -> log.info("Trying to start environment '%s', %d failed attempt(s)", this, event.getAttemptCount() + 1))
                 .onSuccess(event -> log.info("Environment '%s' started in %s, %d attempt(s)", this, event.getElapsedTime(), event.getAttemptCount()))
-                .onFailure(event -> log.info("Environment '%s' failed to start in attempt(s): %d: %s", this, event.getAttemptCount(), event.getException()))
+                .onFailure(event -> {
+                    if (getenv("GITHUB_RUN_ID") != null) {
+                        PrintStream out = new PrintStream(new FileOutputStream(FileDescriptor.out));
+                        out.printf("::error title=Failed to start environment '%s'::%s%n", this, event.getException());
+                    }
+                    log.info("Environment '%s' failed to start in attempt(s): %d: %s", this, event.getAttemptCount(), event.getException());
+                })
                 .build();
 
         return Failsafe
                 .with(retryPolicy)
                 .with(executorService)
-                .get(this::tryStart);
+                .get(() -> tryStart());
     }
 
     private Environment tryStart()
@@ -148,7 +162,7 @@ public final class Environment
         }
 
         // Create new network when environment tries to start
-        try (Network network = createNetwork(name)) {
+        try (Network network = createNetwork(name, ipv6)) {
             attachNetwork(containers, network);
             Startables.deepStart(containers).get();
 
@@ -167,9 +181,9 @@ public final class Environment
             log.info("Started environment %s with containers:\n%s", name, table.render());
 
             // After deepStart all containers should be running and healthy
-            checkState(allContainersHealthy(containers), "Not all containers are running or healthy");
+            checkState(allContainersHealthy(containers), format("The containers %s are not running or healthy", unhealthyContainers(containers)));
 
-            this.listener.ifPresent(listener -> listener.environmentStarted(this));
+            listener.environmentStarted(this);
             return this;
         }
         catch (InterruptedException e) {
@@ -184,7 +198,7 @@ public final class Environment
     public void stop()
     {
         checkState(!attached, "Cannot stop environment that is attached");
-        this.listener.ifPresent(listener -> listener.environmentStopping(this));
+        listener.environmentStopping(this);
 
         // Allow containers to take up to 5 minutes to stop
         Timeout<Object> timeout = Timeout.builder(ofMinutes(5))
@@ -204,7 +218,7 @@ public final class Environment
                 .filter(DockerContainer::isRunning)
                 .forEach(container -> executor.run(container::tryStop));
 
-        this.listener.ifPresent(listener -> listener.environmentStopped(this));
+        listener.environmentStopped(this);
         pruneEnvironment();
     }
 
@@ -303,9 +317,9 @@ public final class Environment
                 .collect(toImmutableList());
     }
 
-    public static Builder builder(String name)
+    public static Builder builder(String name, PrintStream printStream)
     {
-        return new Builder(name);
+        return new Builder(name, printStream);
     }
 
     @Override
@@ -328,6 +342,13 @@ public final class Environment
     {
         return Streams.stream(containers)
                 .allMatch(Environment::containerIsHealthy);
+    }
+
+    private static List<DockerContainer> unhealthyContainers(Iterable<DockerContainer> containers)
+    {
+        return Streams.stream(containers)
+                .filter(Environment::containerIsHealthy)
+                .toList();
     }
 
     private static boolean containerIsHealthy(DockerContainer container)
@@ -354,12 +375,13 @@ public final class Environment
         values.forEach(container -> container.withNetwork(network));
     }
 
-    private static Network createNetwork(String environmentName)
+    private static Network createNetwork(String environmentName, boolean ipv6)
     {
         Network network = Network.builder()
                 .createNetworkCmdModifier(createNetworkCmd ->
                         createNetworkCmd
                                 .withName(PRODUCT_TEST_LAUNCHER_NETWORK)
+                                .withEnableIpv6(ipv6)
                                 .withLabels(ImmutableMap.of(
                                         PRODUCT_TEST_LAUNCHER_STARTED_LABEL_NAME, PRODUCT_TEST_LAUNCHER_STARTED_LABEL_VALUE,
                                         PRODUCT_TEST_LAUNCHER_ENVIRONMENT_LABEL_NAME, environmentName)))
@@ -371,16 +393,22 @@ public final class Environment
     public static class Builder
     {
         private final String name;
+        private final Map<String, DockerContainer> containers = new HashMap<>();
+        private final PrintStream printStream;
+        private final Multimap<String, String> configuredFeatures = HashMultimap.create();
+        private final ImmutableList.Builder<Supplier<String>> startupLogs = ImmutableList.builder();
+        private Function<String, String> logTransformer = Function.identity();
+
         private DockerContainer.OutputMode outputMode;
         private int startupRetries = 1;
-        private Map<String, DockerContainer> containers = new HashMap<>();
         private Optional<Path> logsBaseDir = Optional.empty();
         private boolean attached;
-        private Multimap<String, String> configuredFeatures = HashMultimap.create();
+        private boolean ipv6;
 
-        public Builder(String name)
+        public Builder(String name, PrintStream printStream)
         {
             this.name = requireNonNull(name, "name is null");
+            this.printStream = requireNonNull(printStream, "printStream is null");
         }
 
         public String getEnvironmentName()
@@ -484,6 +512,18 @@ public final class Environment
             return this;
         }
 
+        public Builder addStartupLogs(Supplier<String> line)
+        {
+            startupLogs.add(line);
+            return this;
+        }
+
+        public Builder addLogsTransformer(Function<String, String> transformer)
+        {
+            logTransformer = logTransformer.compose(transformer);
+            return this;
+        }
+
         private static void updateContainerHostConfig(CreateContainerCmd createContainerCmd)
         {
             HostConfig hostConfig = requireNonNull(createContainerCmd.getHostConfig(), "hostConfig is null");
@@ -566,42 +606,34 @@ public final class Environment
 
         public Environment build()
         {
-            return build(Optional.empty());
+            return build(EnvironmentListener.NOOP);
         }
 
         public Environment build(EnvironmentListener listener)
         {
-            return build(Optional.of(listener));
-        }
+            requireNonNull(listener, "listener is null");
 
-        private Environment build(Optional<EnvironmentListener> listener)
-        {
             switch (outputMode) {
-                case DISCARD:
+                case DISCARD -> {
                     log.warn("Containers logs are not printed to stdout");
-                    setContainerOutputConsumer(Environment.Builder::discardContainerLogs);
-                    break;
-
-                case PRINT:
-                    setContainerOutputConsumer(Environment.Builder::printContainerLogs);
-                    break;
-
-                case PRINT_WRITE:
+                    setContainerOutputConsumer(identity(), Builder::discardContainerLogs);
+                }
+                case PRINT -> setContainerOutputConsumer(logTransformer, frame -> printContainerLogs(printStream, frame));
+                case PRINT_WRITE -> {
                     verify(logsBaseDir.isPresent(), "--logs-dir must be set with --output WRITE");
-
-                    setContainerOutputConsumer(container -> combineConsumers(
+                    setContainerOutputConsumer(logTransformer, container -> combineConsumers(
                             writeContainerLogs(container, logsBaseDir.get()),
-                            printContainerLogs(container)));
-                    break;
-
-                case WRITE:
+                            printContainerLogs(printStream, container)));
+                }
+                case WRITE -> {
                     verify(logsBaseDir.isPresent(), "--logs-dir must be set with --output WRITE");
-                    setContainerOutputConsumer(container -> writeContainerLogs(container, logsBaseDir.get()));
+                    setContainerOutputConsumer(logTransformer, container -> writeContainerLogs(container, logsBaseDir.get()));
+                }
             }
 
             containers.forEach((name, container) -> {
                 container
-                        .withEnvironmentListener(listener)
+                        .addContainerListener(listener)
                         .withCreateContainerCmdModifier(createContainerCmd -> {
                             Map<String, Bind> binds = new HashMap<>();
                             HostConfig hostConfig = createContainerCmd.getHostConfig();
@@ -622,13 +654,15 @@ public final class Environment
                     containers,
                     listener,
                     attached,
-                    configuredFeatures);
+                    ipv6,
+                    configuredFeatures,
+                    startupLogs.build());
         }
 
         private static Consumer<OutputFrame> writeContainerLogs(DockerContainer container, Path path)
         {
             Path containerLogFile = path.resolve(container.getLogicalName() + "/container.log");
-            log.info("Writing container %s logs to %s", container, containerLogFile);
+            log.debug("Writing container %s logs to %s", container, containerLogFile);
 
             try {
                 ensurePathExists(containerLogFile.getParent());
@@ -639,17 +673,9 @@ public final class Environment
             }
         }
 
-        private static Consumer<OutputFrame> printContainerLogs(DockerContainer container)
+        private static Consumer<OutputFrame> printContainerLogs(PrintStream output, DockerContainer container)
         {
-            try {
-                // write directly to System.out, bypassing logging & io.airlift.log.Logging#rewireStdStreams
-                //noinspection resource
-                PrintStream out = new PrintStream(new FileOutputStream(FileDescriptor.out), true, Charset.defaultCharset().name());
-                return new PrintingLogConsumer(out, format("%-20s| ", container.getLogicalName()));
-            }
-            catch (UnsupportedEncodingException e) {
-                throw new RuntimeException(e);
-            }
+            return new PrintingLogConsumer(output, format("%-20s| ", container.getLogicalName()));
         }
 
         private static Consumer<OutputFrame> discardContainerLogs(DockerContainer container)
@@ -672,7 +698,7 @@ public final class Environment
                 tempFile = File.createTempFile("tempto-configured-features-", ".yaml");
                 objectMapper.writeValue(tempFile,
                         Map.of("databases",
-                                Map.of("presto",
+                                Map.of("trino",
                                         Map.of(
                                                 "configured_connectors",
                                                 configuredFeatures.asMap().getOrDefault(CONNECTOR, ImmutableList.of()),
@@ -682,7 +708,7 @@ public final class Environment
             catch (IOException e) {
                 throw new RuntimeException(e);
             }
-            String temptoConfig = "/docker/presto-product-tests/conf/tempto/tempto-configured-features.yaml";
+            String temptoConfig = "/docker/trino-product-tests/conf/tempto/tempto-configured-features.yaml";
             testContainer.withCopyFileToContainer(forHostPath(tempFile.getPath()), temptoConfig);
             // add custom tempto config and configured_features to arguments if there are any other groups enabled
             String[] commandParts = testContainer.getCommandParts();
@@ -699,9 +725,12 @@ public final class Environment
             return outputFrame -> Arrays.stream(consumers).forEach(consumer -> consumer.accept(outputFrame));
         }
 
-        private void setContainerOutputConsumer(Function<DockerContainer, Consumer<OutputFrame>> consumer)
+        private void setContainerOutputConsumer(Function<String, String> logTransformer, Function<DockerContainer, Consumer<OutputFrame>> consumer)
         {
-            configureContainers(container -> container.withLogConsumer(consumer.apply(container)));
+            configureContainers(container -> container.withLogConsumer(frame -> {
+                String line = logTransformer.apply(frame.getUtf8StringWithoutLineEnding());
+                consumer.apply(container).accept(new OutputFrame(frame.getType(), line.getBytes(UTF_8)));
+            }));
         }
 
         public Builder setLogsBaseDir(Optional<Path> baseDir)
@@ -713,6 +742,12 @@ public final class Environment
         public Builder setAttached(boolean attached)
         {
             this.attached = attached;
+            return this;
+        }
+
+        public Builder setIpv6(boolean ipv6)
+        {
+            this.ipv6 = ipv6;
             return this;
         }
     }

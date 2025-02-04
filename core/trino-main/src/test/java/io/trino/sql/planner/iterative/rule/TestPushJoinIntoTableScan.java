@@ -19,7 +19,9 @@ import io.trino.Session;
 import io.trino.connector.MockConnectorColumnHandle;
 import io.trino.connector.MockConnectorFactory;
 import io.trino.connector.MockConnectorTableHandle;
+import io.trino.metadata.ResolvedFunction;
 import io.trino.metadata.TableHandle;
+import io.trino.metadata.TestingFunctionResolution;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
@@ -30,26 +32,27 @@ import io.trino.spi.connector.JoinCondition;
 import io.trino.spi.connector.JoinType;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.expression.Call;
-import io.trino.spi.expression.Constant;
 import io.trino.spi.expression.Variable;
+import io.trino.spi.function.OperatorType;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.NullableValue;
 import io.trino.spi.predicate.TupleDomain;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Constant;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.RuleTester;
 import io.trino.sql.planner.plan.JoinNode;
 import io.trino.sql.planner.plan.TableScanNode;
-import io.trino.sql.tree.ArithmeticBinaryExpression;
-import io.trino.sql.tree.ComparisonExpression;
-import io.trino.sql.tree.GenericLiteral;
-import org.assertj.core.api.Assertions;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Predicate;
+import java.util.stream.Stream;
 
 import static com.google.common.base.Predicates.equalTo;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -59,10 +62,10 @@ import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.tableScan;
-import static io.trino.sql.planner.plan.JoinNode.Type.FULL;
-import static io.trino.sql.planner.plan.JoinNode.Type.INNER;
-import static io.trino.sql.planner.plan.JoinNode.Type.LEFT;
-import static io.trino.sql.planner.plan.JoinNode.Type.RIGHT;
+import static io.trino.sql.planner.plan.JoinType.FULL;
+import static io.trino.sql.planner.plan.JoinType.INNER;
+import static io.trino.sql.planner.plan.JoinType.LEFT;
+import static io.trino.sql.planner.plan.JoinType.RIGHT;
 import static io.trino.testing.TestingHandles.TEST_CATALOG_HANDLE;
 import static io.trino.testing.TestingHandles.TEST_CATALOG_NAME;
 import static io.trino.testing.TestingHandles.createTestCatalogHandle;
@@ -72,6 +75,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class TestPushJoinIntoTableScan
 {
+    private static final TestingFunctionResolution FUNCTIONS = new TestingFunctionResolution();
+    private static final ResolvedFunction MULTIPLY_BIGINT = FUNCTIONS.resolveOperator(OperatorType.MULTIPLY, ImmutableList.of(BIGINT, BIGINT));
+
     private static final String SCHEMA = "test_schema";
     private static final String TABLE_A = "test_table_a";
     private static final String TABLE_B = "test_table_b";
@@ -126,15 +132,16 @@ public class TestPushJoinIntoTableScan
             .map(entry -> new ColumnMetadata(((MockConnectorColumnHandle) entry.getValue()).getName(), ((MockConnectorColumnHandle) entry.getValue()).getType()))
             .collect(toImmutableList());
 
-    @Test(dataProvider = "testPushJoinIntoTableScanParams")
-    public void testPushJoinIntoTableScan(JoinNode.Type joinType, Optional<ComparisonExpression.Operator> filterComparisonOperator)
+    @ParameterizedTest
+    @MethodSource("testPushJoinIntoTableScanParams")
+    public void testPushJoinIntoTableScan(io.trino.sql.planner.plan.JoinType joinType, Optional<Comparison.Operator> filterComparisonOperator)
     {
         MockConnectorFactory connectorFactory = createMockConnectorFactory((session, applyJoinType, left, right, joinConditions, leftAssignments, rightAssignments) -> {
             assertThat(((MockConnectorTableHandle) left).getTableName()).isEqualTo(TABLE_A_SCHEMA_TABLE_NAME);
             assertThat(((MockConnectorTableHandle) right).getTableName()).isEqualTo(TABLE_B_SCHEMA_TABLE_NAME);
-            Assertions.assertThat(applyJoinType).isEqualTo(toSpiJoinType(joinType));
+            assertThat(applyJoinType).isEqualTo(toSpiJoinType(joinType));
             JoinCondition.Operator expectedOperator = filterComparisonOperator.map(this::getConditionOperator).orElse(JoinCondition.Operator.EQUAL);
-            Assertions.assertThat(joinConditions).containsExactly(new JoinCondition(expectedOperator, COLUMN_A1_VARIABLE, COLUMN_B1_VARIABLE));
+            assertThat(joinConditions).containsExactly(new JoinCondition(expectedOperator, COLUMN_A1_VARIABLE, COLUMN_B1_VARIABLE));
 
             return Optional.of(new JoinApplicationResult<>(
                     JOIN_CONNECTOR_TABLE_HANDLE,
@@ -143,7 +150,8 @@ public class TestPushJoinIntoTableScan
                     false));
         });
         try (RuleTester ruleTester = RuleTester.builder().withDefaultCatalogConnectorFactory(connectorFactory).build()) {
-            ruleTester.assertThat(new PushJoinIntoTableScan(ruleTester.getPlannerContext(), ruleTester.getTypeAnalyzer()))
+            ruleTester.assertThat(new PushJoinIntoTableScan(ruleTester.getPlannerContext()))
+                    .withSession(MOCK_SESSION)
                     .on(p -> {
                         Symbol columnA1Symbol = p.symbol(COLUMN_A1);
                         Symbol columnA2Symbol = p.symbol(COLUMN_A2);
@@ -170,55 +178,52 @@ public class TestPushJoinIntoTableScan
                                 joinType,
                                 left,
                                 right,
-                                new ComparisonExpression(filterComparisonOperator.get(), columnA1Symbol.toSymbolReference(), columnB1Symbol.toSymbolReference()));
+                                new Comparison(filterComparisonOperator.get(), columnA1Symbol.toSymbolReference(), columnB1Symbol.toSymbolReference()));
                     })
-                    .withSession(MOCK_SESSION)
                     .matches(
                             project(
                                     tableScan(JOIN_PUSHDOWN_SCHEMA_TABLE_NAME.getTableName())));
         }
     }
 
-    @DataProvider
-    public static Object[][] testPushJoinIntoTableScanParams()
+    public static Stream<Arguments> testPushJoinIntoTableScanParams()
     {
-        return new Object[][] {
-                {INNER, Optional.empty()},
-                {INNER, Optional.of(ComparisonExpression.Operator.EQUAL)},
-                {INNER, Optional.of(ComparisonExpression.Operator.LESS_THAN)},
-                {INNER, Optional.of(ComparisonExpression.Operator.LESS_THAN_OR_EQUAL)},
-                {INNER, Optional.of(ComparisonExpression.Operator.GREATER_THAN)},
-                {INNER, Optional.of(ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL)},
-                {INNER, Optional.of(ComparisonExpression.Operator.NOT_EQUAL)},
-                {INNER, Optional.of(ComparisonExpression.Operator.IS_DISTINCT_FROM)},
+        return Stream.of(
+                Arguments.of(INNER, Optional.empty()),
+                Arguments.of(INNER, Optional.of(Comparison.Operator.EQUAL)),
+                Arguments.of(INNER, Optional.of(Comparison.Operator.LESS_THAN)),
+                Arguments.of(INNER, Optional.of(Comparison.Operator.LESS_THAN_OR_EQUAL)),
+                Arguments.of(INNER, Optional.of(Comparison.Operator.GREATER_THAN)),
+                Arguments.of(INNER, Optional.of(Comparison.Operator.GREATER_THAN_OR_EQUAL)),
+                Arguments.of(INNER, Optional.of(Comparison.Operator.NOT_EQUAL)),
+                Arguments.of(INNER, Optional.of(Comparison.Operator.IDENTICAL)),
 
-                {JoinNode.Type.LEFT, Optional.empty()},
-                {JoinNode.Type.LEFT, Optional.of(ComparisonExpression.Operator.EQUAL)},
-                {JoinNode.Type.LEFT, Optional.of(ComparisonExpression.Operator.LESS_THAN)},
-                {JoinNode.Type.LEFT, Optional.of(ComparisonExpression.Operator.LESS_THAN_OR_EQUAL)},
-                {JoinNode.Type.LEFT, Optional.of(ComparisonExpression.Operator.GREATER_THAN)},
-                {JoinNode.Type.LEFT, Optional.of(ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL)},
-                {JoinNode.Type.LEFT, Optional.of(ComparisonExpression.Operator.NOT_EQUAL)},
-                {JoinNode.Type.LEFT, Optional.of(ComparisonExpression.Operator.IS_DISTINCT_FROM)},
+                Arguments.of(io.trino.sql.planner.plan.JoinType.LEFT, Optional.empty()),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.LEFT, Optional.of(Comparison.Operator.EQUAL)),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.LEFT, Optional.of(Comparison.Operator.LESS_THAN)),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.LEFT, Optional.of(Comparison.Operator.LESS_THAN_OR_EQUAL)),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.LEFT, Optional.of(Comparison.Operator.GREATER_THAN)),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.LEFT, Optional.of(Comparison.Operator.GREATER_THAN_OR_EQUAL)),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.LEFT, Optional.of(Comparison.Operator.NOT_EQUAL)),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.LEFT, Optional.of(Comparison.Operator.IDENTICAL)),
 
-                {JoinNode.Type.RIGHT, Optional.empty()},
-                {JoinNode.Type.RIGHT, Optional.of(ComparisonExpression.Operator.EQUAL)},
-                {JoinNode.Type.RIGHT, Optional.of(ComparisonExpression.Operator.LESS_THAN)},
-                {JoinNode.Type.RIGHT, Optional.of(ComparisonExpression.Operator.LESS_THAN_OR_EQUAL)},
-                {JoinNode.Type.RIGHT, Optional.of(ComparisonExpression.Operator.GREATER_THAN)},
-                {JoinNode.Type.RIGHT, Optional.of(ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL)},
-                {JoinNode.Type.RIGHT, Optional.of(ComparisonExpression.Operator.NOT_EQUAL)},
-                {JoinNode.Type.RIGHT, Optional.of(ComparisonExpression.Operator.IS_DISTINCT_FROM)},
+                Arguments.of(io.trino.sql.planner.plan.JoinType.RIGHT, Optional.empty()),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.RIGHT, Optional.of(Comparison.Operator.EQUAL)),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.RIGHT, Optional.of(Comparison.Operator.LESS_THAN)),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.RIGHT, Optional.of(Comparison.Operator.LESS_THAN_OR_EQUAL)),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.RIGHT, Optional.of(Comparison.Operator.GREATER_THAN)),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.RIGHT, Optional.of(Comparison.Operator.GREATER_THAN_OR_EQUAL)),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.RIGHT, Optional.of(Comparison.Operator.NOT_EQUAL)),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.RIGHT, Optional.of(Comparison.Operator.IDENTICAL)),
 
-                {JoinNode.Type.FULL, Optional.empty()},
-                {JoinNode.Type.FULL, Optional.of(ComparisonExpression.Operator.EQUAL)},
-                {JoinNode.Type.FULL, Optional.of(ComparisonExpression.Operator.LESS_THAN)},
-                {JoinNode.Type.FULL, Optional.of(ComparisonExpression.Operator.LESS_THAN_OR_EQUAL)},
-                {JoinNode.Type.FULL, Optional.of(ComparisonExpression.Operator.GREATER_THAN)},
-                {JoinNode.Type.FULL, Optional.of(ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL)},
-                {JoinNode.Type.FULL, Optional.of(ComparisonExpression.Operator.NOT_EQUAL)},
-                {JoinNode.Type.FULL, Optional.of(ComparisonExpression.Operator.IS_DISTINCT_FROM)},
-        };
+                Arguments.of(io.trino.sql.planner.plan.JoinType.FULL, Optional.empty()),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.FULL, Optional.of(Comparison.Operator.EQUAL)),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.FULL, Optional.of(Comparison.Operator.LESS_THAN)),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.FULL, Optional.of(Comparison.Operator.LESS_THAN_OR_EQUAL)),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.FULL, Optional.of(Comparison.Operator.GREATER_THAN)),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.FULL, Optional.of(Comparison.Operator.GREATER_THAN_OR_EQUAL)),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.FULL, Optional.of(Comparison.Operator.NOT_EQUAL)),
+                Arguments.of(io.trino.sql.planner.plan.JoinType.FULL, Optional.of(Comparison.Operator.IDENTICAL)));
     }
 
     /**
@@ -237,7 +242,7 @@ public class TestPushJoinIntoTableScan
                                                     BIGINT,
                                                     MULTIPLY_FUNCTION_NAME,
                                                     List.of(
-                                                            new Constant(44L, BIGINT),
+                                                            new io.trino.spi.expression.Constant(44L, BIGINT),
                                                             new Variable("columna1", BIGINT))),
                                             new Variable("columnb1", BIGINT))));
                     return Optional.of(new JoinApplicationResult<>(
@@ -247,7 +252,8 @@ public class TestPushJoinIntoTableScan
                             false));
                 });
         try (RuleTester ruleTester = RuleTester.builder().withDefaultCatalogConnectorFactory(connectorFactory).build()) {
-            ruleTester.assertThat(new PushJoinIntoTableScan(ruleTester.getPlannerContext(), ruleTester.getTypeAnalyzer()))
+            ruleTester.assertThat(new PushJoinIntoTableScan(ruleTester.getPlannerContext()))
+                    .withSession(MOCK_SESSION)
                     .on(p -> {
                         Symbol columnA1Symbol = p.symbol(COLUMN_A1);
                         Symbol columnA2Symbol = p.symbol(COLUMN_A2);
@@ -267,12 +273,11 @@ public class TestPushJoinIntoTableScan
                                 INNER,
                                 left,
                                 right,
-                                new ComparisonExpression(
-                                        ComparisonExpression.Operator.GREATER_THAN,
-                                        new ArithmeticBinaryExpression(ArithmeticBinaryExpression.Operator.MULTIPLY, new GenericLiteral("BIGINT", "44"), columnA1Symbol.toSymbolReference()),
+                                new Comparison(
+                                        Comparison.Operator.GREATER_THAN,
+                                        new io.trino.sql.ir.Call(MULTIPLY_BIGINT, ImmutableList.of(new Constant(BIGINT, 44L), columnA1Symbol.toSymbolReference())),
                                         columnB1Symbol.toSymbolReference()));
                     })
-                    .withSession(MOCK_SESSION)
                     .matches(
                             project(
                                     tableScan(JOIN_PUSHDOWN_SCHEMA_TABLE_NAME.getTableName())));
@@ -287,10 +292,11 @@ public class TestPushJoinIntoTableScan
                     throw new IllegalStateException("applyJoin should not be called!");
                 });
         try (RuleTester ruleTester = RuleTester.builder().withDefaultCatalogConnectorFactory(connectorFactory).build()) {
-            ruleTester.getQueryRunner().createCatalog("another_catalog", "mock", ImmutableMap.of());
+            ruleTester.getPlanTester().createCatalog("another_catalog", "mock", ImmutableMap.of());
             TableHandle tableBHandleAnotherCatalog = createTableHandle(new MockConnectorTableHandle(new SchemaTableName(SCHEMA, TABLE_B)), createTestCatalogHandle("another_catalog"));
 
-            ruleTester.assertThat(new PushJoinIntoTableScan(ruleTester.getPlannerContext(), ruleTester.getTypeAnalyzer()))
+            ruleTester.assertThat(new PushJoinIntoTableScan(ruleTester.getPlannerContext()))
+                    .withSession(MOCK_SESSION)
                     .on(p -> {
                         Symbol columnA1Symbol = p.symbol(COLUMN_A1);
                         Symbol columnA2Symbol = p.symbol(COLUMN_A2);
@@ -312,7 +318,6 @@ public class TestPushJoinIntoTableScan
                                 right,
                                 new JoinNode.EquiJoinClause(columnA1Symbol, columnB1Symbol));
                     })
-                    .withSession(MOCK_SESSION)
                     .doesNotFire();
         }
     }
@@ -329,7 +334,8 @@ public class TestPushJoinIntoTableScan
                     throw new IllegalStateException("applyJoin should not be called!");
                 });
         try (RuleTester ruleTester = RuleTester.builder().withDefaultCatalogConnectorFactory(connectorFactory).build()) {
-            ruleTester.assertThat(new PushJoinIntoTableScan(ruleTester.getPlannerContext(), ruleTester.getTypeAnalyzer()))
+            ruleTester.assertThat(new PushJoinIntoTableScan(ruleTester.getPlannerContext()))
+                    .withSession(joinPushDownDisabledSession)
                     .on(p -> {
                         Symbol columnA1Symbol = p.symbol(COLUMN_A1);
                         Symbol columnA2Symbol = p.symbol(COLUMN_A2);
@@ -351,7 +357,6 @@ public class TestPushJoinIntoTableScan
                                 right,
                                 new JoinNode.EquiJoinClause(columnA1Symbol, columnB1Symbol));
                     })
-                    .withSession(joinPushDownDisabledSession)
                     .doesNotFire();
         }
     }
@@ -368,7 +373,8 @@ public class TestPushJoinIntoTableScan
                     throw new IllegalStateException("applyJoin should not be called!");
                 });
         try (RuleTester ruleTester = RuleTester.builder().withDefaultCatalogConnectorFactory(connectorFactory).build()) {
-            ruleTester.assertThat(new PushJoinIntoTableScan(ruleTester.getPlannerContext(), ruleTester.getTypeAnalyzer()))
+            ruleTester.assertThat(new PushJoinIntoTableScan(ruleTester.getPlannerContext()))
+                    .withSession(allPushdownsDisabledSession)
                     .on(p -> {
                         Symbol columnA1Symbol = p.symbol(COLUMN_A1);
                         Symbol columnA2Symbol = p.symbol(COLUMN_A2);
@@ -390,13 +396,13 @@ public class TestPushJoinIntoTableScan
                                 right,
                                 new JoinNode.EquiJoinClause(columnA1Symbol, columnB1Symbol));
                     })
-                    .withSession(allPushdownsDisabledSession)
                     .doesNotFire();
         }
     }
 
-    @Test(dataProvider = "testPushJoinIntoTableScanPreservesEnforcedConstraintParams")
-    public void testPushJoinIntoTableScanPreservesEnforcedConstraint(JoinNode.Type joinType, TupleDomain<ColumnHandle> leftConstraint, TupleDomain<ColumnHandle> rightConstraint, TupleDomain<Predicate<ColumnHandle>> expectedConstraint)
+    @ParameterizedTest
+    @MethodSource("testPushJoinIntoTableScanPreservesEnforcedConstraintParams")
+    public void testPushJoinIntoTableScanPreservesEnforcedConstraint(io.trino.sql.planner.plan.JoinType joinType, TupleDomain<ColumnHandle> leftConstraint, TupleDomain<ColumnHandle> rightConstraint, TupleDomain<Predicate<ColumnHandle>> expectedConstraint)
     {
         MockConnectorFactory connectorFactory = createMockConnectorFactory((session, applyJoinType, left, right, joinConditions, leftAssignments, rightAssignments) -> Optional.of(new JoinApplicationResult<>(
                 JOIN_CONNECTOR_TABLE_HANDLE,
@@ -404,7 +410,8 @@ public class TestPushJoinIntoTableScan
                 JOIN_TABLE_B_COLUMN_MAPPING,
                 false)));
         try (RuleTester ruleTester = RuleTester.builder().withDefaultCatalogConnectorFactory(connectorFactory).build()) {
-            ruleTester.assertThat(new PushJoinIntoTableScan(ruleTester.getPlannerContext(), ruleTester.getTypeAnalyzer()))
+            ruleTester.assertThat(new PushJoinIntoTableScan(ruleTester.getPlannerContext()))
+                    .withSession(MOCK_SESSION)
                     .on(p -> {
                         Symbol columnA1Symbol = p.symbol(COLUMN_A1);
                         Symbol columnA2Symbol = p.symbol(COLUMN_A2);
@@ -429,7 +436,6 @@ public class TestPushJoinIntoTableScan
                                 right,
                                 new JoinNode.EquiJoinClause(columnA1Symbol, columnB1Symbol));
                     })
-                    .withSession(MOCK_SESSION)
                     .matches(
                             project(
                                     tableScan(
@@ -439,14 +445,13 @@ public class TestPushJoinIntoTableScan
         }
     }
 
-    @DataProvider
-    public static Object[][] testPushJoinIntoTableScanPreservesEnforcedConstraintParams()
+    public static Stream<Arguments> testPushJoinIntoTableScanPreservesEnforcedConstraintParams()
     {
         Domain columnA1Domain = Domain.multipleValues(BIGINT, List.of(3L));
         Domain columnA2Domain = Domain.multipleValues(BIGINT, List.of(10L, 20L));
         Domain columnB1Domain = Domain.multipleValues(BIGINT, List.of(30L, 40L));
-        return new Object[][] {
-                {
+        return Stream.of(
+                Arguments.of(
                         INNER,
                         TupleDomain.withColumnDomains(Map.of(
                                 COLUMN_A1_HANDLE, columnA1Domain,
@@ -456,9 +461,8 @@ public class TestPushJoinIntoTableScan
                         TupleDomain.withColumnDomains(Map.of(
                                 equalTo(JOIN_COLUMN_A1_HANDLE), columnA1Domain,
                                 equalTo(JOIN_COLUMN_A2_HANDLE), columnA2Domain,
-                                equalTo(JOIN_COLUMN_B1_HANDLE), columnB1Domain))
-                },
-                {
+                                equalTo(JOIN_COLUMN_B1_HANDLE), columnB1Domain))),
+                Arguments.of(
                         RIGHT,
                         TupleDomain.withColumnDomains(Map.of(
                                 COLUMN_A1_HANDLE, columnA1Domain,
@@ -468,9 +472,8 @@ public class TestPushJoinIntoTableScan
                         TupleDomain.withColumnDomains(Map.of(
                                 equalTo(JOIN_COLUMN_A1_HANDLE), columnA1Domain.union(onlyNull(BIGINT)),
                                 equalTo(JOIN_COLUMN_A2_HANDLE), columnA2Domain.union(onlyNull(BIGINT)),
-                                equalTo(JOIN_COLUMN_B1_HANDLE), columnB1Domain))
-                },
-                {
+                                equalTo(JOIN_COLUMN_B1_HANDLE), columnB1Domain))),
+                Arguments.of(
                         LEFT,
                         TupleDomain.withColumnDomains(Map.of(
                                 COLUMN_A1_HANDLE, columnA1Domain,
@@ -480,9 +483,8 @@ public class TestPushJoinIntoTableScan
                         TupleDomain.withColumnDomains(Map.of(
                                 equalTo(JOIN_COLUMN_A1_HANDLE), columnA1Domain,
                                 equalTo(JOIN_COLUMN_A2_HANDLE), columnA2Domain,
-                                equalTo(JOIN_COLUMN_B1_HANDLE), columnB1Domain.union(onlyNull(BIGINT))))
-                },
-                {
+                                equalTo(JOIN_COLUMN_B1_HANDLE), columnB1Domain.union(onlyNull(BIGINT))))),
+                Arguments.of(
                         FULL,
                         TupleDomain.withColumnDomains(Map.of(
                                 COLUMN_A1_HANDLE, columnA1Domain,
@@ -492,9 +494,7 @@ public class TestPushJoinIntoTableScan
                         TupleDomain.withColumnDomains(Map.of(
                                 equalTo(JOIN_COLUMN_A1_HANDLE), columnA1Domain.union(onlyNull(BIGINT)),
                                 equalTo(JOIN_COLUMN_A2_HANDLE), columnA2Domain.union(onlyNull(BIGINT)),
-                                equalTo(JOIN_COLUMN_B1_HANDLE), columnB1Domain.union(onlyNull(BIGINT))))
-                }
-        };
+                                equalTo(JOIN_COLUMN_B1_HANDLE), columnB1Domain.union(onlyNull(BIGINT))))));
     }
 
     @Test
@@ -505,7 +505,8 @@ public class TestPushJoinIntoTableScan
                     throw new IllegalStateException("applyJoin should not be called!");
                 });
         try (RuleTester ruleTester = RuleTester.builder().withDefaultCatalogConnectorFactory(connectorFactory).build()) {
-            ruleTester.assertThat(new PushJoinIntoTableScan(ruleTester.getPlannerContext(), ruleTester.getTypeAnalyzer()))
+            ruleTester.assertThat(new PushJoinIntoTableScan(ruleTester.getPlannerContext()))
+                    .withSession(MOCK_SESSION)
                     .on(p -> {
                         Symbol columnA1Symbol = p.symbol(COLUMN_A1);
                         Symbol columnA2Symbol = p.symbol(COLUMN_A2);
@@ -528,7 +529,6 @@ public class TestPushJoinIntoTableScan
                                 left,
                                 right);
                     })
-                    .withSession(MOCK_SESSION)
                     .doesNotFire();
         }
     }
@@ -544,13 +544,14 @@ public class TestPushJoinIntoTableScan
                 false)));
         try (RuleTester ruleTester = RuleTester.builder().withDefaultCatalogConnectorFactory(connectorFactory).build()) {
             assertThatThrownBy(() -> {
-                ruleTester.assertThat(new PushJoinIntoTableScan(ruleTester.getPlannerContext(), ruleTester.getTypeAnalyzer()))
+                ruleTester.assertThat(new PushJoinIntoTableScan(ruleTester.getPlannerContext()))
+                        .withSession(MOCK_SESSION)
                         .on(p -> {
                             Symbol columnA1Symbol = p.symbol(COLUMN_A1);
                             Symbol columnA2Symbol = p.symbol(COLUMN_A2);
                             Symbol columnB1Symbol = p.symbol(COLUMN_B1);
 
-                            TupleDomain<ColumnHandle> leftContraint =
+                            TupleDomain<ColumnHandle> leftConstraint =
                                     TupleDomain.fromFixedValues(ImmutableMap.of(COLUMN_A2_HANDLE, NullableValue.of(BIGINT, 44L)));
                             TupleDomain<ColumnHandle> rightConstraint =
                                     TupleDomain.fromFixedValues(ImmutableMap.of(COLUMN_B1_HANDLE, NullableValue.of(BIGINT, 45L)));
@@ -561,7 +562,7 @@ public class TestPushJoinIntoTableScan
                                     ImmutableMap.of(
                                             columnA1Symbol, COLUMN_A1_HANDLE,
                                             columnA2Symbol, COLUMN_A2_HANDLE),
-                                    leftContraint);
+                                    leftConstraint);
                             TableScanNode right = p.tableScan(
                                     ruleTester.getCurrentCatalogTableHandle(SCHEMA, TABLE_B),
                                     ImmutableList.of(columnB1Symbol),
@@ -574,7 +575,6 @@ public class TestPushJoinIntoTableScan
                                     right,
                                     new JoinNode.EquiJoinClause(columnA1Symbol, columnB1Symbol));
                         })
-                        .withSession(MOCK_SESSION)
                         .matches(anyTree());
             })
                     .isInstanceOf(IllegalStateException.class)
@@ -616,22 +616,17 @@ public class TestPushJoinIntoTableScan
                 .build();
     }
 
-    private JoinType toSpiJoinType(JoinNode.Type joinType)
+    private JoinType toSpiJoinType(io.trino.sql.planner.plan.JoinType joinType)
     {
-        switch (joinType) {
-            case INNER:
-                return JoinType.INNER;
-            case LEFT:
-                return JoinType.LEFT_OUTER;
-            case RIGHT:
-                return JoinType.RIGHT_OUTER;
-            case FULL:
-                return JoinType.FULL_OUTER;
-        }
-        throw new IllegalArgumentException("Unknown join type: " + joinType);
+        return switch (joinType) {
+            case INNER -> JoinType.INNER;
+            case LEFT -> JoinType.LEFT_OUTER;
+            case RIGHT -> JoinType.RIGHT_OUTER;
+            case FULL -> JoinType.FULL_OUTER;
+        };
     }
 
-    private JoinCondition.Operator getConditionOperator(ComparisonExpression.Operator operator)
+    private JoinCondition.Operator getConditionOperator(Comparison.Operator operator)
     {
         switch (operator) {
             case EQUAL:
@@ -646,8 +641,8 @@ public class TestPushJoinIntoTableScan
                 return JoinCondition.Operator.GREATER_THAN;
             case GREATER_THAN_OR_EQUAL:
                 return JoinCondition.Operator.GREATER_THAN_OR_EQUAL;
-            case IS_DISTINCT_FROM:
-                return JoinCondition.Operator.IS_DISTINCT_FROM;
+            case IDENTICAL:
+                return JoinCondition.Operator.IDENTICAL;
         }
         throw new IllegalArgumentException("Unknown operator: " + operator);
     }

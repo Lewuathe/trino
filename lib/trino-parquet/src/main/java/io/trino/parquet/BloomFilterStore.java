@@ -16,12 +16,15 @@ package io.trino.parquet;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.BasicSliceInput;
 import io.airlift.slice.Slice;
+import io.trino.parquet.metadata.BlockMetadata;
+import io.trino.parquet.metadata.ColumnChunkMetadata;
+import io.trino.spi.predicate.Domain;
+import io.trino.spi.predicate.TupleDomain;
+import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.column.values.bloomfilter.BlockSplitBloomFilter;
 import org.apache.parquet.column.values.bloomfilter.BloomFilter;
 import org.apache.parquet.format.BloomFilterHeader;
 import org.apache.parquet.format.Util;
-import org.apache.parquet.hadoop.metadata.BlockMetaData;
-import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
 import org.apache.parquet.hadoop.metadata.ColumnPath;
 import org.apache.parquet.io.ParquetDecodingException;
 
@@ -32,6 +35,7 @@ import java.util.Optional;
 import java.util.Set;
 
 import static com.google.common.base.Verify.verify;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static org.apache.parquet.column.values.bloomfilter.BlockSplitBloomFilter.UPPER_BOUND_BYTES;
@@ -45,14 +49,14 @@ public class BloomFilterStore
     private final ParquetDataSource dataSource;
     private final Map<ColumnPath, Long> bloomFilterOffsets;
 
-    public BloomFilterStore(ParquetDataSource dataSource, BlockMetaData block, Set<ColumnPath> columnsFiltered)
+    public BloomFilterStore(ParquetDataSource dataSource, BlockMetadata block, Set<ColumnPath> columnsFiltered)
     {
         this.dataSource = requireNonNull(dataSource, "dataSource is null");
         requireNonNull(block, "block is null");
         requireNonNull(columnsFiltered, "columnsFiltered is null");
 
         ImmutableMap.Builder<ColumnPath, Long> bloomFilterOffsetBuilder = ImmutableMap.builder();
-        for (ColumnChunkMetaData column : block.getColumns()) {
+        for (ColumnChunkMetadata column : block.columns()) {
             ColumnPath path = column.getPath();
             if (hasBloomFilter(column) && columnsFiltered.contains(path)) {
                 bloomFilterOffsetBuilder.put(path, column.getBloomFilterOffset());
@@ -92,7 +96,31 @@ public class BloomFilterStore
         }
     }
 
-    public static boolean hasBloomFilter(ColumnChunkMetaData columnMetaData)
+    public static Optional<BloomFilterStore> getBloomFilterStore(
+            ParquetDataSource dataSource,
+            BlockMetadata blockMetadata,
+            TupleDomain<ColumnDescriptor> parquetTupleDomain,
+            ParquetReaderOptions options)
+    {
+        if (!options.useBloomFilter() || parquetTupleDomain.isAll() || parquetTupleDomain.isNone()) {
+            return Optional.empty();
+        }
+
+        boolean hasBloomFilter = blockMetadata.columns().stream().anyMatch(BloomFilterStore::hasBloomFilter);
+        if (!hasBloomFilter) {
+            return Optional.empty();
+        }
+
+        Map<ColumnDescriptor, Domain> parquetDomains = parquetTupleDomain.getDomains()
+                .orElseThrow(() -> new IllegalStateException("Predicate other than none should have domains"));
+        Set<ColumnPath> columnsFilteredPaths = parquetDomains.keySet().stream()
+                .map(column -> ColumnPath.get(column.getPath()))
+                .collect(toImmutableSet());
+
+        return Optional.of(new BloomFilterStore(dataSource, blockMetadata, columnsFilteredPaths));
+    }
+
+    public static boolean hasBloomFilter(ColumnChunkMetadata columnMetaData)
     {
         return columnMetaData.getBloomFilterOffset() > 0;
     }

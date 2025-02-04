@@ -15,6 +15,9 @@ package io.trino.tests.product.deltalake;
 
 import com.amazonaws.services.glue.AWSGlueAsync;
 import com.amazonaws.services.glue.AWSGlueAsyncClientBuilder;
+import com.amazonaws.services.glue.model.Database;
+import com.amazonaws.services.glue.model.EntityNotFoundException;
+import com.amazonaws.services.glue.model.GetDatabaseRequest;
 import com.amazonaws.services.glue.model.GetTableRequest;
 import com.amazonaws.services.glue.model.Table;
 import com.google.common.collect.ImmutableSet;
@@ -31,7 +34,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
-import static io.trino.plugin.hive.metastore.glue.converter.GlueToTrinoConverter.getTableType;
+import static io.trino.plugin.hive.metastore.glue.v1.GlueToTrinoConverter.getTableType;
 import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS;
 import static io.trino.tests.product.TestGroups.PROFILE_SPECIFIC_TESTS;
 import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.DATABRICKS_COMMUNICATION_FAILURE_ISSUE;
@@ -69,6 +72,20 @@ public class TestDatabricksWithGlueMetastoreCleanUp
 
     private void cleanSchema(String schema, long startTime, AWSGlueAsync glueClient)
     {
+        Database database;
+        try {
+            database = glueClient.getDatabase(new GetDatabaseRequest().withName(schema)).getDatabase();
+        }
+        catch (EntityNotFoundException _) {
+            // this may happen when database is being deleted concurrently
+            return;
+        }
+
+        if (database.getCreateTime().toInstant().isAfter(SCHEMA_CLEANUP_THRESHOLD)) {
+            log.info("Skip dropping recently created schema %s", schema);
+            return;
+        }
+
         Set<String> allTestTableNames = findAllTablesInSchema(schema).stream()
                 .filter(name -> name.toLowerCase(ENGLISH).startsWith("test"))
                 .collect(toImmutableSet());

@@ -15,20 +15,32 @@ package io.trino.plugin.postgresql;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.airlift.log.Logger;
+import io.airlift.slice.Slices;
 import io.airlift.units.Duration;
 import io.trino.Session;
+import io.trino.metadata.ResolvedFunction;
+import io.trino.metadata.TestingFunctionResolution;
 import io.trino.plugin.jdbc.BaseJdbcConnectorTest;
 import io.trino.plugin.jdbc.JdbcColumnHandle;
+import io.trino.plugin.jdbc.JdbcQueryRelationHandle;
 import io.trino.plugin.jdbc.JdbcTableHandle;
-import io.trino.plugin.jdbc.RemoteDatabaseEvent;
+import io.trino.plugin.jdbc.PreparedQuery;
+import io.trino.plugin.jdbc.RemoteLogTracingEvent;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.JoinCondition;
 import io.trino.spi.predicate.Range;
 import io.trino.spi.predicate.TupleDomain;
+import io.trino.sql.analyzer.TypeSignatureProvider;
+import io.trino.sql.ir.Call;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Constant;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.assertions.PlanMatchPattern;
 import io.trino.sql.planner.plan.ExchangeNode;
 import io.trino.sql.planner.plan.FilterNode;
 import io.trino.sql.planner.plan.JoinNode;
+import io.trino.sql.planner.plan.ProjectNode;
 import io.trino.sql.planner.plan.TableScanNode;
 import io.trino.sql.planner.plan.TopNNode;
 import io.trino.testing.QueryRunner;
@@ -37,15 +49,10 @@ import io.trino.testing.sql.JdbcSqlExecutor;
 import io.trino.testing.sql.SqlExecutor;
 import io.trino.testing.sql.TestTable;
 import io.trino.testing.sql.TestView;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.SQLException;
-import java.sql.Statement;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.UUID;
@@ -55,11 +62,18 @@ import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static io.airlift.slice.Slices.utf8Slice;
-import static io.trino.plugin.postgresql.PostgreSqlQueryRunner.createPostgreSqlQueryRunner;
+import static io.trino.plugin.jdbc.JdbcWriteSessionProperties.NON_TRANSACTIONAL_MERGE;
+import static io.trino.plugin.postgresql.PostgreSqlConfig.ArrayMapping.AS_ARRAY;
+import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.spi.type.VarcharType.createVarcharType;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.exchange;
+import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
+import static io.trino.sql.planner.assertions.PlanMatchPattern.filter;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.node;
+import static io.trino.sql.planner.assertions.PlanMatchPattern.output;
+import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.tableScan;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_AGGREGATION_PUSHDOWN;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_JOIN_PUSHDOWN_WITH_FULL_JOIN;
@@ -73,11 +87,14 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.IntStream.range;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.testng.Assert.assertTrue;
 
 public class TestPostgreSqlConnectorTest
         extends BaseJdbcConnectorTest
 {
+    private static final Logger log = Logger.get(TestPostgreSqlConnectorTest.class);
+
+    private static final TestingFunctionResolution FUNCTIONS = new TestingFunctionResolution();
+
     protected TestingPostgreSqlServer postgreSqlServer;
 
     @Override
@@ -85,68 +102,54 @@ public class TestPostgreSqlConnectorTest
             throws Exception
     {
         postgreSqlServer = closeAfterClass(new TestingPostgreSqlServer());
-        return createPostgreSqlQueryRunner(postgreSqlServer, Map.of(), Map.of(), REQUIRED_TPCH_TABLES);
+        return PostgreSqlQueryRunner.builder(postgreSqlServer)
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .withProtocolSpooling("json")
+                .build();
     }
 
-    @BeforeClass
+    @Override
+    protected Session getSession()
+    {
+        Session session = super.getSession();
+        return Session.builder(session)
+                .setCatalogSessionProperty(session.getCatalog().orElseThrow(), NON_TRANSACTIONAL_MERGE, "true")
+                .build();
+    }
+
+    @BeforeAll
     public void setExtensions()
     {
-        onRemoteDatabase().execute("CREATE EXTENSION file_fdw");
+        onRemoteDatabase().execute("CREATE EXTENSION IF NOT EXISTS file_fdw");
     }
 
-    @SuppressWarnings("DuplicateBranchesInSwitch")
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
-        switch (connectorBehavior) {
-            case SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_INEQUALITY:
-                return false;
-            case SUPPORTS_PREDICATE_EXPRESSION_PUSHDOWN:
+        return switch (connectorBehavior) {
+            case SUPPORTS_PREDICATE_EXPRESSION_PUSHDOWN -> {
                 // TODO remove once super has this set to true
                 verify(!super.hasBehavior(connectorBehavior));
-                return true;
-
-            case SUPPORTS_TOPN_PUSHDOWN:
-            case SUPPORTS_TOPN_PUSHDOWN_WITH_VARCHAR:
-                return true;
-
-            case SUPPORTS_AGGREGATION_PUSHDOWN_STDDEV:
-            case SUPPORTS_AGGREGATION_PUSHDOWN_VARIANCE:
-            case SUPPORTS_AGGREGATION_PUSHDOWN_COVARIANCE:
-            case SUPPORTS_AGGREGATION_PUSHDOWN_CORRELATION:
-            case SUPPORTS_AGGREGATION_PUSHDOWN_REGRESSION:
-            case SUPPORTS_AGGREGATION_PUSHDOWN_COUNT_DISTINCT:
-                return true;
-
-            case SUPPORTS_JOIN_PUSHDOWN:
-            case SUPPORTS_JOIN_PUSHDOWN_WITH_VARCHAR_EQUALITY:
-                return true;
-            case SUPPORTS_JOIN_PUSHDOWN_WITH_FULL_JOIN:
-                return false;
-
-            case SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT:
-            case SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT:
-            case SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS:
-                return false;
-
-            case SUPPORTS_ADD_COLUMN_WITH_COMMENT:
-                return false;
-
-            case SUPPORTS_COMMENT_ON_TABLE:
-                return false;
-
-            case SUPPORTS_ARRAY:
-                // Arrays are supported conditionally. Check the defaults.
-                return new PostgreSqlConfig().getArrayMapping() != PostgreSqlConfig.ArrayMapping.DISABLED;
-            case SUPPORTS_ROW_TYPE:
-                return false;
-
-            case SUPPORTS_CANCELLATION:
-                return true;
-
-            default:
-                return super.hasBehavior(connectorBehavior);
-        }
+                yield true;
+            }
+            // Arrays are supported conditionally. Check the defaults.
+            case SUPPORTS_ARRAY -> new PostgreSqlConfig().getArrayMapping() != PostgreSqlConfig.ArrayMapping.DISABLED;
+            case SUPPORTS_CANCELLATION,
+                    SUPPORTS_JOIN_PUSHDOWN,
+                    SUPPORTS_JOIN_PUSHDOWN_WITH_VARCHAR_EQUALITY,
+                    SUPPORTS_MERGE,
+                    SUPPORTS_ROW_LEVEL_UPDATE,
+                    SUPPORTS_TOPN_PUSHDOWN,
+                    SUPPORTS_TOPN_PUSHDOWN_WITH_VARCHAR -> true;
+            case SUPPORTS_ADD_COLUMN_WITH_COMMENT,
+                    SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
+                    SUPPORTS_JOIN_PUSHDOWN_WITH_FULL_JOIN,
+                    SUPPORTS_MAP_TYPE,
+                    SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_INEQUALITY,
+                    SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS,
+                    SUPPORTS_ROW_TYPE -> false;
+            default -> super.hasBehavior(connectorBehavior);
+        };
     }
 
     @Override
@@ -171,6 +174,114 @@ public class TestPostgreSqlConnectorTest
                 "(one bigint, two decimal(50,0), three varchar(10))");
     }
 
+    @Test
+    public void testTimestampPrecisionOnCreateTable()
+    {
+        testTimestampPrecisionOnCreateTable("timestamp(0)", "timestamp(0)");
+        testTimestampPrecisionOnCreateTable("timestamp(1)", "timestamp(1)");
+        testTimestampPrecisionOnCreateTable("timestamp(2)", "timestamp(2)");
+        testTimestampPrecisionOnCreateTable("timestamp(3)", "timestamp(3)");
+        testTimestampPrecisionOnCreateTable("timestamp(4)", "timestamp(4)");
+        testTimestampPrecisionOnCreateTable("timestamp(5)", "timestamp(5)");
+        testTimestampPrecisionOnCreateTable("timestamp(6)", "timestamp(6)");
+        testTimestampPrecisionOnCreateTable("timestamp(7)", "timestamp(6)");
+        testTimestampPrecisionOnCreateTable("timestamp(8)", "timestamp(6)");
+        testTimestampPrecisionOnCreateTable("timestamp(9)", "timestamp(6)");
+        testTimestampPrecisionOnCreateTable("timestamp(10)", "timestamp(6)");
+        testTimestampPrecisionOnCreateTable("timestamp(11)", "timestamp(6)");
+        testTimestampPrecisionOnCreateTable("timestamp(12)", "timestamp(6)");
+    }
+
+    private void testTimestampPrecisionOnCreateTable(String inputType, String expectedType)
+    {
+        try (TestTable testTable = newTrinoTable(
+                "test_coercion_show_create_table",
+                format("(a %s)", inputType))) {
+            assertThat(getColumnType(testTable.getName(), "a")).isEqualTo(expectedType);
+        }
+    }
+
+    @Test
+    public void testTimestampPrecisionOnCreateTableAsSelect()
+    {
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00'", "timestamp(0)", "TIMESTAMP '1970-01-01 00:00:00'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.9'", "timestamp(1)", "TIMESTAMP '1970-01-01 00:00:00.9'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.56'", "timestamp(2)", "TIMESTAMP '1970-01-01 00:00:00.56'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.123'", "timestamp(3)", "TIMESTAMP '1970-01-01 00:00:00.123'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.4896'", "timestamp(4)", "TIMESTAMP '1970-01-01 00:00:00.4896'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.89356'", "timestamp(5)", "TIMESTAMP '1970-01-01 00:00:00.89356'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.123000'", "timestamp(6)", "TIMESTAMP '1970-01-01 00:00:00.123000'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.999'", "timestamp(3)", "TIMESTAMP '1970-01-01 00:00:00.999'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.123456'", "timestamp(6)", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '2020-09-27 12:34:56.1'", "timestamp(1)", "TIMESTAMP '2020-09-27 12:34:56.1'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '2020-09-27 12:34:56.9'", "timestamp(1)", "TIMESTAMP '2020-09-27 12:34:56.9'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '2020-09-27 12:34:56.123'", "timestamp(3)", "TIMESTAMP '2020-09-27 12:34:56.123'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '2020-09-27 12:34:56.123000'", "timestamp(6)", "TIMESTAMP '2020-09-27 12:34:56.123000'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '2020-09-27 12:34:56.999'", "timestamp(3)", "TIMESTAMP '2020-09-27 12:34:56.999'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '2020-09-27 12:34:56.123456'", "timestamp(6)", "TIMESTAMP '2020-09-27 12:34:56.123456'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.1234561'", "timestamp(6)", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.123456499'", "timestamp(6)", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.123456499999'", "timestamp(6)", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.1234565'", "timestamp(6)", "TIMESTAMP '1970-01-01 00:00:00.123457'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.111222333444'", "timestamp(6)", "TIMESTAMP '1970-01-01 00:00:00.111222'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.9999995'", "timestamp(6)", "TIMESTAMP '1970-01-01 00:00:01.000000'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 23:59:59.9999995'", "timestamp(6)", "TIMESTAMP '1970-01-02 00:00:00.000000'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '1969-12-31 23:59:59.9999995'", "timestamp(6)", "TIMESTAMP '1970-01-01 00:00:00.000000'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '1969-12-31 23:59:59.999999499999'", "timestamp(6)", "TIMESTAMP '1969-12-31 23:59:59.999999'");
+        testTimestampPrecisionOnCreateTableAsSelect("TIMESTAMP '1969-12-31 23:59:59.9999994'", "timestamp(6)", "TIMESTAMP '1969-12-31 23:59:59.999999'");
+    }
+
+    private void testTimestampPrecisionOnCreateTableAsSelect(String inputType, String tableType, String tableValue)
+    {
+        try (TestTable testTable = newTrinoTable(
+                "test_coercion_show_create_table",
+                format("AS SELECT %s a", inputType))) {
+            assertThat(getColumnType(testTable.getName(), "a")).isEqualTo(tableType);
+            assertQuery(
+                    format("SELECT * FROM %s", testTable.getName()),
+                    format("VALUES (%s)", tableValue));
+        }
+    }
+
+    @Test
+    public void testTimestampPrecisionOnCreateTableAsSelectWithNoData()
+    {
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00'", "timestamp(0)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.9'", "timestamp(1)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.56'", "timestamp(2)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.123'", "timestamp(3)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.4896'", "timestamp(4)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.89356'", "timestamp(5)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.123000'", "timestamp(6)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.999'", "timestamp(3)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.123456'", "timestamp(6)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '2020-09-27 12:34:56.1'", "timestamp(1)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '2020-09-27 12:34:56.9'", "timestamp(1)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '2020-09-27 12:34:56.123'", "timestamp(3)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '2020-09-27 12:34:56.123000'", "timestamp(6)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '2020-09-27 12:34:56.999'", "timestamp(3)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '2020-09-27 12:34:56.123456'", "timestamp(6)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.1234561'", "timestamp(6)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.123456499'", "timestamp(6)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.123456499999'", "timestamp(6)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.1234565'", "timestamp(6)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.111222333444'", "timestamp(6)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.9999995'", "timestamp(6)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 23:59:59.9999995'", "timestamp(6)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '1969-12-31 23:59:59.9999995'", "timestamp(6)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '1969-12-31 23:59:59.999999499999'", "timestamp(6)");
+        testTimestampPrecisionOnCreateTableAsSelectWithNoData("TIMESTAMP '1969-12-31 23:59:59.9999994'", "timestamp(6)");
+    }
+
+    private void testTimestampPrecisionOnCreateTableAsSelectWithNoData(String inputType, String tableType)
+    {
+        try (TestTable testTable = newTrinoTable(
+                "test_coercion_show_create_table",
+                format("AS SELECT %s a WITH NO DATA", inputType))) {
+            assertThat(getColumnType(testTable.getName(), "a")).isEqualTo(tableType);
+        }
+    }
+
     @Override
     protected void verifyAddNotNullColumnToNonEmptyTableFailurePermissible(Throwable e)
     {
@@ -181,7 +292,7 @@ public class TestPostgreSqlConnectorTest
     public void testViews()
     {
         onRemoteDatabase().execute("CREATE OR REPLACE VIEW test_view AS SELECT * FROM orders");
-        assertTrue(getQueryRunner().tableExists(getSession(), "test_view"));
+        assertThat(getQueryRunner().tableExists(getSession(), "test_view")).isTrue();
         assertQuery("SELECT orderkey FROM test_view", "SELECT orderkey FROM orders");
         onRemoteDatabase().execute("DROP VIEW IF EXISTS test_view");
     }
@@ -190,7 +301,7 @@ public class TestPostgreSqlConnectorTest
     public void testPostgreSqlMaterializedView()
     {
         onRemoteDatabase().execute("CREATE MATERIALIZED VIEW test_mv as SELECT * FROM orders");
-        assertTrue(getQueryRunner().tableExists(getSession(), "test_mv"));
+        assertThat(getQueryRunner().tableExists(getSession(), "test_mv")).isTrue();
         assertQuery("SELECT orderkey FROM test_mv", "SELECT orderkey FROM orders");
         onRemoteDatabase().execute("DROP MATERIALIZED VIEW test_mv");
     }
@@ -200,7 +311,7 @@ public class TestPostgreSqlConnectorTest
     {
         onRemoteDatabase().execute("CREATE SERVER devnull FOREIGN DATA WRAPPER file_fdw");
         onRemoteDatabase().execute("CREATE FOREIGN TABLE test_ft (x bigint) SERVER devnull OPTIONS (filename '/dev/null')");
-        assertTrue(getQueryRunner().tableExists(getSession(), "test_ft"));
+        assertThat(getQueryRunner().tableExists(getSession(), "test_ft")).isTrue();
         computeActual("SELECT * FROM test_ft");
         onRemoteDatabase().execute("DROP FOREIGN TABLE test_ft");
         onRemoteDatabase().execute("DROP SERVER devnull");
@@ -210,13 +321,13 @@ public class TestPostgreSqlConnectorTest
     public void testErrorDuringInsert()
     {
         onRemoteDatabase().execute("CREATE TABLE test_with_constraint (x bigint primary key)");
-        assertTrue(getQueryRunner().tableExists(getSession(), "test_with_constraint"));
+        assertThat(getQueryRunner().tableExists(getSession(), "test_with_constraint")).isTrue();
         Session nonTransactional = Session.builder(getSession())
                 .setCatalogSessionProperty("postgresql", "non_transactional_insert", "true")
                 .build();
         assertUpdate(nonTransactional, "INSERT INTO test_with_constraint VALUES (1)", 1);
         assertQueryFails(nonTransactional, "INSERT INTO test_with_constraint VALUES (1)", "[\\s\\S]*ERROR: duplicate key value[\\s\\S]*");
-        assertTrue(getQueryRunner().tableExists(getSession(), "test_with_constraint"));
+        assertThat(getQueryRunner().tableExists(getSession(), "test_with_constraint")).isTrue();
         onRemoteDatabase().execute("DROP TABLE test_with_constraint");
     }
 
@@ -517,17 +628,15 @@ public class TestPostgreSqlConnectorTest
                 .setCatalogSessionProperty("postgresql", "enable_string_pushdown_with_collate", "true")
                 .build();
 
-        String notDistinctOperator = "IS NOT DISTINCT FROM";
         List<String> nonEqualities = Stream.concat(
                         Stream.of(JoinCondition.Operator.values())
-                                .filter(operator -> operator != JoinCondition.Operator.EQUAL)
+                                .filter(operator -> operator != JoinCondition.Operator.EQUAL && operator != JoinCondition.Operator.IDENTICAL)
                                 .map(JoinCondition.Operator::getValue),
-                        Stream.of(notDistinctOperator))
+                        Stream.of("IS DISTINCT FROM", "IS NOT DISTINCT FROM"))
                 .collect(toImmutableList());
 
-        try (TestTable nationLowercaseTable = new TestTable(
+        try (TestTable nationLowercaseTable = newTrinoTable(
                 // If a connector supports Join pushdown, but does not allow CTAS, we need to make the table creation here overridable.
-                getQueryRunner()::execute,
                 "nation_lowercase",
                 "AS SELECT nationkey, lower(name) name, regionkey FROM nation")) {
             // basic case
@@ -557,6 +666,8 @@ public class TestPostgreSqlConnectorTest
 
             // inequality
             for (String operator : nonEqualities) {
+                log.info("Testing operator=%s", operator);
+
                 // bigint inequality predicate
                 assertThat(query(withoutDynamicFiltering, format("SELECT r.name, n.name FROM nation n JOIN region r ON n.regionkey %s r.regionkey", operator)))
                         // Currently no pushdown as inequality predicate is removed from Join to maintain Cross Join and Filter as separate nodes
@@ -570,6 +681,7 @@ public class TestPostgreSqlConnectorTest
 
             // inequality along with an equality, which constitutes an equi-condition and allows filter to remain as part of the Join
             for (String operator : nonEqualities) {
+                log.info("Testing operator=%s", operator);
                 assertConditionallyPushedDown(
                         session,
                         format("SELECT n.name, c.name FROM nation n JOIN customer c ON n.nationkey = c.nationkey AND n.regionkey %s c.custkey", operator),
@@ -579,6 +691,7 @@ public class TestPostgreSqlConnectorTest
 
             // varchar inequality along with an equality, which constitutes an equi-condition and allows filter to remain as part of the Join
             for (String operator : nonEqualities) {
+                log.info("Testing operator=%s", operator);
                 assertConditionallyPushedDown(
                         session,
                         format("SELECT n.name, nl.name FROM nation n JOIN %s nl ON n.regionkey = nl.regionkey AND n.name %s nl.name", nationLowercaseTable.getName(), operator),
@@ -707,7 +820,7 @@ public class TestPostgreSqlConnectorTest
         assertThat(query("SELECT * FROM nation WHERE nationkey != 3 OR regionkey != 4")).isFullyPushedDown();
         assertThat(query("SELECT * FROM nation WHERE name = 'ALGERIA' OR regionkey = 4")).isFullyPushedDown();
         assertThat(query("SELECT * FROM nation WHERE name IS NULL OR regionkey = 4")).isFullyPushedDown();
-        assertThat(query("SELECT * FROM nation WHERE name = NULL OR regionkey = 4")).isNotFullyPushedDown(FilterNode.class); // TODO `name = NULL` should be eliminated by the engine
+        assertThat(query("SELECT * FROM nation WHERE name = NULL OR regionkey = 4")).isFullyPushedDown();
     }
 
     @Test
@@ -716,8 +829,7 @@ public class TestPostgreSqlConnectorTest
         assertThat(query("SELECT nationkey FROM nation WHERE name LIKE '%A%'"))
                 .isFullyPushedDown();
 
-        try (TestTable table = new TestTable(
-                getQueryRunner()::execute,
+        try (TestTable table = newTrinoTable(
                 "test_like_predicate_pushdown",
                 "(id integer, a_varchar varchar(1))",
                 List.of(
@@ -739,8 +851,7 @@ public class TestPostgreSqlConnectorTest
         assertThat(query("SELECT nationkey FROM nation WHERE name LIKE '%A%' ESCAPE '\\'"))
                 .isFullyPushedDown();
 
-        try (TestTable table = new TestTable(
-                getQueryRunner()::execute,
+        try (TestTable table = newTrinoTable(
                 "test_like_with_escape_predicate_pushdown",
                 "(id integer, a_varchar varchar(4))",
                 List.of(
@@ -761,8 +872,7 @@ public class TestPostgreSqlConnectorTest
         assertThat(query("SELECT nationkey FROM nation WHERE name IS NULL")).isFullyPushedDown();
         assertThat(query("SELECT nationkey FROM nation WHERE name IS NULL OR regionkey = 4")).isFullyPushedDown();
 
-        try (TestTable table = new TestTable(
-                getQueryRunner()::execute,
+        try (TestTable table = newTrinoTable(
                 "test_is_null_predicate_pushdown",
                 "(a_int integer, a_varchar varchar(1))",
                 List.of(
@@ -779,8 +889,7 @@ public class TestPostgreSqlConnectorTest
     {
         assertThat(query("SELECT nationkey FROM nation WHERE name IS NOT NULL OR regionkey = 4")).isFullyPushedDown();
 
-        try (TestTable table = new TestTable(
-                getQueryRunner()::execute,
+        try (TestTable table = newTrinoTable(
                 "test_is_not_null_predicate_pushdown",
                 "(a_int integer, a_varchar varchar(1))",
                 List.of(
@@ -818,8 +927,7 @@ public class TestPostgreSqlConnectorTest
     {
         assertThat(query("SELECT nationkey FROM nation WHERE NOT(name LIKE '%A%' ESCAPE '\\')")).isFullyPushedDown();
 
-        try (TestTable table = new TestTable(
-                getQueryRunner()::execute,
+        try (TestTable table = newTrinoTable(
                 "test_is_not_predicate_pushdown",
                 "(a_int integer, a_varchar varchar(2))",
                 List.of(
@@ -835,8 +943,7 @@ public class TestPostgreSqlConnectorTest
     @Test
     public void testInPredicatePushdown()
     {
-        try (TestTable table = new TestTable(
-                getQueryRunner()::execute,
+        try (TestTable table = newTrinoTable(
                 "test_in_predicate_pushdown",
                 "(id varchar(1), id2 varchar(1))",
                 List.of(
@@ -858,6 +965,42 @@ public class TestPostgreSqlConnectorTest
             assertThat(query("SELECT id FROM " + table.getName() + " WHERE id IN ('a', 'B', NULL) OR id2 IN ('C', 'd')"))
                     // NULL constant value is currently not pushed down
                     .isNotFullyPushedDown(FilterNode.class);
+        }
+    }
+
+    @Test
+    void testNonLowercaseUserDefinedTypeName()
+    {
+        String enumType = "TEST_ENUM_" + randomNameSuffix();
+        onRemoteDatabase().execute("CREATE TYPE public.\"" + enumType + "\" AS ENUM ('A', 'B')");
+        try (TestTable testTable = new TestTable(
+                onRemoteDatabase(),
+                "test_case_sensitive_",
+                "(id int, user_type public.\"" + enumType + "\")",
+                List.of("1, 'A'", "2, 'B'"))) {
+            assertThat(query("SELECT id FROM " + testTable.getName() + " WHERE user_type = 'A'"))
+                    .matches("VALUES 1");
+        }
+        finally {
+            onRemoteDatabase().execute("DROP TYPE public.\"" + enumType + "\"");
+        }
+    }
+
+    @Test
+    void testUserDefinedTypeNameContainsDoubleQuotes()
+    {
+        String enumType = "test_double_\"\"_quotes_" + randomNameSuffix();
+        onRemoteDatabase().execute("CREATE TYPE public.\"" + enumType + "\" AS ENUM ('A', 'B')");
+        try (TestTable testTable = new TestTable(
+                onRemoteDatabase(),
+                "test_case_sensitive_",
+                "(id int, user_type public.\"" + enumType + "\")",
+                List.of("1, 'A'", "2, 'B'"))) {
+            assertThat(query("SELECT id FROM " + testTable.getName() + " WHERE user_type = 'A'"))
+                    .matches("VALUES 1");
+        }
+        finally {
+            onRemoteDatabase().execute("DROP TYPE public.\"" + enumType + "\"");
         }
     }
 
@@ -939,6 +1082,237 @@ public class TestPostgreSqlConnectorTest
         }
     }
 
+    @Test
+    public void testReverseFunctionProjectionPushDown()
+    {
+        try (TestTable table = newTrinoTable(
+                "test_reverse_pushdown_for_project",
+                "(id BIGINT, varchar_col VARCHAR)",
+                ImmutableList.of("1, 'abc'", "2, null"))) {
+            assertThat(query("SELECT reverse(varchar_col) FROM " + table.getName()))
+                    .skippingTypesCheck()
+                    .matches("VALUES 'cba', NULL")
+                    .isFullyPushedDown();
+
+            assertThat(query("SELECT reverse(varchar_col) FROM " + table.getName() + " WHERE id = 1"))
+                    .skippingTypesCheck()
+                    .matches("VALUES 'cba'")
+                    .isFullyPushedDown();
+
+            assertThat(query("SELECT id, reverse(reverse(reverse(reverse(reverse(varchar_col))))) FROM " + table.getName()))
+                    .skippingTypesCheck()
+                    .matches("VALUES (BIGINT '1', 'cba'), (BIGINT '2', NULL)")
+                    .isFullyPushedDown()
+                    .hasPlan(output(
+                            tableScan(
+                                    tableHandle -> {
+                                        JdbcTableHandle jdbcTableHandle = (JdbcTableHandle) tableHandle;
+                                        assertThat(jdbcTableHandle.isSynthetic()).isTrue();
+                                        return ((JdbcQueryRelationHandle) jdbcTableHandle.getRelationHandle()).getPreparedQuery()
+                                                .equals(new PreparedQuery(
+                                                        "SELECT \"id\", REVERSE(\"_pfgnrtd_3\") AS \"_pfgnrtd_4\" FROM (SELECT \"id\", REVERSE(\"_pfgnrtd_2\") AS \"_pfgnrtd_3\" FROM " +
+                                                                "(SELECT \"id\", REVERSE(\"_pfgnrtd_1\") AS \"_pfgnrtd_2\" FROM (SELECT \"id\", REVERSE(\"_pfgnrtd_0\") AS \"_pfgnrtd_1\" FROM " +
+                                                                "(SELECT \"id\", REVERSE(\"varchar_col\") AS \"_pfgnrtd_0\" FROM \"tpch\".\"%s\") o) o) o) o"
+                                                                        .formatted(table.getName()),
+                                                        ImmutableList.of()));
+                                    },
+                                    TupleDomain.all(),
+                                    ImmutableMap.of(
+                                            "id", columnHandle -> ((JdbcColumnHandle) columnHandle).getColumnName().equals("id"),
+                                            "pfgnrtd", columnHandle -> ((JdbcColumnHandle) columnHandle).getColumnName().startsWith("_pfgnrtd_")))));
+
+            assertThat(query("SELECT reverse(lower(varchar_col)) FROM " + table.getName()))
+                    .skippingTypesCheck()
+                    .matches("VALUES 'cba', NULL")
+                    .isNotFullyPushedDown(ProjectNode.class)
+                    .hasPlan(output(
+                            project(ImmutableMap.of("expr", expression(
+                                    new Call(
+                                            FUNCTIONS.resolveFunction("reverse", ImmutableList.of(new TypeSignatureProvider(VARCHAR.getTypeSignature()))),
+                                            ImmutableList.of(
+                                                    new Call(
+                                                            FUNCTIONS.resolveFunction("lower", ImmutableList.of(new TypeSignatureProvider(VARCHAR.getTypeSignature()))),
+                                                            ImmutableList.of(new Reference(VARCHAR, "varchar_col"))))))),
+                                    tableScan(table.getName(), ImmutableMap.of("varchar_col", "varchar_col")))));
+        }
+    }
+
+    @Test
+    public void testPartialProjectionPushDown()
+    {
+        try (TestTable table = newTrinoTable(
+                "test_partial_projection_pushdown",
+                "(id BIGINT, cola VARCHAR, colb VARCHAR)",
+                ImmutableList.of("1, 'abc', 'def'"))) {
+            ResolvedFunction concatFunction = FUNCTIONS.resolveFunction(
+                    "concat",
+                    ImmutableList.of(
+                            new TypeSignatureProvider(VARCHAR.getTypeSignature()),
+                            new TypeSignatureProvider(VARCHAR.getTypeSignature())));
+
+            assertThat(query("SELECT round(id), concat(reverse(cola), reverse(colb)), concat(reverse(cola), reverse(cola)), concat(reverse(cola), upper(reverse(cola))) FROM " + table.getName()))
+                    .matches("VALUES (BIGINT '1', VARCHAR 'cbafed', VARCHAR 'cbacba', VARCHAR 'cbaCBA')")
+                    .hasPlan(
+                            output(
+                                    project(
+                                            ImmutableMap.of(
+                                                    "round_expr", expression(
+                                                            new Call(
+                                                                    FUNCTIONS.resolveFunction("round", ImmutableList.of(new TypeSignatureProvider(BIGINT.getTypeSignature()))),
+                                                                    ImmutableList.of(new Reference(BIGINT, "id")))),
+                                                    "concat_expr", expression(
+                                                            new Call(concatFunction, ImmutableList.of(new Reference(VARCHAR, "reverse_cola"), new Reference(VARCHAR, "reverse_colb")))),
+                                                    "concat_on_same_col", expression(
+                                                            new Call(concatFunction, ImmutableList.of(new Reference(VARCHAR, "reverse_cola"), new Reference(VARCHAR, "reverse_cola")))),
+                                                    "concat_on_same_col_with_lower", expression(
+                                                            new Call(concatFunction, ImmutableList.of(
+                                                                    new Reference(VARCHAR, "reverse_cola"),
+                                                                    new Call(
+                                                                            FUNCTIONS.resolveFunction("upper", ImmutableList.of(new TypeSignatureProvider(VARCHAR.getTypeSignature()))),
+                                                                            ImmutableList.of(new Reference(VARCHAR, "reverse_cola"))))))),
+                                            tableScan(
+                                                    tableHandle -> {
+                                                        JdbcTableHandle jdbcTableHandle = (JdbcTableHandle) tableHandle;
+                                                        assertThat(jdbcTableHandle.isSynthetic()).isTrue();
+                                                        return ((JdbcQueryRelationHandle) jdbcTableHandle.getRelationHandle()).getPreparedQuery()
+                                                                .equals(new PreparedQuery(
+                                                                        "SELECT \"id\", REVERSE(\"cola\") AS \"_pfgnrtd_0\", REVERSE(\"colb\") AS \"_pfgnrtd_1\" FROM \"tpch\".\"%s\"".formatted(table.getName()),
+                                                                        ImmutableList.of()));
+                                                    },
+                                                    TupleDomain.all(),
+                                                    ImmutableMap.of(
+                                                            "reverse_cola", columnHandle -> ((JdbcColumnHandle) columnHandle).getColumnName().equals("_pfgnrtd_0"),
+                                                            "reverse_colb", columnHandle -> ((JdbcColumnHandle) columnHandle).getColumnName().equals("_pfgnrtd_1"),
+                                                            "id", columnHandle -> ((JdbcColumnHandle) columnHandle).getColumnName().equals("id"))))));
+        }
+    }
+
+    @Test
+    public void testProjectionsNotPushDownWhenFilterAppliedOnProjectedColumn()
+    {
+        try (TestTable table = newTrinoTable(
+                "test_projection_push_down_with_filter",
+                "(id BIGINT, cola VARCHAR, colb VARCHAR)",
+                ImmutableList.of("1, 'abc', 'def'"))) {
+            ResolvedFunction concatFunction = FUNCTIONS.resolveFunction(
+                    "concat",
+                    ImmutableList.of(
+                            new TypeSignatureProvider(VARCHAR.getTypeSignature()),
+                            new TypeSignatureProvider(VARCHAR.getTypeSignature())));
+            ResolvedFunction reverseFunction = FUNCTIONS.resolveFunction(
+                    "reverse",
+                    ImmutableList.of(
+                            new TypeSignatureProvider(VARCHAR.getTypeSignature())));
+
+            assertThat(query("SELECT reverse_col, concat_col FROM (SELECT reverse(cola) AS reverse_col, CONCAT(reverse(cola), colb) AS concat_col FROM " + table.getName() + ") WHERE concat_col = 'cbadef'"))
+                    .skippingTypesCheck()
+                    .matches("VALUES ('cba', 'cbadef')")
+                    .hasPlan(
+                            output(
+                                    project(
+                                            ImmutableMap.of(
+                                                    "reverse_col", expression(new Call(reverseFunction, ImmutableList.of(new Reference(VARCHAR, "cola")))),
+                                                    "concat_col", expression(new Call(
+                                                            concatFunction,
+                                                            ImmutableList.of(
+                                                                    new Call(reverseFunction, ImmutableList.of(new Reference(VARCHAR, "cola"))),
+                                                                    new Reference(VARCHAR, "colb"))))),
+                                            filter(
+                                                    new Comparison(
+                                                            Comparison.Operator.EQUAL,
+                                                            new Call(
+                                                                    concatFunction,
+                                                                    ImmutableList.of(
+                                                                            new Call(reverseFunction, ImmutableList.of(new Reference(VARCHAR, "cola"))),
+                                                                            new Reference(VARCHAR, "colb"))),
+                                                            new Constant(VARCHAR, Slices.utf8Slice("cbadef"))),
+                                                    tableScan(
+                                                            table.getName(),
+                                                            ImmutableMap.of(
+                                                                    "cola", "cola",
+                                                                    "colb", "colb"))))));
+        }
+    }
+
+    @Test
+    public void testReverseFunctionOnSpecialColumn()
+    {
+        String enumType = "test_enum_" + randomNameSuffix();
+        onRemoteDatabase().execute("CREATE TYPE " + enumType + " AS ENUM ('abc')");
+        try (TestTable table = new TestTable(
+                onRemoteDatabase(),
+                "table_with_special_column",
+                "(id BIGINT, col_money money, col_enum %s)".formatted(enumType),
+                ImmutableList.of("1, 10.0, 'abc'"))) {
+            assertThat(query("SELECT reverse(col_money) AS reverse_col_money, reverse(col_enum) AS reverse_col_enum FROM " + table.getName()))
+                    .skippingTypesCheck()
+                    .matches("VALUES ('00.01$', 'cba')")
+                    .isNotFullyPushedDown(ProjectNode.class)
+                    .hasPlan(output(
+                            project(
+                                    ImmutableMap.of(
+                                            "reverse_col_money",
+                                            expression(
+                                                    new Call(
+                                                            FUNCTIONS.resolveFunction(
+                                                                    "reverse",
+                                                                    ImmutableList.of(new TypeSignatureProvider(VARCHAR.getTypeSignature()))),
+                                                            ImmutableList.of(new Reference(VARCHAR, "col_money")))),
+                                            "reverse_col_enum",
+                                            expression(
+                                                    new Call(
+                                                            FUNCTIONS.resolveFunction(
+                                                                    "reverse",
+                                                                    ImmutableList.of(new TypeSignatureProvider(VARCHAR.getTypeSignature()))),
+                                                            ImmutableList.of(new Reference(VARCHAR, "col_enum"))))),
+                                    tableScan(
+                                            table.getName(),
+                                            ImmutableMap.of(
+                                                    "col_money", "col_money",
+                                                    "col_enum", "col_enum")))));
+        }
+        finally {
+            onRemoteDatabase().execute("DROP TYPE " + enumType);
+        }
+    }
+
+    @Test
+    void testVectorDistanceNotPushdown()
+    {
+        Session session = Session.builder(getSession())
+                .setCatalogSessionProperty("postgresql", "array_mapping", AS_ARRAY.name())
+                .build();
+
+        try (TestTable table = new TestTable(onRemoteDatabase(), "test_vector", "(id int, v real[])")) {
+            onRemoteDatabase().execute("INSERT INTO " + table.getName() + " VALUES (1, '{1,2,3}'), (2, '{4,5,6}')");
+
+            // The function should not be pushed down because the underlying column isn't vector type
+            assertThat(query(session, "SELECT euclidean_distance(v, CAST(ARRAY[4.0,5.0,6.0] AS array(real))) FROM " + table.getName()))
+                    .isNotFullyPushedDown(ProjectNode.class);
+            assertThat(query(session, "SELECT -dot_product(v, CAST(ARRAY[4.0,5.0,6.0] AS array(real))) FROM " + table.getName()))
+                    .isNotFullyPushedDown(ProjectNode.class);
+            assertThat(query(session, "SELECT cosine_distance(v, CAST(ARRAY[4.0,5.0,6.0] AS array(real))) FROM " + table.getName()))
+                    .isNotFullyPushedDown(ProjectNode.class);
+        }
+    }
+
+    @Test
+    public void testMergeTargetWithNoPrimaryKeys()
+    {
+        String tableName = "test_merge_target_no_pks_" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + " (a int, b int)");
+        assertUpdate("INSERT INTO " + tableName + " VALUES(1, 1), (2, 2)", 2);
+
+        assertQueryFails(format("DELETE FROM %s WHERE a IS NOT NULL AND abs(a + b) > 10", tableName), "The connector can not perform merge on the target table without primary keys");
+        assertQueryFails(format("UPDATE %s SET a = a+b WHERE a IS NOT NULL AND (a + b) > 10", tableName), "The connector can not perform merge on the target table without primary keys");
+        assertQueryFails(format("MERGE INTO %s t USING (VALUES (3, 3)) AS s(x, y) " +
+                "   ON t.a = s.x " +
+                "   WHEN MATCHED THEN UPDATE SET b = y " +
+                "   WHEN NOT MATCHED THEN INSERT (a, b) VALUES (s.x, s.y) ", tableName), "The connector can not perform merge on the target table without primary keys");
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
     private String getLongInClause(int start, int length)
     {
         String longValues = range(start, start + length)
@@ -956,23 +1330,19 @@ public class TestPostgreSqlConnectorTest
     @Override
     protected SqlExecutor onRemoteDatabase()
     {
-        return sql -> {
-            try {
-                try (Connection connection = DriverManager.getConnection(postgreSqlServer.getJdbcUrl(), postgreSqlServer.getProperties());
-                        Statement statement = connection.createStatement()) {
-                    statement.execute(sql);
-                }
-            }
-            catch (SQLException e) {
-                throw new RuntimeException(e);
-            }
-        };
+        return postgreSqlServer::execute;
     }
 
     @Override
-    protected List<RemoteDatabaseEvent> getRemoteDatabaseEvents()
+    protected void startTracingDatabaseEvent(RemoteLogTracingEvent event)
     {
-        return postgreSqlServer.getRemoteDatabaseEvents();
+        postgreSqlServer.startTracingDatabaseEvent(event);
+    }
+
+    @Override
+    protected void stopTracingDatabaseEvent(RemoteLogTracingEvent event)
+    {
+        postgreSqlServer.stopTracingDatabaseEvent(event);
     }
 
     @Override
@@ -1036,6 +1406,11 @@ public class TestPostgreSqlConnectorTest
     @Override
     protected Optional<SetColumnTypeSetup> filterSetColumnTypesDataProvider(SetColumnTypeSetup setup)
     {
+        if (setup.sourceColumnType().equals("bigint") && setup.newColumnType().equals("tinyint")) {
+            // PostgreSQL has no type corresponding to tinyint
+            return Optional.of(setup.withNewColumnType("smallint"));
+        }
+
         if (setup.sourceColumnType().equals("timestamp(3) with time zone")) {
             // The connector returns UTC instead of the given time zone
             return Optional.of(setup.withNewValueLiteral("TIMESTAMP '2020-02-12 14:03:00.123000 +00:00'"));
@@ -1047,5 +1422,30 @@ public class TestPostgreSqlConnectorTest
         }
 
         return Optional.of(setup);
+    }
+
+    @Override
+    protected void createTableForWrites(String createTable, String tableName, Optional<String> primaryKey, OptionalInt updateCount)
+    {
+        super.createTableForWrites(createTable, tableName, primaryKey, updateCount);
+        primaryKey.ifPresent(key -> onRemoteDatabase().execute(format("ALTER TABLE %s ADD CONSTRAINT %s PRIMARY KEY (%s)", tableName, "pk_" + tableName, key)));
+    }
+
+    @Override
+    protected TestTable createTestTableForWrites(String namePrefix, String tableDefinition, String primaryKey)
+    {
+        TestTable testTable = super.createTestTableForWrites(namePrefix, tableDefinition, primaryKey);
+        String tableName = testTable.getName();
+        onRemoteDatabase().execute(format("ALTER TABLE %s ADD CONSTRAINT %s PRIMARY KEY (%s)", tableName, "pk_" + tableName, primaryKey));
+        return testTable;
+    }
+
+    @Override
+    protected TestTable createTestTableForWrites(String namePrefix, String tableDefinition, List<String> rowsToInsert, String primaryKey)
+    {
+        TestTable testTable = super.createTestTableForWrites(namePrefix, tableDefinition, rowsToInsert, primaryKey);
+        String tableName = testTable.getName();
+        onRemoteDatabase().execute(format("ALTER TABLE %s ADD CONSTRAINT %s PRIMARY KEY (%s)", tableName, "pk_" + tableName, primaryKey));
+        return testTable;
     }
 }

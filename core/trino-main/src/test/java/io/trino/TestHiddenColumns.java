@@ -14,32 +14,40 @@
 package io.trino;
 
 import com.google.common.collect.ImmutableMap;
-import io.trino.plugin.tpch.TpchConnectorFactory;
+import io.trino.plugin.tpch.TpchPlugin;
 import io.trino.sql.query.QueryAssertions;
-import io.trino.testing.LocalQueryRunner;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import io.trino.testing.QueryRunner;
+import io.trino.testing.StandaloneQueryRunner;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import static io.trino.SessionTestUtils.TEST_SESSION;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.testing.MaterializedResult.resultBuilder;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
+@TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestHiddenColumns
 {
-    private LocalQueryRunner runner;
+    private QueryRunner runner;
     private QueryAssertions assertions;
 
-    @BeforeClass
+    @BeforeAll
     public void setUp()
     {
-        runner = LocalQueryRunner.create(TEST_SESSION);
-        runner.createCatalog(TEST_SESSION.getCatalog().get(), new TpchConnectorFactory(1), ImmutableMap.of());
+        runner = new StandaloneQueryRunner(TEST_SESSION);
+        runner.installPlugin(new TpchPlugin());
+        runner.createCatalog(TEST_SESSION.getCatalog().get(), "tpch", ImmutableMap.of("tpch.splits-per-node", "1"));
         assertions = new QueryAssertions(runner);
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void destroy()
     {
         if (runner != null) {
@@ -53,7 +61,7 @@ public class TestHiddenColumns
     public void testDescribeTable()
     {
         assertThat(assertions.query("DESCRIBE region"))
-                .matches(resultBuilder(TEST_SESSION, VARCHAR, VARCHAR, VARCHAR, VARCHAR)
+                .result().matches(resultBuilder(TEST_SESSION, VARCHAR, VARCHAR, VARCHAR, VARCHAR)
                         .row("regionkey", "bigint", "", "")
                         .row("name", "varchar(25)", "", "")
                         .row("comment", "varchar(152)", "", "")

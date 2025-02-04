@@ -13,37 +13,28 @@
  */
 package io.trino.plugin.redshift;
 
-import com.google.common.collect.ImmutableMap;
 import io.trino.plugin.jdbc.BaseJdbcConnectorSmokeTest;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
-
-import static io.trino.plugin.redshift.RedshiftQueryRunner.createRedshiftQueryRunner;
-import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS;
 
 public class TestRedshiftConnectorSmokeTest
         extends BaseJdbcConnectorSmokeTest
 {
     @Override
-    @SuppressWarnings("DuplicateBranchesInSwitch") // options here are grouped per-feature
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
-        switch (connectorBehavior) {
-            case SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS:
-                return false;
-
-            default:
-                return super.hasBehavior(connectorBehavior);
-        }
+        return switch (connectorBehavior) {
+            case SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS -> false;
+            default -> super.hasBehavior(connectorBehavior);
+        };
     }
 
     @Override
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return createRedshiftQueryRunner(
-                ImmutableMap.of(),
-                ImmutableMap.of(),
-                REQUIRED_TPCH_TABLES);
+        return RedshiftQueryRunner.builder()
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 }

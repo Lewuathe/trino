@@ -15,9 +15,8 @@ package io.trino.metadata;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.errorprone.annotations.Immutable;
 import io.trino.spi.connector.SchemaTablePrefix;
-
-import javax.annotation.concurrent.Immutable;
 
 import java.util.Objects;
 import java.util.Optional;
@@ -118,9 +117,9 @@ public class QualifiedTablePrefix
 
     public boolean matches(QualifiedObjectName objectName)
     {
-        return Objects.equals(catalogName, objectName.getCatalogName())
-                && schemaName.map(schema -> Objects.equals(schema, objectName.getSchemaName())).orElse(true)
-                && tableName.map(table -> Objects.equals(table, objectName.getObjectName())).orElse(true);
+        return Objects.equals(catalogName, objectName.catalogName())
+                && schemaName.map(schema -> Objects.equals(schema, objectName.schemaName())).orElse(true)
+                && tableName.map(table -> Objects.equals(table, objectName.objectName())).orElse(true);
     }
 
     @Override

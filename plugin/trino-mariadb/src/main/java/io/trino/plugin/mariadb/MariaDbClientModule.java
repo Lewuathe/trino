@@ -18,15 +18,18 @@ import com.google.inject.Module;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
 import com.google.inject.Singleton;
+import io.opentelemetry.api.OpenTelemetry;
 import io.trino.plugin.jdbc.BaseJdbcConfig;
 import io.trino.plugin.jdbc.ConnectionFactory;
 import io.trino.plugin.jdbc.DecimalModule;
 import io.trino.plugin.jdbc.DriverConnectionFactory;
 import io.trino.plugin.jdbc.ForBaseJdbc;
 import io.trino.plugin.jdbc.JdbcClient;
+import io.trino.plugin.jdbc.JdbcMetadataConfig;
+import io.trino.plugin.jdbc.JdbcStatisticsConfig;
 import io.trino.plugin.jdbc.credential.CredentialProvider;
 import io.trino.plugin.jdbc.ptf.Query;
-import io.trino.spi.ptf.ConnectorTableFunction;
+import io.trino.spi.function.table.ConnectorTableFunction;
 import org.mariadb.jdbc.Driver;
 
 import java.util.Properties;
@@ -41,7 +44,9 @@ public class MariaDbClientModule
     public void configure(Binder binder)
     {
         binder.bind(JdbcClient.class).annotatedWith(ForBaseJdbc.class).to(MariaDbClient.class).in(Scopes.SINGLETON);
+        configBinder(binder).bindConfigDefaults(JdbcMetadataConfig.class, config -> config.setBulkListColumns(true));
         configBinder(binder).bindConfig(MariaDbJdbcConfig.class);
+        configBinder(binder).bindConfig(JdbcStatisticsConfig.class);
         binder.install(new DecimalModule());
         newSetBinder(binder, ConnectorTableFunction.class).addBinding().toProvider(Query.class).in(Scopes.SINGLETON);
     }
@@ -49,9 +54,12 @@ public class MariaDbClientModule
     @Provides
     @Singleton
     @ForBaseJdbc
-    public static ConnectionFactory createConnectionFactory(BaseJdbcConfig config, CredentialProvider credentialProvider)
+    public static ConnectionFactory createConnectionFactory(BaseJdbcConfig config, CredentialProvider credentialProvider, OpenTelemetry openTelemetry)
     {
-        return new DriverConnectionFactory(new Driver(), config.getConnectionUrl(), getConnectionProperties(), credentialProvider);
+        return DriverConnectionFactory.builder(new Driver(), config.getConnectionUrl(), credentialProvider)
+                .setConnectionProperties(getConnectionProperties())
+                .setOpenTelemetry(openTelemetry)
+                .build();
     }
 
     private static Properties getConnectionProperties()

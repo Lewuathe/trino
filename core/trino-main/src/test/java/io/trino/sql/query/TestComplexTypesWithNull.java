@@ -13,36 +13,35 @@
  */
 package io.trino.sql.query;
 
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 /**
  * Regression test for https://github.com/trinodb/trino/issues/9528
  */
+@TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestComplexTypesWithNull
 {
-    private QueryAssertions assertions;
+    private final QueryAssertions assertions = new QueryAssertions();
 
-    @BeforeClass
-    public void init()
-    {
-        assertions = new QueryAssertions();
-    }
-
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void teardown()
     {
         assertions.close();
-        assertions = null;
     }
 
     @Test
     public void testRowTypeWithNull()
     {
-        assertThat(assertions.query("""
+        assertThat(assertions.query(
+                """
                 SELECT r.a, r.b, c
                 FROM (VALUES ROW(CAST(ROW(1, NULL) AS ROW(a INTEGER, b INTEGER)))) t(r)
                 JOIN (VALUES 1) u(c) ON c = r.a
@@ -53,7 +52,8 @@ public class TestComplexTypesWithNull
     @Test
     public void testArrayTypeWithNull()
     {
-        assertThat(assertions.query("""
+        assertThat(assertions.query(
+                """
                 SELECT t.a, t.b, c
                 FROM UNNEST(ARRAY[CAST(ROW(1, NULL) as ROW(a INTEGER, b INTEGER)) ]) t
                 JOIN (VALUES 1) u(c) ON c = t.a
@@ -64,7 +64,8 @@ public class TestComplexTypesWithNull
     @Test
     public void testNestedRowTypeWithNull()
     {
-        assertThat(assertions.query("""
+        assertThat(assertions.query(
+                """
                 SELECT r.a, r[2].b, r[2].c, c FROM
                 (VALUES ROW(CAST(ROW(1, ROW(1, NULL)) AS ROW(a INTEGER, ROW(b INTEGER, c INTEGER))))) t(r)
                 JOIN (VALUES 1) u(c) ON c = r.a
@@ -75,7 +76,8 @@ public class TestComplexTypesWithNull
     @Test
     public void testNestedArrayTypeWithNull()
     {
-        assertThat(assertions.query("""
+        assertThat(assertions.query(
+                """
                 SELECT r.a, r.b, c FROM
                 (VALUES CAST(ROW(ROW(1, ARRAY[NULL])) AS ROW(ROW(a INTEGER, b ARRAY(INTEGER))))) t(r)
                 JOIN (VALUES 1) u(c) ON c = r.a

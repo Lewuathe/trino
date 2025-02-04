@@ -16,7 +16,7 @@ package io.trino.metadata;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.UncheckedExecutionException;
-import io.trino.collect.cache.NonEvictableCache;
+import io.trino.cache.NonEvictableCache;
 import io.trino.operator.scalar.SpecializedSqlScalarFunction;
 import io.trino.operator.scalar.annotations.ScalarFromAnnotationsParser;
 import io.trino.operator.window.SqlWindowFunction;
@@ -41,16 +41,14 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.function.Function;
 
-import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Throwables.throwIfInstanceOf;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
-import static io.trino.collect.cache.CacheUtils.uncheckedCacheGet;
-import static io.trino.collect.cache.SafeCaches.buildNonEvictableCache;
+import static io.trino.cache.CacheUtils.uncheckedCacheGet;
+import static io.trino.cache.SafeCaches.buildNonEvictableCache;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.HOURS;
 
@@ -138,8 +136,9 @@ public class InternalFunctionBundle
 
     private SpecializedSqlScalarFunction specializeScalarFunction(FunctionId functionId, BoundSignature boundSignature, FunctionDependencies functionDependencies)
     {
-        SqlScalarFunction function = (SqlScalarFunction) getSqlFunction(functionId);
-        return function.specialize(boundSignature, functionDependencies);
+        SqlFunction function = getSqlFunction(functionId);
+        checkArgument(function instanceof SqlScalarFunction, "%s is not a scalar function", function.getFunctionMetadata().getSignature());
+        return ((SqlScalarFunction) function).specialize(boundSignature, functionDependencies);
     }
 
     @Override
@@ -156,8 +155,9 @@ public class InternalFunctionBundle
 
     private AggregationImplementation specializedAggregation(FunctionId functionId, BoundSignature boundSignature, FunctionDependencies functionDependencies)
     {
-        SqlAggregationFunction aggregationFunction = (SqlAggregationFunction) functions.get(functionId);
-        return aggregationFunction.specialize(boundSignature, functionDependencies);
+        SqlFunction function = getSqlFunction(functionId);
+        checkArgument(function instanceof SqlAggregationFunction, "%s is not an aggregation function", function.getFunctionMetadata().getSignature());
+        return ((SqlAggregationFunction) function).specialize(boundSignature, functionDependencies);
     }
 
     @Override
@@ -174,14 +174,15 @@ public class InternalFunctionBundle
 
     private WindowFunctionSupplier specializeWindow(FunctionId functionId, BoundSignature boundSignature, FunctionDependencies functionDependencies)
     {
-        SqlWindowFunction function = (SqlWindowFunction) functions.get(functionId);
-        return function.specialize(boundSignature, functionDependencies);
+        SqlFunction function = functions.get(functionId);
+        checkArgument(function instanceof SqlWindowFunction, "%s is not a window function", function.getFunctionMetadata().getSignature());
+        return ((SqlWindowFunction) function).specialize(boundSignature, functionDependencies);
     }
 
     private SqlFunction getSqlFunction(FunctionId functionId)
     {
         SqlFunction function = functions.get(functionId);
-        checkArgument(function != null, "Unknown function implementation: " + functionId);
+        checkArgument(function != null, "Unknown function implementation: %s", functionId);
         return function;
     }
 
@@ -277,54 +278,12 @@ public class InternalFunctionBundle
         }
     }
 
-    private static class FunctionKey
+    private record FunctionKey(FunctionId functionId, BoundSignature boundSignature)
     {
-        private final FunctionId functionId;
-        private final BoundSignature boundSignature;
-
-        public FunctionKey(FunctionId functionId, BoundSignature boundSignature)
+        private FunctionKey
         {
-            this.functionId = requireNonNull(functionId, "functionId is null");
-            this.boundSignature = requireNonNull(boundSignature, "boundSignature is null");
-        }
-
-        public FunctionId getFunctionId()
-        {
-            return functionId;
-        }
-
-        public BoundSignature getBoundSignature()
-        {
-            return boundSignature;
-        }
-
-        @Override
-        public boolean equals(Object o)
-        {
-            if (this == o) {
-                return true;
-            }
-            if (o == null || getClass() != o.getClass()) {
-                return false;
-            }
-            FunctionKey that = (FunctionKey) o;
-            return functionId.equals(that.functionId) &&
-                    boundSignature.equals(that.boundSignature);
-        }
-
-        @Override
-        public int hashCode()
-        {
-            return Objects.hash(functionId, boundSignature);
-        }
-
-        @Override
-        public String toString()
-        {
-            return toStringHelper(this)
-                    .add("functionId", functionId)
-                    .add("boundSignature", boundSignature)
-                    .toString();
+            requireNonNull(functionId, "functionId is null");
+            requireNonNull(boundSignature, "boundSignature is null");
         }
     }
 }

@@ -27,6 +27,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
+import com.google.inject.Inject;
 import io.airlift.json.JsonCodec;
 import io.airlift.json.ObjectMapperProvider;
 import io.airlift.log.Logger;
@@ -36,6 +37,8 @@ import io.trino.plugin.elasticsearch.AwsSecurityConfig;
 import io.trino.plugin.elasticsearch.ElasticsearchConfig;
 import io.trino.plugin.elasticsearch.PasswordConfig;
 import io.trino.spi.TrinoException;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpHost;
 import org.apache.http.auth.AuthScope;
@@ -59,19 +62,17 @@ import org.elasticsearch.client.Response;
 import org.elasticsearch.client.ResponseException;
 import org.elasticsearch.client.RestClient;
 import org.elasticsearch.client.RestClientBuilder;
-import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.weakref.jmx.Managed;
 import org.weakref.jmx.Nested;
 
-import javax.annotation.PostConstruct;
-import javax.annotation.PreDestroy;
-import javax.inject.Inject;
 import javax.net.ssl.SSLContext;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.security.GeneralSecurityException;
 import java.util.Arrays;
 import java.util.Iterator;
@@ -173,7 +174,7 @@ public class ElasticsearchClient
             Set<ElasticsearchNode> nodes = fetchNodes();
 
             HttpHost[] hosts = nodes.stream()
-                    .map(ElasticsearchNode::getAddress)
+                    .map(ElasticsearchNode::address)
                     .filter(Optional::isPresent)
                     .map(Optional::get)
                     .map(address -> HttpHost.create(format("%s://%s", tlsEnabled ? "https" : "http", address)))
@@ -201,10 +202,9 @@ public class ElasticsearchClient
         RestClientBuilder builder = RestClient.builder(
                 config.getHosts().stream()
                         .map(httpHost -> new HttpHost(httpHost, config.getPort(), config.isTlsEnabled() ? "https" : "http"))
-                        .toArray(HttpHost[]::new))
-                .setMaxRetryTimeoutMillis(toIntExact(config.getMaxRetryTime().toMillis()));
+                        .toArray(HttpHost[]::new));
 
-        builder.setHttpClientConfigCallback(ignored -> {
+        builder.setHttpClientConfigCallback(_ -> {
             RequestConfig requestConfig = RequestConfig.custom()
                     .setConnectTimeout(toIntExact(config.getConnectTimeout().toMillis()))
                     .setSocketTimeout(toIntExact(config.getRequestTimeout().toMillis()))
@@ -225,7 +225,7 @@ public class ElasticsearchClient
                 buildSslContext(config.getKeystorePath(), config.getKeystorePassword(), config.getTrustStorePath(), config.getTruststorePassword())
                         .ifPresent(clientBuilder::setSSLContext);
 
-                if (config.isVerifyHostnames()) {
+                if (!config.isVerifyHostnames()) {
                     clientBuilder.setSSLHostnameVerifier(NoopHostnameVerifier.INSTANCE);
                 }
             }
@@ -315,7 +315,7 @@ public class ElasticsearchClient
     public List<Shard> getSearchShards(String index)
     {
         Map<String, ElasticsearchNode> nodeById = getNodes().stream()
-                .collect(toImmutableMap(ElasticsearchNode::getId, Function.identity()));
+                .collect(toImmutableMap(ElasticsearchNode::id, Function.identity()));
 
         SearchShardsResponse shardsResponse = doRequest(format("/%s/_search_shards", index), SEARCH_SHARDS_RESPONSE_CODEC::fromJson);
 
@@ -341,7 +341,7 @@ public class ElasticsearchClient
                 node = nodeById.get(chosen.getNode());
             }
 
-            shards.add(new Shard(chosen.getIndex(), chosen.getShard(), node.getAddress()));
+            shards.add(new Shard(chosen.getIndex(), chosen.getShard(), node.address()));
         }
 
         return shards.build();
@@ -390,9 +390,20 @@ public class ElasticsearchClient
                     int docsCount = root.get(i).get("docs.count").asInt();
                     int deletedDocsCount = root.get(i).get("docs.deleted").asInt();
                     if (docsCount == 0 && deletedDocsCount == 0) {
-                        // without documents, the index won't have any dynamic mappings, but maybe there are some explicit ones
-                        if (getIndexMetadata(index).getSchema().getFields().isEmpty()) {
-                            continue;
+                        try {
+                            // without documents, the index won't have any dynamic mappings, but maybe there are some explicit ones
+                            if (getIndexMetadata(index).schema().fields().isEmpty()) {
+                                continue;
+                            }
+                        }
+                        catch (TrinoException e) {
+                            if (e.getErrorCode().equals(ELASTICSEARCH_INVALID_METADATA.toErrorCode())) {
+                                continue;
+                            }
+                            if (e.getCause() instanceof ResponseException cause && cause.getResponse().getStatusLine().getStatusCode() == 404) {
+                                continue;
+                            }
+                            throw e;
                         }
                     }
                     result.add(index);
@@ -656,7 +667,7 @@ public class ElasticsearchClient
                                 "GET",
                                 format("/%s/_count?preference=_shards:%s", index, shard),
                                 ImmutableMap.of(),
-                                new StringEntity(sourceBuilder.toString()),
+                                new StringEntity(sourceBuilder.toString(), UTF_8),
                                 new BasicHeader("Content-Type", "application/json"));
             }
             catch (ResponseException e) {
@@ -667,7 +678,7 @@ public class ElasticsearchClient
             }
 
             try {
-                return COUNT_RESPONSE_CODEC.fromJson(EntityUtils.toByteArray(response.getEntity()))
+                return COUNT_RESPONSE_CODEC.fromJson(response.getEntity().getContent())
                         .getCount();
             }
             catch (IOException e) {
@@ -732,15 +743,12 @@ public class ElasticsearchClient
             throw new TrinoException(ELASTICSEARCH_CONNECTION_ERROR, e);
         }
 
-        String body;
-        try {
-            body = EntityUtils.toString(response.getEntity());
+        try (InputStream stream = response.getEntity().getContent()) {
+            return handler.process(stream);
         }
         catch (IOException e) {
             throw new TrinoException(ELASTICSEARCH_INVALID_RESPONSE, e);
         }
-
-        return handler.process(body);
     }
 
     private static TrinoException propagate(ResponseException exception)
@@ -790,6 +798,6 @@ public class ElasticsearchClient
 
     private interface ResponseHandler<T>
     {
-        T process(String body);
+        T process(InputStream stream);
     }
 }

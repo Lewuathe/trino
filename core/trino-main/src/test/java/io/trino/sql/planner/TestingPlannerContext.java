@@ -13,6 +13,7 @@
  */
 package io.trino.sql.planner;
 
+import com.google.common.collect.ImmutableSet;
 import io.trino.FeaturesConfig;
 import io.trino.connector.CatalogServiceProvider;
 import io.trino.metadata.BlockEncodingManager;
@@ -21,11 +22,12 @@ import io.trino.metadata.FunctionManager;
 import io.trino.metadata.GlobalFunctionCatalog;
 import io.trino.metadata.InternalBlockEncodingSerde;
 import io.trino.metadata.InternalFunctionBundle;
-import io.trino.metadata.LiteralFunction;
+import io.trino.metadata.LanguageFunctionEngineManager;
+import io.trino.metadata.LanguageFunctionManager;
+import io.trino.metadata.LanguageFunctionProvider;
 import io.trino.metadata.Metadata;
-import io.trino.metadata.MetadataManager;
-import io.trino.metadata.MetadataManager.TestMetadataManagerBuilder;
 import io.trino.metadata.SystemFunctionBundle;
+import io.trino.metadata.TestMetadataManager;
 import io.trino.metadata.TypeRegistry;
 import io.trino.operator.scalar.json.JsonExistsFunction;
 import io.trino.operator.scalar.json.JsonQueryFunction;
@@ -36,6 +38,7 @@ import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeOperators;
 import io.trino.sql.PlannerContext;
+import io.trino.sql.parser.SqlParser;
 import io.trino.transaction.TransactionManager;
 import io.trino.type.BlockTypeOperators;
 import io.trino.type.InternalTypeManager;
@@ -46,6 +49,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static com.google.common.base.Preconditions.checkState;
+import static io.airlift.tracing.Tracing.noopTracer;
 import static io.trino.client.NodeVersion.UNKNOWN;
 import static java.util.Objects.requireNonNull;
 
@@ -114,17 +118,27 @@ public final class TestingPlannerContext
             types.forEach(typeRegistry::addType);
             parametricTypes.forEach(typeRegistry::addParametricType);
 
-            GlobalFunctionCatalog globalFunctionCatalog = new GlobalFunctionCatalog();
+            GlobalFunctionCatalog globalFunctionCatalog = new GlobalFunctionCatalog(
+                    () -> { throw new UnsupportedOperationException(); },
+                    () -> { throw new UnsupportedOperationException(); },
+                    () -> { throw new UnsupportedOperationException(); });
             globalFunctionCatalog.addFunctions(SystemFunctionBundle.create(featuresConfig, typeOperators, new BlockTypeOperators(typeOperators), UNKNOWN));
             functionBundles.forEach(globalFunctionCatalog::addFunctions);
 
             BlockEncodingSerde blockEncodingSerde = new InternalBlockEncodingSerde(new BlockEncodingManager(), typeManager);
-            globalFunctionCatalog.addFunctions(new InternalFunctionBundle(new LiteralFunction(blockEncodingSerde)));
+
+            LanguageFunctionManager languageFunctionManager = new LanguageFunctionManager(
+                    new SqlParser(),
+                    typeManager,
+                    _ -> ImmutableSet.of(),
+                    blockEncodingSerde,
+                    new LanguageFunctionEngineManager());
 
             Metadata metadata = this.metadata;
             if (metadata == null) {
-                TestMetadataManagerBuilder builder = MetadataManager.testMetadataManagerBuilder()
+                TestMetadataManager.Builder builder = TestMetadataManager.builder()
                         .withTypeManager(typeManager)
+                        .withLanguageFunctionManager(languageFunctionManager)
                         .withGlobalFunctionCatalog(globalFunctionCatalog);
                 if (transactionManager != null) {
                     builder.withTransactionManager(transactionManager);
@@ -132,7 +146,7 @@ public final class TestingPlannerContext
                 metadata = builder.build();
             }
 
-            FunctionManager functionManager = new FunctionManager(CatalogServiceProvider.fail(), globalFunctionCatalog);
+            FunctionManager functionManager = new FunctionManager(CatalogServiceProvider.fail(), globalFunctionCatalog, LanguageFunctionProvider.DISABLED);
             globalFunctionCatalog.addFunctions(new InternalFunctionBundle(
                     new JsonExistsFunction(functionManager, metadata, typeManager),
                     new JsonValueFunction(functionManager, metadata, typeManager),
@@ -144,7 +158,9 @@ public final class TestingPlannerContext
                     typeOperators,
                     blockEncodingSerde,
                     typeManager,
-                    functionManager);
+                    functionManager,
+                    languageFunctionManager,
+                    noopTracer());
         }
     }
 }

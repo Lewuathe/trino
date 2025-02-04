@@ -14,10 +14,9 @@
 package io.trino.plugin.kudu;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.primitives.Shorts;
-import com.google.common.primitives.SignedBytes;
 import io.airlift.slice.Slice;
 import io.trino.spi.Page;
+import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.connector.ConnectorMergeSink;
 import io.trino.spi.connector.ConnectorPageSink;
@@ -49,6 +48,7 @@ import java.util.concurrent.TimeUnit;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
+import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DateType.DATE;
@@ -60,11 +60,10 @@ import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
 import static io.trino.spi.type.Timestamps.truncateEpochMicrosToMillis;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarbinaryType.VARBINARY;
-import static java.lang.Float.intBitsToFloat;
-import static java.lang.Math.toIntExact;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.CompletableFuture.completedFuture;
+import static org.apache.kudu.util.DateUtil.epochDaysToSqlDate;
 
 public class KuduPageSink
         implements ConnectorPageSink, ConnectorMergeSink
@@ -142,8 +141,8 @@ public class KuduPageSink
             }
             return NOT_BLOCKED;
         }
-        catch (KuduException e) {
-            throw new RuntimeException(e);
+        catch (KuduException | RuntimeException e) {
+            throw new TrinoException(GENERIC_INTERNAL_ERROR, e);
         }
     }
 
@@ -154,31 +153,34 @@ public class KuduPageSink
         if (block.isNull(position)) {
             row.setNull(destChannel);
         }
+        else if (DATE.equals(type)) {
+            row.addDate(destChannel, epochDaysToSqlDate(INTEGER.getInt(block, position)));
+        }
         else if (TIMESTAMP_MILLIS.equals(type)) {
-            row.addLong(destChannel, truncateEpochMicrosToMillis(type.getLong(block, position)));
+            row.addLong(destChannel, truncateEpochMicrosToMillis(TIMESTAMP_MILLIS.getLong(block, position)));
         }
         else if (REAL.equals(type)) {
-            row.addFloat(destChannel, intBitsToFloat(toIntExact(type.getLong(block, position))));
+            row.addFloat(destChannel, REAL.getFloat(block, position));
         }
         else if (BIGINT.equals(type)) {
-            row.addLong(destChannel, type.getLong(block, position));
+            row.addLong(destChannel, BIGINT.getLong(block, position));
         }
         else if (INTEGER.equals(type)) {
-            row.addInt(destChannel, toIntExact(type.getLong(block, position)));
+            row.addInt(destChannel, INTEGER.getInt(block, position));
         }
         else if (SMALLINT.equals(type)) {
-            row.addShort(destChannel, Shorts.checkedCast(type.getLong(block, position)));
+            row.addShort(destChannel, SMALLINT.getShort(block, position));
         }
         else if (TINYINT.equals(type)) {
-            row.addByte(destChannel, SignedBytes.checkedCast(type.getLong(block, position)));
+            row.addByte(destChannel, TINYINT.getByte(block, position));
         }
         else if (BOOLEAN.equals(type)) {
-            row.addBoolean(destChannel, type.getBoolean(block, position));
+            row.addBoolean(destChannel, BOOLEAN.getBoolean(block, position));
         }
         else if (DOUBLE.equals(type)) {
-            row.addDouble(destChannel, type.getDouble(block, position));
+            row.addDouble(destChannel, DOUBLE.getDouble(block, position));
         }
-        else if (type instanceof VarcharType) {
+        else if (type instanceof VarcharType varcharType) {
             Type originalType = originalColumnTypes.get(destChannel);
             if (DATE.equals(originalType)) {
                 SqlDate date = (SqlDate) originalType.getObjectValue(connectorSession, block, position);
@@ -187,14 +189,14 @@ public class KuduPageSink
                 row.addStringUtf8(destChannel, bytes);
             }
             else {
-                row.addString(destChannel, type.getSlice(block, position).toStringUtf8());
+                row.addString(destChannel, varcharType.getSlice(block, position).toStringUtf8());
             }
         }
         else if (VARBINARY.equals(type)) {
-            row.addBinary(destChannel, type.getSlice(block, position).toByteBuffer());
+            row.addBinary(destChannel, VARBINARY.getSlice(block, position).toByteBuffer());
         }
-        else if (type instanceof DecimalType) {
-            SqlDecimal sqlDecimal = (SqlDecimal) type.getObjectValue(connectorSession, block, position);
+        else if (type instanceof DecimalType decimalType) {
+            SqlDecimal sqlDecimal = (SqlDecimal) decimalType.getObjectValue(connectorSession, block, position);
             row.addDecimal(destChannel, sqlDecimal.toBigDecimal());
         }
         else {
@@ -205,16 +207,16 @@ public class KuduPageSink
     @Override
     public void storeMergedRows(Page page)
     {
-        // The last channel in the page is the rowId block, the next-to-last is the operation block
-        int columnCount = columnTypes.size();
-        checkArgument(page.getChannelCount() == 2 + columnCount, "The page size should be 2 + columnCount (%s), but is %s", columnCount, page.getChannelCount());
+        // The last channel in the page is the rowId block, the next-to-last is the case number block, then the next is operation block
+        int columnCount = originalColumnTypes.size();
+        checkArgument(page.getChannelCount() == 3 + columnCount, "The page size should be 3 + columnCount (%s), but is %s", columnCount, page.getChannelCount());
         Block operationBlock = page.getBlock(columnCount);
-        Block rowIds = page.getBlock(columnCount + 1);
+        Block rowIds = page.getBlock(columnCount + 2);
 
         Schema schema = table.getSchema();
         try (KuduOperationApplier operationApplier = KuduOperationApplier.fromKuduClientSession(session)) {
             for (int position = 0; position < page.getPositionCount(); position++) {
-                long operation = TINYINT.getLong(operationBlock, position);
+                byte operation = TINYINT.getByte(operationBlock, position);
 
                 checkState(operation == UPDATE_OPERATION_NUMBER ||
                                 operation == INSERT_OPERATION_NUMBER ||
@@ -232,8 +234,8 @@ public class KuduPageSink
                     try {
                         operationApplier.applyOperationAsync(delete);
                     }
-                    catch (KuduException e) {
-                        throw new RuntimeException(e);
+                    catch (KuduException | RuntimeException e) {
+                        throw new TrinoException(GENERIC_INTERNAL_ERROR, e);
                     }
                 }
 
@@ -252,14 +254,14 @@ public class KuduPageSink
                     try {
                         operationApplier.applyOperationAsync(insert);
                     }
-                    catch (KuduException e) {
-                        throw new RuntimeException(e);
+                    catch (KuduException | RuntimeException e) {
+                        throw new TrinoException(GENERIC_INTERNAL_ERROR, e);
                     }
                 }
             }
         }
-        catch (KuduException e) {
-            throw new RuntimeException(e);
+        catch (KuduException | RuntimeException e) {
+            throw new TrinoException(GENERIC_INTERNAL_ERROR, e);
         }
     }
 
@@ -270,7 +272,5 @@ public class KuduPageSink
     }
 
     @Override
-    public void abort()
-    {
-    }
+    public void abort() {}
 }

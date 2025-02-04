@@ -13,14 +13,13 @@
  */
 package io.trino.plugin.cassandra;
 
-import com.google.common.collect.ImmutableMap;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.sql.TestTable;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Timestamp;
+import java.util.Map;
 
-import static io.trino.plugin.cassandra.CassandraQueryRunner.createCassandraQueryRunner;
 import static io.trino.plugin.cassandra.CassandraTestingUtils.createTestTables;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -34,14 +33,17 @@ public class TestCassandraProtocolVersionV3ConnectorSmokeTest
         CassandraServer server = closeAfterClass(new CassandraServer());
         CassandraSession session = server.getSession();
         createTestTables(session, KEYSPACE, Timestamp.from(TIMESTAMP_VALUE.toInstant()));
-        return createCassandraQueryRunner(server, ImmutableMap.of(), ImmutableMap.of("cassandra.protocol-version", "V3"), REQUIRED_TPCH_TABLES);
+        return CassandraQueryRunner.builder(server)
+                .addConnectorProperties(Map.of("cassandra.protocol-version", "V3"))
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 
     @Test
     @Override
     public void testInsertDate()
     {
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_insert_", "(a_date date)")) {
+        try (TestTable table = newTrinoTable("test_insert_", "(a_date date)")) {
             assertUpdate("INSERT INTO " + table.getName() + " (a_date) VALUES ('2020-05-11')", 1);
             assertThat(query("SELECT a_date FROM " + table.getName())).matches("VALUES (CAST('2020-05-11' AS varchar))");
         }

@@ -13,7 +13,8 @@
  */
 package io.trino.plugin.hive;
 
-import io.trino.plugin.hive.metastore.Table;
+import com.google.inject.Inject;
+import io.trino.metastore.Table;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableMetadata;
@@ -24,28 +25,22 @@ import io.trino.spi.connector.SystemTable;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
 
-import javax.inject.Inject;
-
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
-import java.util.stream.IntStream;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.Streams.stream;
 import static io.trino.plugin.hive.HiveSessionProperties.getTimestampPrecision;
 import static io.trino.plugin.hive.SystemTableHandler.PARTITIONS;
 import static io.trino.plugin.hive.metastore.MetastoreUtil.getProtectMode;
 import static io.trino.plugin.hive.metastore.MetastoreUtil.verifyOnline;
-import static io.trino.plugin.hive.util.HiveBucketing.getHiveBucketHandle;
+import static io.trino.plugin.hive.util.HiveBucketing.getHiveTablePartitioningForRead;
 import static io.trino.plugin.hive.util.HiveUtil.getPartitionKeyColumnHandles;
 import static io.trino.plugin.hive.util.HiveUtil.getRegularColumnHandles;
 import static io.trino.plugin.hive.util.HiveUtil.isDeltaLakeTable;
 import static io.trino.plugin.hive.util.HiveUtil.isIcebergTable;
 import static io.trino.plugin.hive.util.SystemTables.createSystemTable;
 import static java.util.Objects.requireNonNull;
-import static java.util.function.Function.identity;
 import static java.util.stream.Collectors.toList;
 
 public class PartitionsSystemTableProvider
@@ -92,7 +87,7 @@ public class PartitionsSystemTableProvider
                 sourceTable.getParameters(),
                 getPartitionKeyColumnHandles(sourceTable, typeManager),
                 getRegularColumnHandles(sourceTable, typeManager, getTimestampPrecision(session)),
-                getHiveBucketHandle(session, sourceTable, typeManager));
+                getHiveTablePartitioningForRead(session, sourceTable, typeManager));
 
         List<HiveColumnHandle> partitionColumns = sourceTableHandle.getPartitionColumns();
         if (partitionColumns.isEmpty()) {
@@ -112,20 +107,14 @@ public class PartitionsSystemTableProvider
                         .build())
                 .collect(toImmutableList());
 
-        Map<Integer, HiveColumnHandle> fieldIdToColumnHandle =
-                IntStream.range(0, partitionColumns.size())
-                        .boxed()
-                        .collect(toImmutableMap(identity(), partitionColumns::get));
-
         return Optional.of(createSystemTable(
                 new ConnectorTableMetadata(tableName, partitionSystemTableColumns),
                 constraint -> {
-                    Constraint targetConstraint = new Constraint(constraint.transformKeys(fieldIdToColumnHandle::get));
+                    Constraint targetConstraint = new Constraint(constraint.transformKeys(partitionColumns::get));
                     Iterable<List<Object>> records = () ->
                             stream(partitionManager.getPartitions(metadata.getMetastore(), sourceTableHandle, targetConstraint).getPartitions())
                                     .map(hivePartition ->
-                                            IntStream.range(0, partitionColumns.size())
-                                                    .mapToObj(fieldIdToColumnHandle::get)
+                                            partitionColumns.stream()
                                                     .map(columnHandle -> hivePartition.getKeys().get(columnHandle).getValue())
                                                     .collect(toList())) // nullable
                                     .iterator();

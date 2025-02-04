@@ -400,17 +400,6 @@ public abstract class DefaultTraversalVisitor<C>
     }
 
     @Override
-    protected Void visitBindExpression(BindExpression node, C context)
-    {
-        for (Expression value : node.getValues()) {
-            process(value, context);
-        }
-        process(node.getFunction(), context);
-
-        return null;
-    }
-
-    @Override
     protected Void visitArithmeticUnary(ArithmeticUnaryExpression node, C context)
     {
         process(node.getValue(), context);
@@ -603,18 +592,6 @@ public abstract class DefaultTraversalVisitor<C>
             process(groupingElement, context);
         }
 
-        return null;
-    }
-
-    @Override
-    protected Void visitCube(Cube node, C context)
-    {
-        return null;
-    }
-
-    @Override
-    protected Void visitRollup(Rollup node, C context)
-    {
         return null;
     }
 
@@ -913,14 +890,6 @@ public abstract class DefaultTraversalVisitor<C>
     }
 
     @Override
-    protected Void visitLabelDereference(LabelDereference node, C context)
-    {
-        node.getReference().ifPresent(reference -> process(reference, context));
-
-        return null;
-    }
-
-    @Override
     protected Void visitJsonExists(JsonExists node, C context)
     {
         process(node.getJsonPathInvocation(), context);
@@ -968,6 +937,15 @@ public abstract class DefaultTraversalVisitor<C>
     }
 
     @Override
+    protected Void visitJsonObjectMember(JsonObjectMember node, C context)
+    {
+        process(node.getKey(), context);
+        process(node.getValue(), context);
+
+        return null;
+    }
+
+    @Override
     protected Void visitJsonArray(JsonArray node, C context)
     {
         for (JsonArrayElement element : node.getElements()) {
@@ -978,10 +956,48 @@ public abstract class DefaultTraversalVisitor<C>
     }
 
     @Override
+    protected Void visitJsonArrayElement(JsonArrayElement node, C context)
+    {
+        process(node.getValue(), context);
+
+        return null;
+    }
+
+    @Override
     protected Void visitTableFunctionInvocation(TableFunctionInvocation node, C context)
     {
         for (TableFunctionArgument argument : node.getArguments()) {
             process(argument.getValue(), context);
+        }
+
+        return null;
+    }
+
+    @Override
+    protected Void visitJsonTable(JsonTable node, C context)
+    {
+        process(node.getJsonPathInvocation(), context);
+        for (JsonTableColumnDefinition column : node.getColumns()) {
+            process(column, context);
+        }
+
+        return null;
+    }
+
+    @Override
+    protected Void visitValueColumn(ValueColumn node, C context)
+    {
+        node.getEmptyDefault().ifPresent(expression -> process(expression, context));
+        node.getErrorDefault().ifPresent(expression -> process(expression, context));
+
+        return null;
+    }
+
+    @Override
+    protected Void visitNestedColumns(NestedColumns node, C context)
+    {
+        for (JsonTableColumnDefinition column : node.getColumns()) {
+            process(column, context);
         }
 
         return null;

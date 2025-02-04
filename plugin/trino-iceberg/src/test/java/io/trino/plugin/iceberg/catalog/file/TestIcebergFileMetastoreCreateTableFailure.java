@@ -14,19 +14,22 @@
 package io.trino.plugin.iceberg.catalog.file;
 
 import io.trino.Session;
+import io.trino.filesystem.local.LocalFileSystemFactory;
+import io.trino.metastore.HiveMetastore;
+import io.trino.metastore.PrincipalPrivileges;
+import io.trino.metastore.Table;
 import io.trino.plugin.hive.NodeVersion;
-import io.trino.plugin.hive.metastore.HiveMetastore;
 import io.trino.plugin.hive.metastore.HiveMetastoreConfig;
-import io.trino.plugin.hive.metastore.PrincipalPrivileges;
-import io.trino.plugin.hive.metastore.Table;
 import io.trino.plugin.hive.metastore.file.FileHiveMetastore;
 import io.trino.plugin.hive.metastore.file.FileHiveMetastoreConfig;
 import io.trino.plugin.iceberg.TestingIcebergPlugin;
 import io.trino.spi.connector.SchemaNotFoundException;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.DistributedQueryRunner;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -35,14 +38,15 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
-import static com.google.inject.util.Modules.EMPTY_MODULE;
-import static io.trino.plugin.hive.HiveTestUtils.HDFS_ENVIRONMENT;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
 
-@Test(singleThreaded = true) // testException is a shared mutable state
+@TestInstance(PER_CLASS)
+@Execution(SAME_THREAD)
 public class TestIcebergFileMetastoreCreateTableFailure
         extends AbstractTestQueryFramework
 {
@@ -61,15 +65,17 @@ public class TestIcebergFileMetastoreCreateTableFailure
         // Using FileHiveMetastore as approximation of HMS
         this.metastore = new FileHiveMetastore(
                 new NodeVersion("testversion"),
-                HDFS_ENVIRONMENT,
+                new LocalFileSystemFactory(Path.of(dataDirectory.toString())),
                 new HiveMetastoreConfig().isHideDeltaLakeTables(),
                 new FileHiveMetastoreConfig()
-                        .setCatalogDirectory(dataDirectory.toString()))
+                        .setCatalogDirectory("local://"))
         {
             @Override
             public synchronized void createTable(Table table, PrincipalPrivileges principalPrivileges)
             {
-                throw testException.get();
+                if (testException.get() != null) {
+                    throw testException.get();
+                }
             }
         };
 
@@ -79,14 +85,14 @@ public class TestIcebergFileMetastoreCreateTableFailure
                 .build();
 
         DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(session).build();
-        queryRunner.installPlugin(new TestingIcebergPlugin(Optional.of(new TestingIcebergFileMetastoreCatalogModule(metastore)), Optional.empty(), EMPTY_MODULE));
+        queryRunner.installPlugin(new TestingIcebergPlugin(Path.of(dataDirectory.toString()), Optional.of(new TestingIcebergFileMetastoreCatalogModule(metastore))));
         queryRunner.createCatalog(ICEBERG_CATALOG, "iceberg");
         queryRunner.execute("CREATE SCHEMA " + SCHEMA_NAME);
 
         return queryRunner;
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void cleanup()
             throws Exception
     {
@@ -101,32 +107,19 @@ public class TestIcebergFileMetastoreCreateTableFailure
     @Test
     public void testCreateTableFailureMetadataCleanedUp()
     {
-        String exceptionMessage = "Test-simulated metastore schema not found exception";
-        testException.set(new SchemaNotFoundException("simulated_test_schema", exceptionMessage));
-        testCreateTableFailure(exceptionMessage, false);
-    }
-
-    @Test
-    public void testCreateTableFailureMetadataNotCleanedUp()
-    {
-        String exceptionMessage = "Test-simulated metastore runtime exception";
-        testException.set(new RuntimeException(exceptionMessage));
-        testCreateTableFailure(exceptionMessage, true);
-    }
-
-    protected void testCreateTableFailure(String expectedExceptionMessage, boolean shouldMetadataFileExist)
-    {
+        testException.set(new SchemaNotFoundException("simulated_test_schema"));
         String tableName = "test_create_failure_" + randomNameSuffix();
-        String tableLocation = Path.of(dataDirectory.toString(), tableName).toString();
-        assertThatThrownBy(() -> getQueryRunner().execute("CREATE TABLE " + tableName + " (a varchar) WITH (location = '" + tableLocation + "')"))
-                .hasMessageContaining(expectedExceptionMessage);
+        String tableLocation = "local:///" + tableName;
+        String createTableSql = "CREATE TABLE " + tableName + " (a varchar) WITH (location = '" + tableLocation + "')";
+        assertThatThrownBy(() -> getQueryRunner().execute(createTableSql))
+                .hasMessageContaining("Schema simulated_test_schema not found");
 
-        Path metadataDirectory = Path.of(tableLocation, "metadata");
-        if (shouldMetadataFileExist) {
-            assertThat(metadataDirectory).as("Metadata file should exist").isDirectoryContaining("glob:**.metadata.json");
-        }
-        else {
-            assertThat(metadataDirectory).as("Metadata file should not exist").isEmptyDirectory();
-        }
+        Path metadataDirectory = dataDirectory.resolve(tableName, "metadata");
+        assertThat(metadataDirectory).as("Metadata file should not exist").isEmptyDirectory();
+
+        // it should be possible to create a table with the same name after the failure
+        testException.set(null);
+        getQueryRunner().execute(createTableSql);
+        assertThat(metadataDirectory).as("Metadata file should not exist").isNotEmptyDirectory();
     }
 }

@@ -15,8 +15,9 @@ package io.trino.plugin.hive.orc;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Maps;
+import com.google.inject.Inject;
 import io.airlift.slice.Slice;
+import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.filesystem.TrinoInputFile;
@@ -32,16 +33,18 @@ import io.trino.orc.OrcRecordReader;
 import io.trino.orc.TupleDomainOrcPredicate;
 import io.trino.orc.TupleDomainOrcPredicate.TupleDomainOrcPredicateBuilder;
 import io.trino.orc.metadata.OrcType.OrcTypeKind;
+import io.trino.plugin.base.metrics.FileFormatDataSourceStats;
 import io.trino.plugin.hive.AcidInfo;
-import io.trino.plugin.hive.FileFormatDataSourceStats;
 import io.trino.plugin.hive.HiveColumnHandle;
 import io.trino.plugin.hive.HiveColumnProjectionInfo;
 import io.trino.plugin.hive.HiveConfig;
 import io.trino.plugin.hive.HivePageSourceFactory;
 import io.trino.plugin.hive.ReaderColumns;
 import io.trino.plugin.hive.ReaderPageSource;
+import io.trino.plugin.hive.Schema;
 import io.trino.plugin.hive.acid.AcidSchema;
 import io.trino.plugin.hive.acid.AcidTransaction;
+import io.trino.plugin.hive.coercions.TypeCoercer;
 import io.trino.plugin.hive.orc.OrcPageSource.ColumnAdaptation;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorPageSource;
@@ -49,21 +52,16 @@ import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.EmptyPageSource;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
-import io.trino.spi.security.ConnectorIdentity;
 import io.trino.spi.type.Type;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.Path;
 import org.joda.time.DateTimeZone;
 
-import javax.inject.Inject;
-
 import java.io.IOException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
-import java.util.Properties;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -71,6 +69,7 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.Maps.uniqueIndex;
+import static io.trino.hive.formats.HiveClassNames.ORC_SERDE_CLASS;
 import static io.trino.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static io.trino.orc.OrcReader.INITIAL_BATCH_SIZE;
 import static io.trino.orc.OrcReader.NameBasedProjectedLayout.createProjectedLayout;
@@ -96,10 +95,8 @@ import static io.trino.plugin.hive.HiveSessionProperties.isOrcNestedLazy;
 import static io.trino.plugin.hive.HiveSessionProperties.isUseOrcColumnNames;
 import static io.trino.plugin.hive.orc.OrcPageSource.ColumnAdaptation.mergedRowColumns;
 import static io.trino.plugin.hive.orc.OrcPageSource.handleException;
-import static io.trino.plugin.hive.util.AcidTables.isFullAcidTable;
-import static io.trino.plugin.hive.util.HiveClassNames.ORC_SERDE_CLASS;
-import static io.trino.plugin.hive.util.HiveUtil.getDeserializerClassName;
-import static io.trino.plugin.hive.util.SerdeConstants.SERIALIZATION_LIB;
+import static io.trino.plugin.hive.orc.OrcTypeTranslator.createCoercer;
+import static io.trino.plugin.hive.util.HiveUtil.splitError;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.IntegerType.INTEGER;
@@ -160,25 +157,20 @@ public class OrcPageSourceFactory
         this.fileSystemFactory = requireNonNull(fileSystemFactory, "fileSystemFactory is null");
     }
 
-    public static Properties stripUnnecessaryProperties(Properties schema)
+    public static boolean stripUnnecessaryProperties(String serializationLibraryName)
     {
-        if (ORC_SERDE_CLASS.equals(getDeserializerClassName(schema)) && !isFullAcidTable(Maps.fromProperties(schema))) {
-            Properties stripped = new Properties();
-            stripped.put(SERIALIZATION_LIB, schema.getProperty(SERIALIZATION_LIB));
-            return stripped;
-        }
-        return schema;
+        return ORC_SERDE_CLASS.equals(serializationLibraryName);
     }
 
     @Override
     public Optional<ReaderPageSource> createPageSource(
-            Configuration configuration,
             ConnectorSession session,
-            Path path,
+            Location path,
             long start,
             long length,
             long estimatedFileSize,
-            Properties schema,
+            long fileModifiedTime,
+            Schema schema,
             List<HiveColumnHandle> columns,
             TupleDomain<HiveColumnHandle> effectivePredicate,
             Optional<AcidInfo> acidInfo,
@@ -186,7 +178,7 @@ public class OrcPageSourceFactory
             boolean originalFile,
             AcidTransaction transaction)
     {
-        if (!ORC_SERDE_CLASS.equals(getDeserializerClassName(schema))) {
+        if (!ORC_SERDE_CLASS.equals(schema.serializationLibraryName())) {
             return Optional.empty();
         }
 
@@ -200,15 +192,16 @@ public class OrcPageSourceFactory
         }
 
         ConnectorPageSource orcPageSource = createOrcPageSource(
-                session.getIdentity(),
+                session,
                 path,
                 start,
                 length,
                 estimatedFileSize,
+                fileModifiedTime,
                 readerColumnHandles,
                 columns,
                 isUseOrcColumnNames(session),
-                isFullAcidTable(Maps.fromProperties(schema)),
+                schema.isFullAcidTable(),
                 effectivePredicate,
                 legacyTimeZone,
                 orcReaderOptions
@@ -230,11 +223,12 @@ public class OrcPageSourceFactory
     }
 
     private ConnectorPageSource createOrcPageSource(
-            ConnectorIdentity identity,
-            Path path,
+            ConnectorSession session,
+            Location path,
             long start,
             long length,
             long estimatedFileSize,
+            long fileModifiedTime,
             List<HiveColumnHandle> columns,
             List<HiveColumnHandle> projections,
             boolean useOrcColumnNames,
@@ -257,8 +251,8 @@ public class OrcPageSourceFactory
 
         boolean originalFilesPresent = acidInfo.isPresent() && !acidInfo.get().getOriginalFiles().isEmpty();
         try {
-            TrinoFileSystem fileSystem = fileSystemFactory.create(identity);
-            TrinoInputFile inputFile = fileSystem.newInputFile(path.toString());
+            TrinoFileSystem fileSystem = fileSystemFactory.create(session);
+            TrinoInputFile inputFile = fileSystem.newInputFile(path, estimatedFileSize, Instant.ofEpochMilli(fileModifiedTime));
             orcDataSource = new HdfsOrcDataSource(
                     new OrcDataSourceId(path.toString()),
                     estimatedFileSize,
@@ -364,9 +358,16 @@ public class OrcPageSourceFactory
                 Type readType = column.getType();
                 if (orcColumn != null) {
                     int sourceIndex = fileReadColumns.size();
-                    columnAdaptations.add(ColumnAdaptation.sourceColumn(sourceIndex));
+                    Optional<TypeCoercer<?, ?>> coercer = createCoercer(orcColumn.getColumnType(), orcColumn.getNestedColumns(), readType);
+                    if (coercer.isPresent()) {
+                        fileReadTypes.add(coercer.get().getFromType());
+                        columnAdaptations.add(ColumnAdaptation.coercedColumn(sourceIndex, coercer.get()));
+                    }
+                    else {
+                        columnAdaptations.add(ColumnAdaptation.sourceColumn(sourceIndex));
+                        fileReadTypes.add(readType);
+                    }
                     fileReadColumns.add(orcColumn);
-                    fileReadTypes.add(readType);
                     fileReadLayouts.add(projectedLayout);
 
                     // Add predicates on top-level and nested columns
@@ -397,9 +398,9 @@ public class OrcPageSourceFactory
 
             Optional<OrcDeletedRows> deletedRows = acidInfo.map(info ->
                     new OrcDeletedRows(
-                            path.getName(),
+                            path.fileName(),
                             new OrcDeleteDeltaPageSourceFactory(options, stats),
-                            identity,
+                            session.getIdentity(),
                             fileSystemFactory,
                             info,
                             bucketNumber,
@@ -412,7 +413,7 @@ public class OrcPageSourceFactory
                             acidInfo.get().getOriginalFiles(),
                             path,
                             fileSystemFactory,
-                            identity,
+                            session.getIdentity(),
                             options,
                             stats));
 
@@ -441,7 +442,7 @@ public class OrcPageSourceFactory
             try {
                 orcDataSource.close();
             }
-            catch (IOException ignored) {
+            catch (IOException _) {
             }
             if (e instanceof TrinoException) {
                 throw (TrinoException) e;
@@ -453,7 +454,7 @@ public class OrcPageSourceFactory
         }
     }
 
-    private static void validateOrcAcidVersion(Path path, OrcReader reader)
+    private static void validateOrcAcidVersion(Location path, OrcReader reader)
     {
         // Trino cannot read ORC ACID tables with version < 2 (written by Hive older than 3.0)
         // See https://github.com/trinodb/trino/issues/2790#issuecomment-591901728 for more context
@@ -493,7 +494,7 @@ public class OrcPageSourceFactory
         try {
             return Optional.of(Integer.valueOf(slice.toString(UTF_8)));
         }
-        catch (RuntimeException ignored) {
+        catch (RuntimeException _) {
             return Optional.empty();
         }
     }
@@ -532,12 +533,7 @@ public class OrcPageSourceFactory
         return !acidInfo.getOriginalFiles().isEmpty();
     }
 
-    private static String splitError(Throwable t, Path path, long start, long length)
-    {
-        return format("Error opening Hive split %s (offset=%s, length=%s): %s", path, start, length, t.getMessage());
-    }
-
-    private static void verifyFileHasColumnNames(List<OrcColumn> columns, Path path)
+    private static void verifyFileHasColumnNames(List<OrcColumn> columns, Location path)
     {
         if (!columns.isEmpty() && columns.stream().map(OrcColumn::getColumnName).allMatch(physicalColumnName -> DEFAULT_HIVE_COLUMN_NAME_PATTERN.matcher(physicalColumnName).matches())) {
             throw new TrinoException(
@@ -546,7 +542,7 @@ public class OrcPageSourceFactory
         }
     }
 
-    static void verifyAcidSchema(OrcReader orcReader, Path path)
+    static void verifyAcidSchema(OrcReader orcReader, Location path)
     {
         OrcColumn rootColumn = orcReader.getRootColumn();
         List<OrcColumn> nestedColumns = rootColumn.getNestedColumns();
@@ -569,13 +565,13 @@ public class OrcPageSourceFactory
         verifyAcidColumn(orcReader, 5, AcidSchema.ACID_COLUMN_ROW_STRUCT, STRUCT, path);
     }
 
-    private static void verifyAcidColumn(OrcReader orcReader, int columnIndex, String columnName, OrcTypeKind columnType, Path path)
+    private static void verifyAcidColumn(OrcReader orcReader, int columnIndex, String columnName, OrcTypeKind columnType, Location path)
     {
         OrcColumn column = orcReader.getRootColumn().getNestedColumns().get(columnIndex);
         if (!column.getColumnName().toLowerCase(ENGLISH).equals(columnName.toLowerCase(ENGLISH))) {
             throw new TrinoException(HIVE_BAD_DATA, format("ORC ACID file column %s should be named %s: %s", columnIndex, columnName, path));
         }
-        if (column.getColumnType() != columnType) {
+        if (column.getColumnType().getOrcTypeKind() != columnType) {
             throw new TrinoException(HIVE_BAD_DATA, format("ORC ACID file %s column should be type %s: %s", columnName, columnType, path));
         }
     }

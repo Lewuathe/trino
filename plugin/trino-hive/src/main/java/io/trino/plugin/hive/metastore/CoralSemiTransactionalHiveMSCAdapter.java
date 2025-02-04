@@ -25,7 +25,7 @@ import io.trino.spi.connector.SchemaTableName;
 import java.util.List;
 import java.util.Optional;
 
-import static io.trino.plugin.hive.metastore.PrincipalPrivileges.NO_PRIVILEGES;
+import static io.trino.metastore.PrincipalPrivileges.NO_PRIVILEGES;
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.toMetastoreApiDatabase;
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.toMetastoreApiTable;
 import static java.util.Objects.requireNonNull;
@@ -57,7 +57,7 @@ public class CoralSemiTransactionalHiveMSCAdapter
 
     // returning null for missing entry is as per Coral's requirements
     @Override
-    public org.apache.hadoop.hive.metastore.api.Database getDatabase(String dbName)
+    public com.linkedin.coral.hive.metastore.api.Database getDatabase(String dbName)
     {
         return delegate.getDatabase(dbName)
                 .map(database -> toHiveDatabase(toMetastoreApiDatabase(database)))
@@ -67,11 +67,13 @@ public class CoralSemiTransactionalHiveMSCAdapter
     @Override
     public List<String> getAllTables(String dbName)
     {
-        return delegate.getAllTables(dbName);
+        return delegate.getTables(dbName).stream()
+                .map(tableInfo -> tableInfo.tableName().getTableName())
+                .toList();
     }
 
     @Override
-    public org.apache.hadoop.hive.metastore.api.Table getTable(String dbName, String tableName)
+    public com.linkedin.coral.hive.metastore.api.Table getTable(String dbName, String tableName)
     {
         if (!dbName.isEmpty() && !tableName.isEmpty()) {
             Optional<Table> redirected = tableRedirection.redirect(new SchemaTableName(dbName, tableName));
@@ -85,9 +87,9 @@ public class CoralSemiTransactionalHiveMSCAdapter
                 .orElse(null);
     }
 
-    private static org.apache.hadoop.hive.metastore.api.Database toHiveDatabase(Database database)
+    private static com.linkedin.coral.hive.metastore.api.Database toHiveDatabase(Database database)
     {
-        var result = new org.apache.hadoop.hive.metastore.api.Database();
+        var result = new com.linkedin.coral.hive.metastore.api.Database();
         result.setName(database.getName());
         result.setDescription(database.getDescription());
         result.setLocationUri(database.getLocationUri());
@@ -95,9 +97,9 @@ public class CoralSemiTransactionalHiveMSCAdapter
         return result;
     }
 
-    private static org.apache.hadoop.hive.metastore.api.Table toHiveTable(Table table)
+    private static com.linkedin.coral.hive.metastore.api.Table toHiveTable(Table table)
     {
-        var result = new org.apache.hadoop.hive.metastore.api.Table();
+        var result = new com.linkedin.coral.hive.metastore.api.Table();
         result.setDbName(table.getDbName());
         result.setTableName(table.getTableName());
         result.setTableType(table.getTableType());
@@ -111,9 +113,9 @@ public class CoralSemiTransactionalHiveMSCAdapter
         return result;
     }
 
-    private static org.apache.hadoop.hive.metastore.api.StorageDescriptor toHiveStorageDescriptor(StorageDescriptor storage)
+    private static com.linkedin.coral.hive.metastore.api.StorageDescriptor toHiveStorageDescriptor(StorageDescriptor storage)
     {
-        var result = new org.apache.hadoop.hive.metastore.api.StorageDescriptor();
+        var result = new com.linkedin.coral.hive.metastore.api.StorageDescriptor();
         result.setCols(storage.getCols().stream()
                 .map(CoralSemiTransactionalHiveMSCAdapter::toHiveFieldSchema)
                 .toList());
@@ -127,21 +129,20 @@ public class CoralSemiTransactionalHiveMSCAdapter
         return result;
     }
 
-    private static org.apache.hadoop.hive.metastore.api.SerDeInfo toHiveSerdeInfo(SerDeInfo info)
+    private static com.linkedin.coral.hive.metastore.api.SerDeInfo toHiveSerdeInfo(SerDeInfo info)
     {
-        var result = new org.apache.hadoop.hive.metastore.api.SerDeInfo();
+        var result = new com.linkedin.coral.hive.metastore.api.SerDeInfo();
         result.setName(info.getName());
         result.setDescription(info.getDescription());
-        result.setSerializationLib(info.getSerializationLib());
         result.setSerializerClass(info.getSerializerClass());
         result.setDeserializerClass(info.getDeserializerClass());
         result.setParameters(info.getParameters());
         return result;
     }
 
-    private static org.apache.hadoop.hive.metastore.api.FieldSchema toHiveFieldSchema(FieldSchema field)
+    private static com.linkedin.coral.hive.metastore.api.FieldSchema toHiveFieldSchema(FieldSchema field)
     {
-        var result = new org.apache.hadoop.hive.metastore.api.FieldSchema();
+        var result = new com.linkedin.coral.hive.metastore.api.FieldSchema();
         result.setName(field.getName());
         result.setType(field.getType());
         result.setComment(field.getComment());

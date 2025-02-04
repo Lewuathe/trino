@@ -32,7 +32,7 @@ public interface QueryDao
             "  trace_token VARCHAR(255) NULL,\n" +
             "  remote_client_address VARCHAR(255) NULL,\n" +
             "  user_agent VARCHAR(255) NULL,\n" +
-            "  client_info VARCHAR(255) NULL,\n" +
+            "  client_info MEDIUMTEXT NULL,\n" +
             "  client_tags_json MEDIUMTEXT NOT NULL,\n" +
             "  source VARCHAR(255) NULL,\n" +
             "  catalog VARCHAR(255) NULL,\n" +
@@ -62,6 +62,8 @@ public interface QueryDao
             "  waiting_time_millis BIGINT NOT NULL,\n" +
             "  analysis_time_millis BIGINT NOT NULL,\n" +
             "  planning_time_millis BIGINT NOT NULL,\n" +
+            "  planning_cpu_time_millis BIGINT NOT NULL,\n" +
+            "  starting_time_millis BIGINT NOT NULL,\n" +
             "  execution_time_millis BIGINT NOT NULL,\n" +
             "  input_blocked_time_millis BIGINT NOT NULL,\n" +
             "  failed_input_blocked_time_millis BIGINT NOT NULL,\n" +
@@ -133,6 +135,8 @@ public interface QueryDao
             "  waiting_time_millis,\n" +
             "  analysis_time_millis,\n" +
             "  planning_time_millis,\n" +
+            "  planning_cpu_time_millis,\n" +
+            "  starting_time_millis,\n" +
             "  execution_time_millis,\n" +
             "  input_blocked_time_millis,\n" +
             "  failed_input_blocked_time_millis,\n" +
@@ -201,6 +205,8 @@ public interface QueryDao
             " :waitingTimeMillis,\n" +
             " :analysisTimeMillis,\n" +
             " :planningTimeMillis,\n" +
+            " :planningCpuTimeMillis,\n" +
+            " :startingTimeMillis,\n" +
             " :executionTimeMillis,\n" +
             " :inputBlockedTimeMillis,\n" +
             " :failedInputBlockedTimeMillis,\n" +

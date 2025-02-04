@@ -15,7 +15,7 @@ package io.trino.plugin.bigquery;
 
 import com.google.common.collect.ImmutableMap;
 import io.airlift.units.Duration;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
@@ -36,24 +36,26 @@ public class TestBigQueryConfig
         assertRecordedDefaults(recordDefaults(BigQueryConfig.class)
                 .setProjectId(null)
                 .setParentProjectId(null)
-                .setParallelism(null)
                 .setViewExpireDuration(new Duration(24, HOURS))
                 .setSkipViewMaterialization(false)
+                .setViewMaterializationWithFilter(false)
                 .setViewMaterializationProject(null)
                 .setViewMaterializationDataset(null)
                 .setMaxReadRowsRetries(3)
                 .setCaseInsensitiveNameMatching(false)
+                .setCaseInsensitiveNameMatchingCacheTtl(new Duration(0, MILLISECONDS))
                 .setViewsCacheTtl(new Duration(15, MINUTES))
                 .setServiceCacheTtl(new Duration(3, MINUTES))
                 .setMetadataCacheTtl(new Duration(0, MILLISECONDS))
+                .setLegacyMetadataListing(false)
                 .setViewsEnabled(false)
-                .setArrowSerializationEnabled(false)
+                .setArrowSerializationEnabled(true)
                 .setQueryResultsCacheEnabled(false)
-                .setRpcInitialChannelCount(1)
-                .setMinRpcPerChannel(0)
-                .setMaxRpcPerChannel(Integer.MAX_VALUE)
-                .setRpcMinChannelCount(1)
-                .setRpcMaxChannelCount(1));
+                .setQueryLabelName(null)
+                .setQueryLabelFormat(null)
+                .setProxyEnabled(false)
+                .setProjectionPushdownEnabled(true)
+                .setMetadataParallelism(2));
     }
 
     @Test
@@ -62,47 +64,51 @@ public class TestBigQueryConfig
         Map<String, String> properties = ImmutableMap.<String, String>builder()
                 .put("bigquery.project-id", "pid")
                 .put("bigquery.parent-project-id", "ppid")
-                .put("bigquery.parallelism", "20")
                 .put("bigquery.views-enabled", "true")
-                .put("bigquery.experimental.arrow-serialization.enabled", "true")
+                .put("bigquery.arrow-serialization.enabled", "false")
                 .put("bigquery.view-expire-duration", "30m")
                 .put("bigquery.skip-view-materialization", "true")
+                .put("bigquery.view-materialization-with-filter", "true")
                 .put("bigquery.view-materialization-project", "vmproject")
                 .put("bigquery.view-materialization-dataset", "vmdataset")
                 .put("bigquery.max-read-rows-retries", "10")
                 .put("bigquery.case-insensitive-name-matching", "true")
+                .put("bigquery.case-insensitive-name-matching.cache-ttl", "1h")
                 .put("bigquery.views-cache-ttl", "1m")
                 .put("bigquery.service-cache-ttl", "10d")
                 .put("bigquery.metadata.cache-ttl", "5d")
+                .put("bigquery.legacy-metadata-listing", "true")
                 .put("bigquery.query-results-cache.enabled", "true")
-                .put("bigquery.channel-pool.initial-size", "11")
-                .put("bigquery.channel-pool.min-size", "12")
-                .put("bigquery.channel-pool.max-size", "13")
-                .put("bigquery.channel-pool.min-rpc-per-channel", "14")
-                .put("bigquery.channel-pool.max-rpc-per-channel", "15")
+                .put("bigquery.job.label-name", "trino_job_name")
+                .put("bigquery.job.label-format", "$TRACE_TOKEN")
+                .put("bigquery.rpc-proxy.enabled", "true")
+                .put("bigquery.metadata.parallelism", "31")
+                .put("bigquery.projection-pushdown-enabled", "false")
                 .buildOrThrow();
 
         BigQueryConfig expected = new BigQueryConfig()
                 .setProjectId("pid")
                 .setParentProjectId("ppid")
-                .setParallelism(20)
                 .setViewsEnabled(true)
-                .setArrowSerializationEnabled(true)
+                .setArrowSerializationEnabled(false)
                 .setViewExpireDuration(new Duration(30, MINUTES))
                 .setSkipViewMaterialization(true)
+                .setViewMaterializationWithFilter(true)
                 .setViewMaterializationProject("vmproject")
                 .setViewMaterializationDataset("vmdataset")
                 .setMaxReadRowsRetries(10)
                 .setCaseInsensitiveNameMatching(true)
+                .setCaseInsensitiveNameMatchingCacheTtl(new Duration(1, HOURS))
                 .setViewsCacheTtl(new Duration(1, MINUTES))
                 .setServiceCacheTtl(new Duration(10, DAYS))
                 .setMetadataCacheTtl(new Duration(5, DAYS))
+                .setLegacyMetadataListing(true)
                 .setQueryResultsCacheEnabled(true)
-                .setRpcInitialChannelCount(11)
-                .setRpcMinChannelCount(12)
-                .setRpcMaxChannelCount(13)
-                .setMinRpcPerChannel(14)
-                .setMaxRpcPerChannel(15);
+                .setQueryLabelName("trino_job_name")
+                .setQueryLabelFormat("$TRACE_TOKEN")
+                .setProxyEnabled(true)
+                .setProjectionPushdownEnabled(false)
+                .setMetadataParallelism(31);
 
         assertFullMapping(properties, expected);
     }
@@ -123,5 +129,19 @@ public class TestBigQueryConfig
                 .validate())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("bigquery.views-enabled config property must be enabled when skipping view materialization");
+
+        assertThatThrownBy(() -> new BigQueryConfig()
+                .setViewMaterializationWithFilter(true)
+                .setViewsEnabled(false)
+                .validate())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("bigquery.views-enabled config property must be enabled when view materialization with filter is enabled");
+
+        assertThatThrownBy(() -> new BigQueryConfig()
+                .setCaseInsensitiveNameMatching(false)
+                .setCaseInsensitiveNameMatchingCacheTtl(new Duration(30, MINUTES))
+                .validate())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("bigquery.case-insensitive-name-matching config must be enabled when case insensitive name matching cache TTL is set");
     }
 }

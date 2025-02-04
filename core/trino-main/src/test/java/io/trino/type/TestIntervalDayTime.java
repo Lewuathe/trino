@@ -18,6 +18,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import static io.trino.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static io.trino.spi.function.OperatorType.ADD;
@@ -34,9 +35,10 @@ import static io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExcept
 import static java.util.concurrent.TimeUnit.DAYS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
-import static org.testng.Assert.assertEquals;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestIntervalDayTime
 {
     private QueryAssertions assertions;
@@ -57,14 +59,14 @@ public class TestIntervalDayTime
     @Test
     public void testObject()
     {
-        assertEquals(new SqlIntervalDayTime(12, 10, 45, 32, 123), new SqlIntervalDayTime(1_075_532_123));
-        assertEquals(new SqlIntervalDayTime(-12, -10, -45, -32, -123), new SqlIntervalDayTime(-1_075_532_123));
+        assertThat(new SqlIntervalDayTime(12, 10, 45, 32, 123)).isEqualTo(new SqlIntervalDayTime(1_075_532_123));
+        assertThat(new SqlIntervalDayTime(-12, -10, -45, -32, -123)).isEqualTo(new SqlIntervalDayTime(-1_075_532_123));
 
-        assertEquals(new SqlIntervalDayTime(30, 0, 0, 0, 0), new SqlIntervalDayTime(DAYS.toMillis(30)));
-        assertEquals(new SqlIntervalDayTime(-30, 0, 0, 0, 0), new SqlIntervalDayTime(-DAYS.toMillis(30)));
+        assertThat(new SqlIntervalDayTime(30, 0, 0, 0, 0)).isEqualTo(new SqlIntervalDayTime(DAYS.toMillis(30)));
+        assertThat(new SqlIntervalDayTime(-30, 0, 0, 0, 0)).isEqualTo(new SqlIntervalDayTime(-DAYS.toMillis(30)));
 
-        assertEquals(new SqlIntervalDayTime(90, 0, 0, 0, 0), new SqlIntervalDayTime(DAYS.toMillis(90)));
-        assertEquals(new SqlIntervalDayTime(-90, 0, 0, 0, 0), new SqlIntervalDayTime(-DAYS.toMillis(90)));
+        assertThat(new SqlIntervalDayTime(90, 0, 0, 0, 0)).isEqualTo(new SqlIntervalDayTime(DAYS.toMillis(90)));
+        assertThat(new SqlIntervalDayTime(-90, 0, 0, 0, 0)).isEqualTo(new SqlIntervalDayTime(-DAYS.toMillis(90)));
     }
 
     @Test
@@ -120,10 +122,10 @@ public class TestIntervalDayTime
         assertThat(assertions.operator(MULTIPLY, "2.5", "INTERVAL '1' DAY"))
                 .matches("INTERVAL '2 12:00:00.000' DAY TO SECOND");
 
-        assertTrinoExceptionThrownBy(() -> assertions.operator(MULTIPLY, "INTERVAL '6' SECOND", "nan()").evaluate())
+        assertTrinoExceptionThrownBy(assertions.operator(MULTIPLY, "INTERVAL '6' SECOND", "nan()")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
-        assertTrinoExceptionThrownBy(() -> assertions.operator(MULTIPLY, "nan()", "INTERVAL '6' DAY").evaluate())
+        assertTrinoExceptionThrownBy(assertions.operator(MULTIPLY, "nan()", "INTERVAL '6' DAY")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
     }
 
@@ -142,16 +144,16 @@ public class TestIntervalDayTime
         assertThat(assertions.operator(DIVIDE, "INTERVAL '4' DAY", "2.5"))
                 .matches("INTERVAL '1 14:24:00.000' DAY TO SECOND");
 
-        assertTrinoExceptionThrownBy(() -> assertions.operator(DIVIDE, "INTERVAL '6' SECOND", "nan()").evaluate())
+        assertTrinoExceptionThrownBy(assertions.operator(DIVIDE, "INTERVAL '6' SECOND", "nan()")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
-        assertTrinoExceptionThrownBy(() -> assertions.operator(DIVIDE, "INTERVAL '6' DAY", "nan()").evaluate())
+        assertTrinoExceptionThrownBy(assertions.operator(DIVIDE, "INTERVAL '6' DAY", "nan()")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
-        assertTrinoExceptionThrownBy(() -> assertions.operator(DIVIDE, "INTERVAL '6' SECOND", "0E0").evaluate())
+        assertTrinoExceptionThrownBy(assertions.operator(DIVIDE, "INTERVAL '6' SECOND", "0E0")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
-        assertTrinoExceptionThrownBy(() -> assertions.operator(DIVIDE, "INTERVAL '6' DAY", "0").evaluate())
+        assertTrinoExceptionThrownBy(assertions.operator(DIVIDE, "INTERVAL '6' DAY", "0")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
     }
 

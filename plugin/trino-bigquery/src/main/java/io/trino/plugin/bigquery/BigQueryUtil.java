@@ -22,6 +22,7 @@ import io.grpc.StatusRuntimeException;
 
 import java.util.Arrays;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 
 import static com.google.cloud.bigquery.TableDefinition.Type.TABLE;
@@ -57,6 +58,17 @@ public final class BigQueryUtil
         return false;
     }
 
+    public static String buildNativeQuery(String nativeQuery, Optional<String> filter, OptionalLong limit)
+    {
+        // projected column names can not be used for generating select sql because the query fails if it does not
+        // include a column name. eg: query => 'SELECT 1'
+        String queryString = filter.map(s -> "SELECT * FROM (" + nativeQuery + ") WHERE " + s).orElse(nativeQuery);
+        if (limit.isPresent()) {
+            return "SELECT * FROM (" + queryString + ") LIMIT " + limit.getAsLong();
+        }
+        return queryString;
+    }
+
     public static BigQueryException convertToBigQueryException(BigQueryError error)
     {
         return new BigQueryException(UNKNOWN_CODE, error.getMessage(), error);
@@ -85,6 +97,6 @@ public final class BigQueryUtil
 
     public static String quoted(RemoteTableName table)
     {
-        return format("%s.%s.%s", quote(table.getProjectId()), quote(table.getDatasetName()), quote(table.getTableName()));
+        return format("%s.%s.%s", quote(table.projectId()), quote(table.datasetName()), quote(table.tableName()));
     }
 }

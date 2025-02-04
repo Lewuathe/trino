@@ -26,13 +26,13 @@ import io.airlift.slice.Slices;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.function.Constraint;
 import io.trino.spi.function.Description;
 import io.trino.spi.function.LiteralParameters;
 import io.trino.spi.function.ScalarFunction;
 import io.trino.spi.function.SqlNullable;
 import io.trino.spi.function.SqlType;
 import io.trino.spi.type.StandardTypes;
-import io.trino.type.Constraint;
 import io.trino.type.JoniRegexp;
 import io.trino.type.JoniRegexpType;
 
@@ -55,16 +55,8 @@ public final class JoniRegexpFunctions
     @SqlType(StandardTypes.BOOLEAN)
     public static boolean regexpLike(@SqlType("varchar(x)") Slice source, @SqlType(JoniRegexpType.NAME) JoniRegexp pattern)
     {
-        Matcher matcher;
-        int offset;
-        if (source.hasByteArray()) {
-            offset = source.byteArrayOffset();
-            matcher = pattern.regex().matcher(source.byteArray(), offset, offset + source.length());
-        }
-        else {
-            offset = 0;
-            matcher = pattern.matcher(source.getBytes());
-        }
+        int offset = source.byteArrayOffset();
+        Matcher matcher = pattern.regex().matcher(source.byteArray(), offset, offset + source.length());
         return getSearchingOffset(matcher, offset, offset + source.length()) != -1;
     }
 

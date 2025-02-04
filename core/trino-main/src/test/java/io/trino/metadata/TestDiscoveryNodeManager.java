@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.discovery.client.ServiceDescriptor;
 import io.airlift.discovery.client.ServiceSelector;
 import io.airlift.http.client.HttpClient;
@@ -30,11 +31,11 @@ import io.trino.connector.CatalogManagerConfig;
 import io.trino.connector.system.GlobalSystemConnector;
 import io.trino.failuredetector.NoOpFailureDetector;
 import io.trino.server.InternalCommunicationConfig;
-import org.testng.annotations.AfterMethod;
-import org.testng.annotations.BeforeMethod;
-import org.testng.annotations.Test;
-
-import javax.annotation.concurrent.GuardedBy;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.Timeout;
 
 import java.net.URI;
 import java.util.List;
@@ -46,15 +47,14 @@ import java.util.concurrent.BlockingQueue;
 import static io.airlift.discovery.client.ServiceDescriptor.serviceDescriptor;
 import static io.airlift.discovery.client.ServiceSelectorConfig.DEFAULT_POOL;
 import static io.airlift.http.client.HttpStatus.OK;
-import static io.airlift.testing.Assertions.assertEqualsIgnoreOrder;
 import static io.trino.metadata.NodeState.ACTIVE;
 import static io.trino.metadata.NodeState.INACTIVE;
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertNotSame;
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_METHOD;
 
-@Test(singleThreaded = true)
+@TestInstance(PER_METHOD)
 public class TestDiscoveryNodeManager
 {
     private final NodeInfo nodeInfo = new NodeInfo("test");
@@ -67,7 +67,7 @@ public class TestDiscoveryNodeManager
     private final TrinoNodeServiceSelector selector = new TrinoNodeServiceSelector();
     private HttpClient testHttpClient;
 
-    @BeforeMethod
+    @BeforeEach
     public void setup()
     {
         testHttpClient = new TestingHttpClient(input -> new TestingResponse(OK, ArrayListMultimap.create(), ACTIVE.name().getBytes(UTF_8)));
@@ -88,7 +88,7 @@ public class TestDiscoveryNodeManager
         selector.announceNodes(activeNodes, inactiveNodes);
     }
 
-    @AfterMethod(alwaysRun = true)
+    @AfterEach
     public void tearDown()
     {
         testHttpClient.close();
@@ -110,30 +110,30 @@ public class TestDiscoveryNodeManager
             AllNodes allNodes = manager.getAllNodes();
 
             Set<InternalNode> connectorNodes = manager.getActiveCatalogNodes(GlobalSystemConnector.CATALOG_HANDLE);
-            assertEquals(connectorNodes.size(), 4);
-            assertTrue(connectorNodes.stream().anyMatch(InternalNode::isCoordinator));
+            assertThat(connectorNodes).hasSize(4);
+            assertThat(connectorNodes.stream().anyMatch(InternalNode::isCoordinator)).isTrue();
 
             Set<InternalNode> activeNodes = allNodes.getActiveNodes();
-            assertEqualsIgnoreOrder(activeNodes, this.activeNodes);
+            assertThat(activeNodes).containsExactlyInAnyOrderElementsOf(this.activeNodes);
 
             for (InternalNode actual : activeNodes) {
                 for (InternalNode expected : this.activeNodes) {
-                    assertNotSame(actual, expected);
+                    assertThat(actual).isNotSameAs(expected);
                 }
             }
 
-            assertEqualsIgnoreOrder(activeNodes, manager.getNodes(ACTIVE));
+            assertThat(activeNodes).containsExactlyInAnyOrderElementsOf(manager.getNodes(ACTIVE));
 
             Set<InternalNode> inactiveNodes = allNodes.getInactiveNodes();
-            assertEqualsIgnoreOrder(inactiveNodes, this.inactiveNodes);
+            assertThat(inactiveNodes).containsExactlyInAnyOrderElementsOf(this.inactiveNodes);
 
             for (InternalNode actual : inactiveNodes) {
                 for (InternalNode expected : this.inactiveNodes) {
-                    assertNotSame(actual, expected);
+                    assertThat(actual).isNotSameAs(expected);
                 }
             }
 
-            assertEqualsIgnoreOrder(inactiveNodes, manager.getNodes(INACTIVE));
+            assertThat(inactiveNodes).containsExactlyInAnyOrderElementsOf(manager.getNodes(INACTIVE));
         }
         finally {
             manager.stop();
@@ -156,7 +156,7 @@ public class TestDiscoveryNodeManager
                 internalCommunicationConfig,
                 new CatalogManagerConfig());
         try {
-            assertEquals(manager.getCurrentNode(), currentNode);
+            assertThat(manager.getCurrentNode()).isEqualTo(currentNode);
         }
         finally {
             manager.stop();
@@ -175,7 +175,7 @@ public class TestDiscoveryNodeManager
                 internalCommunicationConfig,
                 new CatalogManagerConfig());
         try {
-            assertEquals(manager.getCoordinators(), ImmutableSet.of(coordinator));
+            assertThat(manager.getCoordinators()).isEqualTo(ImmutableSet.of(coordinator));
         }
         finally {
             manager.stop();
@@ -183,20 +183,23 @@ public class TestDiscoveryNodeManager
     }
 
     @SuppressWarnings("ResultOfObjectAllocationIgnored")
-    @Test(expectedExceptions = IllegalStateException.class, expectedExceptionsMessageRegExp = ".* current node not returned .*")
+    @Test
     public void testGetCurrentNodeRequired()
     {
-        new DiscoveryNodeManager(
+        assertThatThrownBy(() -> new DiscoveryNodeManager(
                 selector,
                 new NodeInfo("test"),
                 new NoOpFailureDetector(),
                 expectedVersion,
                 testHttpClient,
                 internalCommunicationConfig,
-                new CatalogManagerConfig());
+                new CatalogManagerConfig()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("current node not returned");
     }
 
-    @Test(timeOut = 60000)
+    @Test
+    @Timeout(60)
     public void testNodeChangeListener()
             throws Exception
     {
@@ -214,18 +217,18 @@ public class TestDiscoveryNodeManager
             BlockingQueue<AllNodes> notifications = new ArrayBlockingQueue<>(100);
             manager.addNodeChangeListener(notifications::add);
             AllNodes allNodes = notifications.take();
-            assertEquals(allNodes.getActiveNodes(), activeNodes);
-            assertEquals(allNodes.getInactiveNodes(), inactiveNodes);
+            assertThat(allNodes.getActiveNodes()).isEqualTo(activeNodes);
+            assertThat(allNodes.getInactiveNodes()).isEqualTo(inactiveNodes);
 
             selector.announceNodes(ImmutableSet.of(currentNode), ImmutableSet.of(coordinator));
             allNodes = notifications.take();
-            assertEquals(allNodes.getActiveNodes(), ImmutableSet.of(currentNode, coordinator));
-            assertEquals(allNodes.getActiveCoordinators(), ImmutableSet.of(coordinator));
+            assertThat(allNodes.getActiveNodes()).isEqualTo(ImmutableSet.of(currentNode, coordinator));
+            assertThat(allNodes.getActiveCoordinators()).isEqualTo(ImmutableSet.of(coordinator));
 
             selector.announceNodes(activeNodes, inactiveNodes);
             allNodes = notifications.take();
-            assertEquals(allNodes.getActiveNodes(), activeNodes);
-            assertEquals(allNodes.getInactiveNodes(), inactiveNodes);
+            assertThat(allNodes.getActiveNodes()).isEqualTo(activeNodes);
+            assertThat(allNodes.getInactiveNodes()).isEqualTo(inactiveNodes);
         }
         finally {
             manager.stop();

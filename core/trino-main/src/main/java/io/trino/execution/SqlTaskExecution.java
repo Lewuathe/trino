@@ -13,20 +13,27 @@
  */
 package io.trino.execution;
 
+import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.concurrent.SetThreadName;
 import io.airlift.units.Duration;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
+import io.trino.annotation.NotThreadSafe;
 import io.trino.event.SplitMonitor;
 import io.trino.execution.StateMachine.StateChangeListener;
 import io.trino.execution.buffer.BufferState;
 import io.trino.execution.buffer.OutputBuffer;
 import io.trino.execution.executor.TaskExecutor;
 import io.trino.execution.executor.TaskHandle;
+import io.trino.metadata.Split;
 import io.trino.operator.Driver;
 import io.trino.operator.DriverContext;
 import io.trino.operator.DriverFactory;
@@ -37,15 +44,13 @@ import io.trino.spi.SplitWeight;
 import io.trino.spi.TrinoException;
 import io.trino.sql.planner.LocalExecutionPlanner.LocalExecutionPlan;
 import io.trino.sql.planner.plan.PlanNodeId;
-
-import javax.annotation.Nullable;
-import javax.annotation.concurrent.GuardedBy;
-import javax.annotation.concurrent.NotThreadSafe;
+import io.trino.tracing.TrinoAttributes;
+import jakarta.annotation.Nullable;
 
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -81,6 +86,7 @@ public class SqlTaskExecution
 {
     private final TaskId taskId;
     private final TaskStateMachine taskStateMachine;
+    private final Span taskSpan;
     private final TaskContext taskContext;
     private final OutputBuffer outputBuffer;
 
@@ -114,14 +120,17 @@ public class SqlTaskExecution
     public SqlTaskExecution(
             TaskStateMachine taskStateMachine,
             TaskContext taskContext,
+            Span taskSpan,
             OutputBuffer outputBuffer,
             LocalExecutionPlan localExecutionPlan,
             TaskExecutor taskExecutor,
             SplitMonitor splitMonitor,
+            Tracer tracer,
             Executor notificationExecutor)
     {
         this.taskStateMachine = requireNonNull(taskStateMachine, "taskStateMachine is null");
         this.taskId = taskStateMachine.getTaskId();
+        this.taskSpan = requireNonNull(taskSpan, "taskSpan is null");
         this.taskContext = requireNonNull(taskContext, "taskContext is null");
         this.outputBuffer = requireNonNull(outputBuffer, "outputBuffer is null");
 
@@ -131,7 +140,7 @@ public class SqlTaskExecution
         this.splitMonitor = requireNonNull(splitMonitor, "splitMonitor is null");
         this.driverAndTaskTerminationTracker = new DriverAndTaskTerminationTracker(taskStateMachine);
 
-        try (SetThreadName ignored = new SetThreadName("Task-%s", taskId)) {
+        try (SetThreadName _ = new SetThreadName("Task-" + taskId)) {
             List<DriverFactory> driverFactories = localExecutionPlan.getDriverFactories();
             // index driver factories
             Set<PlanNodeId> partitionedSources = ImmutableSet.copyOf(localExecutionPlan.getPartitionedSourceOrder());
@@ -141,10 +150,10 @@ public class SqlTaskExecution
             for (DriverFactory driverFactory : driverFactories) {
                 Optional<PlanNodeId> sourceId = driverFactory.getSourceId();
                 if (sourceId.isPresent() && partitionedSources.contains(sourceId.get())) {
-                    driverRunnerFactoriesWithSplitLifeCycle.put(sourceId.get(), new DriverSplitRunnerFactory(driverFactory, true));
+                    driverRunnerFactoriesWithSplitLifeCycle.put(sourceId.get(), new DriverSplitRunnerFactory(driverFactory, tracer, true));
                 }
                 else {
-                    DriverSplitRunnerFactory runnerFactory = new DriverSplitRunnerFactory(driverFactory, false);
+                    DriverSplitRunnerFactory runnerFactory = new DriverSplitRunnerFactory(driverFactory, tracer, false);
                     sourceId.ifPresent(planNodeId -> driverRunnerFactoriesWithRemoteSource.put(planNodeId, runnerFactory));
                     driverRunnerFactoriesWithTaskLifeCycle.add(runnerFactory);
                 }
@@ -172,13 +181,21 @@ public class SqlTaskExecution
             else {
                 taskHandle = createTaskHandle(taskStateMachine, taskContext, outputBuffer, driverFactories, taskExecutor, driverAndTaskTerminationTracker);
             }
+
+            taskStateMachine.addStateChangeListener(state -> {
+                if (state.isDone()) {
+                    for (DriverSplitRunnerFactory factory : allDriverRunnerFactories) {
+                        factory.getPipelineSpan().end();
+                    }
+                }
+            });
         }
     }
 
     // this must be synchronized to prevent a concurrent call to checkTaskCompletion() from proceeding before all task lifecycle drivers are created
     public synchronized void start()
     {
-        try (SetThreadName ignored = new SetThreadName("Task-%s", getTaskId())) {
+        try (SetThreadName _ = new SetThreadName("Task-" + getTaskId())) {
             // Signal immediate termination complete if task termination has started
             if (taskStateMachine.getState().isTerminating()) {
                 taskStateMachine.terminationComplete();
@@ -246,7 +263,7 @@ public class SqlTaskExecution
             return;
         }
 
-        try (SetThreadName ignored = new SetThreadName("Task-%s", taskId)) {
+        try (SetThreadName _ = new SetThreadName("Task-" + taskId)) {
             // update our record of split assignments and schedule drivers for new partitioned splits
             Set<PlanNodeId> updatedUnpartitionedSources = updateSplitAssignments(splitAssignments);
             for (PlanNodeId planNodeId : updatedUnpartitionedSources) {
@@ -345,7 +362,7 @@ public class SqlTaskExecution
             ImmutableList.Builder<DriverSplitRunner> runners = ImmutableList.builderWithExpectedSize(removed.size());
             for (ScheduledSplit scheduledSplit : removed) {
                 // create a new driver for the split
-                runners.add(partitionedDriverRunnerFactory.createDriverRunner(scheduledSplit));
+                runners.add(partitionedDriverRunnerFactory.createPartitionedDriverRunner(scheduledSplit));
             }
             enqueueDriverSplitRunner(false, runners.build());
 
@@ -368,7 +385,7 @@ public class SqlTaskExecution
         List<DriverSplitRunner> runners = new ArrayList<>();
         for (DriverSplitRunnerFactory driverRunnerFactory : driverRunnerFactoriesWithTaskLifeCycle) {
             for (int i = 0; i < driverRunnerFactory.getDriverInstances().orElse(1); i++) {
-                runners.add(driverRunnerFactory.createDriverRunner(null));
+                runners.add(driverRunnerFactory.createUnpartitionedDriverRunner());
             }
         }
         enqueueDriverSplitRunner(true, runners);
@@ -398,7 +415,7 @@ public class SqlTaskExecution
                 @Override
                 public void onSuccess(Object result)
                 {
-                    try (SetThreadName ignored = new SetThreadName("Task-%s", taskId)) {
+                    try (SetThreadName _ = new SetThreadName("Task-" + taskId)) {
                         // record driver is finished
                         if (remainingSplitRunners.decrementAndGet() == 0) {
                             checkTaskCompletion();
@@ -411,7 +428,7 @@ public class SqlTaskExecution
                 @Override
                 public void onFailure(Throwable cause)
                 {
-                    try (SetThreadName ignored = new SetThreadName("Task-%s", taskId)) {
+                    try (SetThreadName _ = new SetThreadName("Task-" + taskId)) {
                         taskStateMachine.failed(cause);
 
                         // record driver is finished
@@ -534,7 +551,7 @@ public class SqlTaskExecution
     @NotThreadSafe
     private static class PendingSplitsForPlanNode
     {
-        private Set<ScheduledSplit> splits = new HashSet<>();
+        private Set<ScheduledSplit> splits = new LinkedHashSet<>();
         private SplitsState state = ADDING_SPLITS;
         private boolean noMoreSplits;
 
@@ -564,7 +581,7 @@ public class SqlTaskExecution
         {
             checkState(state == ADDING_SPLITS || state == NO_MORE_SPLITS);
             Set<ScheduledSplit> result = splits;
-            splits = new HashSet<>();
+            splits = new LinkedHashSet<>();
             return result;
         }
 
@@ -590,6 +607,7 @@ public class SqlTaskExecution
     {
         private final DriverFactory driverFactory;
         private final PipelineContext pipelineContext;
+        private final Span pipelineSpan;
 
         // number of created DriverSplitRunners that haven't created underlying Driver
         private final AtomicInteger pendingCreations = new AtomicInteger();
@@ -601,21 +619,35 @@ public class SqlTaskExecution
         private final AtomicLong inFlightSplits = new AtomicLong();
         private final AtomicBoolean noMoreSplits = new AtomicBoolean();
 
-        private DriverSplitRunnerFactory(DriverFactory driverFactory, boolean partitioned)
+        private DriverSplitRunnerFactory(DriverFactory driverFactory, Tracer tracer, boolean partitioned)
         {
             this.driverFactory = driverFactory;
             this.pipelineContext = taskContext.addPipelineContext(driverFactory.getPipelineId(), driverFactory.isInputDriver(), driverFactory.isOutputDriver(), partitioned);
+            this.pipelineSpan = tracer.spanBuilder("pipeline")
+                    .setParent(Context.current().with(taskSpan))
+                    .setAttribute(TrinoAttributes.QUERY_ID, taskId.getQueryId().toString())
+                    .setAttribute(TrinoAttributes.STAGE_ID, taskId.getStageId().toString())
+                    .setAttribute(TrinoAttributes.TASK_ID, taskId.toString())
+                    .setAttribute(TrinoAttributes.PIPELINE_ID, taskId.getStageId() + "-" + pipelineContext.getPipelineId())
+                    .startSpan();
         }
 
-        // TODO: split this method into two: createPartitionedDriverRunner and createUnpartitionedDriverRunner.
-        // The former will take two arguments, and the latter will take one. This will simplify the signature quite a bit.
-        public DriverSplitRunner createDriverRunner(@Nullable ScheduledSplit partitionedSplit)
+        public DriverSplitRunner createPartitionedDriverRunner(ScheduledSplit partitionedSplit)
+        {
+            return createDriverRunner(partitionedSplit, partitionedSplit.getSplit().getSplitWeight().getRawValue());
+        }
+
+        public DriverSplitRunner createUnpartitionedDriverRunner()
+        {
+            return createDriverRunner(null, 0);
+        }
+
+        public DriverSplitRunner createDriverRunner(@Nullable ScheduledSplit partitionedSplit, long splitWeight)
         {
             checkState(!noMoreDriverRunner.get(), "noMoreDriverRunner is set");
             pendingCreations.incrementAndGet();
             // create driver context immediately so the driver existence is recorded in the stats
             // the number of drivers is used to balance work across nodes
-            long splitWeight = partitionedSplit == null ? 0 : partitionedSplit.getSplit().getSplitWeight().getRawValue();
             DriverContext driverContext = pipelineContext.addDriverContext(splitWeight);
             return new DriverSplitRunner(this, driverContext, partitionedSplit);
         }
@@ -633,6 +665,7 @@ public class SqlTaskExecution
             Driver driver;
             try {
                 driver = driverFactory.createDriver(driverContext);
+                Span.fromContext(Context.current()).addEvent("driver-created");
             }
             catch (Throwable t) {
                 try {
@@ -754,6 +787,7 @@ public class SqlTaskExecution
             }
             if (isNoMoreDriverRunner() && pendingCreations.get() == 0) {
                 driverFactory.noMoreDrivers();
+                pipelineSpan.addEvent("driver-factory-closed");
             }
         }
 
@@ -771,11 +805,17 @@ public class SqlTaskExecution
         {
             pipelineContext.splitsAdded(count, weightSum);
         }
+
+        public Span getPipelineSpan()
+        {
+            return pipelineSpan;
+        }
     }
 
     private static class DriverSplitRunner
             implements SplitRunner
     {
+        private static final Joiner.MapJoiner JOINER = Joiner.on(";").withKeyValueSeparator("=");
         private final DriverSplitRunnerFactory driverSplitRunnerFactory;
         private final DriverContext driverContext;
 
@@ -801,6 +841,18 @@ public class SqlTaskExecution
                 return null;
             }
             return driver.getDriverContext();
+        }
+
+        @Override
+        public int getPipelineId()
+        {
+            return driverContext.getPipelineContext().getPipelineId();
+        }
+
+        @Override
+        public Span getPipelineSpan()
+        {
+            return driverSplitRunnerFactory.getPipelineSpan();
         }
 
         @Override
@@ -841,7 +893,7 @@ public class SqlTaskExecution
         @Override
         public String getInfo()
         {
-            return (partitionedSplit == null) ? "" : partitionedSplit.getSplit().getInfo().toString();
+            return (partitionedSplit == null) ? "" : formatSplitInfo(partitionedSplit.getSplit());
         }
 
         @Override
@@ -856,6 +908,11 @@ public class SqlTaskExecution
             if (driver != null) {
                 driver.close();
             }
+        }
+
+        private static String formatSplitInfo(Split split)
+        {
+            return split.getConnectorSplit().getClass().getSimpleName() + "{" + JOINER.join(split.getInfo()) + "}";
         }
     }
 

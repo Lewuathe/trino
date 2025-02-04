@@ -51,7 +51,6 @@ public final class Page
     private final int positionCount;
     private volatile long sizeInBytes = -1;
     private volatile long retainedSizeInBytes = -1;
-    private volatile long logicalSizeInBytes = -1;
 
     public Page(Block... blocks)
     {
@@ -70,12 +69,14 @@ public final class Page
 
     private Page(boolean blocksCopyRequired, int positionCount, Block[] blocks)
     {
+        if (positionCount < 0) {
+            throw new IllegalArgumentException(format("positionCount (%s) is negative", positionCount));
+        }
         requireNonNull(blocks, "blocks is null");
         this.positionCount = positionCount;
         if (blocks.length == 0) {
             this.blocks = EMPTY_BLOCKS;
             this.sizeInBytes = 0;
-            this.logicalSizeInBytes = 0;
             // Empty blocks are not considered "retained" by any particular page
             this.retainedSizeInBytes = INSTANCE_SIZE;
         }
@@ -100,24 +101,15 @@ public final class Page
         if (sizeInBytes < 0) {
             sizeInBytes = 0;
             for (Block block : blocks) {
-                sizeInBytes += block.getLoadedBlock().getSizeInBytes();
+                long blockSizeInBytes = block.getLoadedBlock().getSizeInBytes();
+                if (blockSizeInBytes < 0) {
+                    throw new IllegalStateException(format("Block sizeInBytes is negative (%s)", blockSizeInBytes));
+                }
+                sizeInBytes += blockSizeInBytes;
             }
             this.sizeInBytes = sizeInBytes;
         }
         return sizeInBytes;
-    }
-
-    public long getLogicalSizeInBytes()
-    {
-        long logicalSizeInBytes = this.logicalSizeInBytes;
-        if (logicalSizeInBytes < 0) {
-            logicalSizeInBytes = 0;
-            for (Block block : blocks) {
-                logicalSizeInBytes += block.getLogicalSizeInBytes();
-            }
-            this.logicalSizeInBytes = logicalSizeInBytes;
-        }
-        return logicalSizeInBytes;
     }
 
     public long getRetainedSizeInBytes()
@@ -151,6 +143,10 @@ public final class Page
     {
         if (positionOffset < 0 || length < 0 || positionOffset + length > positionCount) {
             throw new IndexOutOfBoundsException(format("Invalid position %s and length %s in page with %s positions", positionOffset, length, positionCount));
+        }
+
+        if (positionOffset == 0 && length == positionCount) {
+            return this;
         }
 
         int channelCount = getChannelCount();

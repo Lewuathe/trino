@@ -15,6 +15,7 @@ package io.trino.memory;
 
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
+import com.google.errorprone.annotations.ThreadSafe;
 import io.airlift.http.client.FullJsonResponseHandler.JsonResponse;
 import io.airlift.http.client.HttpClient;
 import io.airlift.http.client.HttpClient.HttpResponseFuture;
@@ -23,9 +24,6 @@ import io.airlift.json.JsonCodec;
 import io.airlift.log.Logger;
 import io.airlift.units.Duration;
 import io.trino.metadata.InternalNode;
-
-import javax.annotation.Nullable;
-import javax.annotation.concurrent.ThreadSafe;
 
 import java.net.URI;
 import java.util.Optional;
@@ -96,17 +94,15 @@ public class RemoteNodeMemory
             Futures.addCallback(responseFuture, new FutureCallback<>()
             {
                 @Override
-                public void onSuccess(@Nullable JsonResponse<MemoryInfo> result)
+                public void onSuccess(JsonResponse<MemoryInfo> result)
                 {
                     lastUpdateNanos.set(System.nanoTime());
                     future.compareAndSet(responseFuture, null);
-                    if (result != null) {
-                        if (result.hasValue()) {
-                            memoryInfo.set(Optional.ofNullable(result.getValue()));
-                        }
-                        if (result.getStatusCode() != OK.code()) {
-                            log.warn("Error fetching memory info from %s returned status %d", memoryInfoUri, result.getStatusCode());
-                        }
+                    if (result.hasValue()) {
+                        memoryInfo.set(Optional.ofNullable(result.getValue()));
+                    }
+                    if (result.getStatusCode() != OK.code()) {
+                        log.warn("Error fetching memory info from %s returned status %d", memoryInfoUri, result.getStatusCode());
                     }
                 }
 

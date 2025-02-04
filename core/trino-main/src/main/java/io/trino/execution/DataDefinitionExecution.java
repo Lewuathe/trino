@@ -16,22 +16,23 @@ package io.trino.execution;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.inject.Inject;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.trino.Session;
 import io.trino.execution.QueryPreparer.PreparedQuery;
 import io.trino.execution.StateMachine.StateChangeListener;
+import io.trino.execution.querystats.PlanOptimizersStatsCollector;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.server.BasicQueryInfo;
+import io.trino.server.ResultQueryInfo;
 import io.trino.server.protocol.Slug;
 import io.trino.spi.QueryId;
 import io.trino.sql.planner.Plan;
 import io.trino.sql.tree.Expression;
 import io.trino.sql.tree.Statement;
+import jakarta.annotation.Nullable;
 import org.joda.time.DateTime;
-
-import javax.annotation.Nullable;
-import javax.inject.Inject;
 
 import java.util.List;
 import java.util.Map;
@@ -68,6 +69,12 @@ public class DataDefinitionExecution<T extends Statement>
         this.stateMachine = requireNonNull(stateMachine, "stateMachine is null");
         this.parameters = parameters;
         this.warningCollector = requireNonNull(warningCollector, "warningCollector is null");
+        stateMachine.addStateChangeListener(state -> {
+            if (state.isDone() && stateMachine.getFinalQueryInfo().isEmpty()) {
+                // make sure the final query info is set and listeners are triggered
+                stateMachine.updateQueryInfo(Optional.empty());
+            }
+        });
     }
 
     @Override
@@ -249,6 +256,12 @@ public class DataDefinitionExecution<T extends Statement>
     }
 
     @Override
+    public boolean isInfoPruned()
+    {
+        return false;
+    }
+
+    @Override
     public QueryId getQueryId()
     {
         return stateMachine.getQueryId();
@@ -261,9 +274,15 @@ public class DataDefinitionExecution<T extends Statement>
     }
 
     @Override
-    public Plan getQueryPlan()
+    public ResultQueryInfo getResultQueryInfo()
     {
-        throw new UnsupportedOperationException();
+        return stateMachine.getFinalQueryInfo().map(ResultQueryInfo::new).orElseGet(() -> stateMachine.updateResultQueryInfo(Optional.empty(), Optional::empty));
+    }
+
+    @Override
+    public Optional<Plan> getQueryPlan()
+    {
+        return Optional.empty();
     }
 
     @Override
@@ -299,7 +318,8 @@ public class DataDefinitionExecution<T extends Statement>
                 PreparedQuery preparedQuery,
                 QueryStateMachine stateMachine,
                 Slug slug,
-                WarningCollector warningCollector)
+                WarningCollector warningCollector,
+                PlanOptimizersStatsCollector planOptimizersStatsCollector)
         {
             return createDataDefinitionExecution(preparedQuery.getStatement(), preparedQuery.getParameters(), stateMachine, slug, warningCollector);
         }

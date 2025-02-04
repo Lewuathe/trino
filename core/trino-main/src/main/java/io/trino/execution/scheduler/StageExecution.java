@@ -14,6 +14,7 @@
 package io.trino.execution.scheduler;
 
 import com.google.common.collect.Multimap;
+import io.opentelemetry.api.trace.Span;
 import io.trino.execution.ExecutionFailureInfo;
 import io.trino.execution.RemoteTask;
 import io.trino.execution.StageId;
@@ -35,6 +36,8 @@ public interface StageExecution
     StageId getStageId();
 
     int getAttemptId();
+
+    Span getStageSpan();
 
     PlanFragment getFragment();
 
@@ -148,27 +151,16 @@ public interface StageExecution
 
         public boolean canScheduleMoreTasks()
         {
-            switch (this) {
-                case PLANNED:
-                case SCHEDULING:
-                    // workers are still being added to the query
-                    return true;
-                case SCHEDULING_SPLITS:
-                case SCHEDULED:
-                case RUNNING:
-                case FLUSHING:
-                case FINISHED:
-                case CANCELED:
-                    // no more workers will be added to the query
-                    return false;
-                case ABORTED:
-                case FAILED:
-                    // DO NOT complete a FAILED or ABORTED stage.  This will cause the
-                    // stage above to finish normally, which will result in a query
-                    // completing successfully when it should fail..
-                    return true;
-            }
-            throw new IllegalStateException("Unhandled state: " + this);
+            return switch (this) {
+                // workers are still being added to the query
+                case PLANNED, SCHEDULING -> true;
+                // no more workers will be added to the query
+                case SCHEDULING_SPLITS, SCHEDULED, RUNNING, FLUSHING, FINISHED, CANCELED -> false;
+                // DO NOT complete a FAILED or ABORTED stage.  This will cause the
+                // stage above to finish normally, which will result in a query
+                // completing successfully when it should fail...
+                case ABORTED, FAILED -> true;
+            };
         }
     }
 }

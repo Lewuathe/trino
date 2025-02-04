@@ -15,12 +15,12 @@ package io.trino.server.security;
 
 import io.jsonwebtoken.JwtException;
 import io.trino.spi.security.Identity;
-
-import javax.ws.rs.container.ContainerRequestContext;
+import jakarta.ws.rs.container.ContainerRequestContext;
 
 import java.util.List;
 import java.util.Optional;
 
+import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.net.HttpHeaders.AUTHORIZATION;
 import static java.lang.String.format;
 
@@ -52,14 +52,14 @@ public abstract class AbstractBearerAuthenticator
             throws AuthenticationException
     {
         List<String> headers = request.getHeaders().get(AUTHORIZATION);
-        if (headers == null || headers.size() == 0) {
+        if (headers == null || headers.isEmpty()) {
             throw needAuthentication(request, Optional.empty(), null);
         }
         if (headers.size() > 1) {
             throw new IllegalArgumentException(format("Multiple %s headers detected: %s, where only single %s header is supported", AUTHORIZATION, headers, AUTHORIZATION));
         }
 
-        String header = headers.get(0);
+        String header = getOnlyElement(headers);
         int space = header.indexOf(' ');
         if ((space < 0) || !header.substring(0, space).equalsIgnoreCase("bearer")) {
             throw needAuthentication(request, Optional.empty(), null);

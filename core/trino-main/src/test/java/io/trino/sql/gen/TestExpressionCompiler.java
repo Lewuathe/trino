@@ -47,10 +47,13 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.math.BigDecimal;
 import java.text.DecimalFormat;
 import java.text.NumberFormat;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
@@ -60,6 +63,7 @@ import java.util.stream.LongStream;
 
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.trino.operator.scalar.JoniRegexpCasts.joniRegexp;
+import static io.trino.server.testing.TestingTrinoServer.SESSION_START_TIME_PROPERTY;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DecimalType.createDecimalType;
@@ -86,8 +90,10 @@ import static java.util.stream.IntStream.range;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.joda.time.DateTimeZone.UTC;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestExpressionCompiler
 {
     private static final Boolean[] booleanValues = {true, false, null};
@@ -136,7 +142,7 @@ public class TestExpressionCompiler
         for (Boolean value : booleanValues) {
             assertThat(assertions.expression(toLiteral(value)))
                     .hasType(BOOLEAN)
-                    .isEqualTo(value == null ? null : value);
+                    .isEqualTo(value);
 
             assertThat(assertions.expression("a IS NULL")
                     .binding("a", toLiteral(value)))
@@ -152,7 +158,7 @@ public class TestExpressionCompiler
 
             assertThat(assertions.expression(toLiteral(value)))
                     .hasType(INTEGER)
-                    .isEqualTo(value == null ? null : value);
+                    .isEqualTo(value);
 
             assertThat(assertions.expression("- a")
                     .binding("a", toLiteral(value)))
@@ -179,7 +185,7 @@ public class TestExpressionCompiler
         for (Double value : doubleLefts) {
             assertThat(assertions.expression(toLiteral(value)))
                     .hasType(DOUBLE)
-                    .isEqualTo(value == null ? null : value);
+                    .isEqualTo(value);
 
             assertThat(assertions.expression("- a")
                     .binding("a", toLiteral(value)))
@@ -215,7 +221,7 @@ public class TestExpressionCompiler
         for (String value : stringLefts) {
             assertThat(assertions.expression(toLiteral(value)))
                     .hasType(varcharType(value))
-                    .isEqualTo(value == null ? null : value);
+                    .isEqualTo(value);
 
             assertThat(assertions.expression("a IS NULL")
                     .binding("a", toLiteral(value)))
@@ -626,6 +632,7 @@ public class TestExpressionCompiler
     }
 
     @Test
+    @SuppressWarnings("BigDecimalEquals") // it is intentional to compare BigDecimals with equals
     public void testBinaryOperatorsDecimalBigint()
     {
         for (BigDecimal left : decimalLefts) {
@@ -681,6 +688,7 @@ public class TestExpressionCompiler
     }
 
     @Test
+    @SuppressWarnings("BigDecimalEquals") // it is intentional to compare BigDecimals with equals
     public void testBinaryOperatorsBigintDecimal()
     {
         for (Long left : longLefts) {
@@ -737,6 +745,7 @@ public class TestExpressionCompiler
     }
 
     @Test
+    @SuppressWarnings("BigDecimalEquals") // it is intentional to compare BigDecimals with equals
     public void testBinaryOperatorsDecimalInteger()
     {
         for (BigDecimal left : decimalLefts) {
@@ -792,6 +801,7 @@ public class TestExpressionCompiler
     }
 
     @Test
+    @SuppressWarnings("BigDecimalEquals") // it is intentional to compare BigDecimals with equals
     public void testBinaryOperatorsIntegerDecimal()
     {
         for (Integer left : intLefts) {
@@ -1228,7 +1238,7 @@ public class TestExpressionCompiler
             assertThat(assertions.expression("CAST(a AS boolean)")
                     .binding("a", toLiteral(value)))
                     .hasType(BOOLEAN)
-                    .isEqualTo(value == null ? null : (value ? true : false));
+                    .isEqualTo(value == null ? null : value);
 
             assertThat(assertions.expression("CAST(a AS integer)")
                     .binding("a", toLiteral(value)))
@@ -1255,12 +1265,12 @@ public class TestExpressionCompiler
             assertThat(assertions.expression("CAST(a AS boolean)")
                     .binding("a", toLiteral(value)))
                     .hasType(BOOLEAN)
-                    .isEqualTo(value == null ? null : (value != 0L ? true : false));
+                    .isEqualTo(value == null ? null : value != 0L);
 
             assertThat(assertions.expression("CAST(a AS integer)")
                     .binding("a", toLiteral(value)))
                     .hasType(INTEGER)
-                    .isEqualTo(value == null ? null : value);
+                    .isEqualTo(value);
 
             assertThat(assertions.expression("CAST(a AS bigint)")
                     .binding("a", toLiteral(value)))
@@ -1283,7 +1293,7 @@ public class TestExpressionCompiler
             assertThat(assertions.expression("CAST(a AS boolean)")
                     .binding("a", toLiteral(value)))
                     .hasType(BOOLEAN)
-                    .isEqualTo(value == null ? null : (value != 0.0 ? true : false));
+                    .isEqualTo(value == null ? null : value != 0.0);
 
             if (value == null || (value >= Long.MIN_VALUE && value < Long.MAX_VALUE)) {
                 assertThat(assertions.expression("CAST(a AS bigint)")
@@ -1295,7 +1305,7 @@ public class TestExpressionCompiler
             assertThat(assertions.expression("CAST(a AS double)")
                     .binding("a", toLiteral(value)))
                     .hasType(DOUBLE)
-                    .isEqualTo(value == null ? null : value);
+                    .isEqualTo(value);
 
             assertThat(assertions.expression("CAST(a AS varchar)")
                     .binding("a", toLiteral(value)))
@@ -1363,7 +1373,7 @@ public class TestExpressionCompiler
                 assertThat(assertions.expression("CAST(a AS integer)")
                         .binding("a", toLiteral(String.valueOf(value))))
                         .hasType(INTEGER)
-                        .isEqualTo(value == null ? null : value);
+                        .isEqualTo(value);
 
                 assertThat(assertions.expression("CAST(a AS bigint)")
                         .binding("a", toLiteral(String.valueOf(value))))
@@ -1376,14 +1386,14 @@ public class TestExpressionCompiler
                 assertThat(assertions.expression("CAST(a AS double)")
                         .binding("a", toLiteral(String.valueOf(value))))
                         .hasType(DOUBLE)
-                        .isEqualTo(value == null ? null : value);
+                        .isEqualTo(value);
             }
         }
         for (String value : stringLefts) {
             assertThat(assertions.expression("CAST(a AS varchar)")
                     .binding("a", toLiteral(value)))
                     .hasType(VARCHAR)
-                    .isEqualTo(value == null ? null : value);
+                    .isEqualTo(value);
         }
     }
 
@@ -1675,6 +1685,7 @@ public class TestExpressionCompiler
     }
 
     @Test
+    @SuppressWarnings("BigDecimalEquals") // it is intentional to compare BigDecimals with equals
     public void testSimpleCase()
     {
         for (Double value : doubleLefts) {
@@ -1917,19 +1928,19 @@ public class TestExpressionCompiler
         for (Boolean value : booleanValues) {
             assertThat(assertions.expression("a IN (true)")
                     .binding("a", toLiteral(value)))
-                    .isEqualTo(value == null ? null : value == Boolean.TRUE);
+                    .isEqualTo(value == null ? null : value);
             assertThat(assertions.expression("a IN (null, true)")
                     .binding("a", toLiteral(value)))
-                    .isEqualTo(value == null ? null : value == Boolean.TRUE ? true : null);
+                    .isEqualTo(value == null ? null : value ? true : null);
             assertThat(assertions.expression("a IN (true, null)")
                     .binding("a", toLiteral(value)))
-                    .isEqualTo(value == null ? null : value == Boolean.TRUE ? true : null);
+                    .isEqualTo(value == null ? null : value ? true : null);
             assertThat(assertions.expression("a IN (false)")
                     .binding("a", toLiteral(value)))
-                    .isEqualTo(value == null ? null : value == Boolean.FALSE);
+                    .isEqualTo(value == null ? null : !value);
             assertThat(assertions.expression("a IN (null, false)")
                     .binding("a", toLiteral(value)))
-                    .isEqualTo(value == null ? null : value == Boolean.FALSE ? true : null);
+                    .isEqualTo(value == null ? null : !value ? true : null);
             assertThat(assertions.expression("a IN (null)")
                     .binding("a", toLiteral(value)))
                     .isNull(BOOLEAN);
@@ -2523,13 +2534,16 @@ public class TestExpressionCompiler
     @Test
     public void testFunctionWithSessionCall()
     {
-        Session session = assertions.getDefaultSession();
+        Session session = Session.builder(assertions.getDefaultSession())
+                .setStart(ZonedDateTime.of(2017, 4, 1, 12, 34, 56, 789, ZoneId.of("UTC")).toInstant())
+                .setSystemProperty(SESSION_START_TIME_PROPERTY, ZonedDateTime.of(2017, 4, 1, 12, 34, 56, 789, ZoneId.of("UTC")).toInstant().toString())
+                .build();
 
-        assertThat(assertions.expression("now()"))
+        assertThat(assertions.expression("now()", session))
                 .hasType(TIMESTAMP_TZ_MILLIS)
                 .isEqualTo(SqlTimestampWithTimeZone.fromInstant(3, session.getStart(), session.getTimeZoneKey().getZoneId()));
 
-        assertThat(assertions.expression("current_timestamp"))
+        assertThat(assertions.expression("current_timestamp", session))
                 .hasType(TIMESTAMP_TZ_MILLIS)
                 .isEqualTo(SqlTimestampWithTimeZone.fromInstant(3, session.getStart(), session.getTimeZoneKey().getZoneId()));
     }

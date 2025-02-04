@@ -13,39 +13,40 @@
  */
 package io.trino.plugin.hudi;
 
-import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import io.airlift.configuration.Config;
 import io.airlift.configuration.ConfigDescription;
+import io.airlift.configuration.DefunctConfig;
 import io.airlift.units.DataSize;
-
-import javax.validation.constraints.DecimalMax;
-import javax.validation.constraints.DecimalMin;
-import javax.validation.constraints.Max;
-import javax.validation.constraints.Min;
-import javax.validation.constraints.NotNull;
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
 
 import java.util.List;
 
-import static com.google.common.base.Strings.nullToEmpty;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.util.Locale.ENGLISH;
 
+@DefunctConfig({
+        "hudi.min-partition-batch-size",
+        "hudi.max-partition-batch-size",
+        "hudi.metadata-enabled",
+})
 public class HudiConfig
 {
-    private static final Splitter COMMA_SPLITTER = Splitter.on(",").omitEmptyStrings().trimResults();
-
     private List<String> columnsToHide = ImmutableList.of();
-    private boolean metadataEnabled;
     private boolean shouldUseParquetColumnNames = true;
-    private int minPartitionBatchSize = 10;
-    private int maxPartitionBatchSize = 100;
     private boolean sizeBasedSplitWeightsEnabled = true;
     private DataSize standardSplitWeightSize = DataSize.of(128, MEGABYTE);
     private double minimumAssignedSplitWeight = 0.05;
     private int maxSplitsPerSecond = Integer.MAX_VALUE;
     private int maxOutstandingSplits = 1000;
+    private int splitLoaderParallelism = 4;
+    private int splitGeneratorParallelism = 4;
+    private long perTransactionMetastoreCacheMaximumSize = 2000;
+    private boolean queryPartitionFilterRequired;
 
     public List<String> getColumnsToHide()
     {
@@ -55,25 +56,12 @@ public class HudiConfig
     @Config("hudi.columns-to-hide")
     @ConfigDescription("List of column names that will be hidden from the query output. " +
             "It can be used to hide Hudi meta fields. By default, no fields are hidden.")
-    public HudiConfig setColumnsToHide(String columnsToHide)
+    public HudiConfig setColumnsToHide(List<String> columnsToHide)
     {
-        this.columnsToHide = COMMA_SPLITTER.splitToStream(nullToEmpty(columnsToHide))
+        this.columnsToHide = columnsToHide.stream()
                 .map(s -> s.toLowerCase(ENGLISH))
                 .collect(toImmutableList());
         return this;
-    }
-
-    @Config("hudi.metadata-enabled")
-    @ConfigDescription("Fetch the list of file names and sizes from metadata rather than storage.")
-    public HudiConfig setMetadataEnabled(boolean metadataEnabled)
-    {
-        this.metadataEnabled = metadataEnabled;
-        return this;
-    }
-
-    public boolean isMetadataEnabled()
-    {
-        return this.metadataEnabled;
     }
 
     @Config("hudi.parquet.use-column-names")
@@ -88,36 +76,6 @@ public class HudiConfig
     public boolean getUseParquetColumnNames()
     {
         return this.shouldUseParquetColumnNames;
-    }
-
-    @Config("hudi.min-partition-batch-size")
-    @ConfigDescription("Minimum number of partitions returned in a single batch.")
-    public HudiConfig setMinPartitionBatchSize(int minPartitionBatchSize)
-    {
-        this.minPartitionBatchSize = minPartitionBatchSize;
-        return this;
-    }
-
-    @Min(1)
-    @Max(100)
-    public int getMinPartitionBatchSize()
-    {
-        return minPartitionBatchSize;
-    }
-
-    @Config("hudi.max-partition-batch-size")
-    @ConfigDescription("Maximum number of partitions returned in a single batch.")
-    public HudiConfig setMaxPartitionBatchSize(int maxPartitionBatchSize)
-    {
-        this.maxPartitionBatchSize = maxPartitionBatchSize;
-        return this;
-    }
-
-    @Min(1)
-    @Max(1000)
-    public int getMaxPartitionBatchSize()
-    {
-        return maxPartitionBatchSize;
     }
 
     @Config("hudi.size-based-split-weights-enabled")
@@ -190,5 +148,59 @@ public class HudiConfig
     {
         this.maxOutstandingSplits = maxOutstandingSplits;
         return this;
+    }
+
+    @Min(1)
+    public int getSplitGeneratorParallelism()
+    {
+        return splitGeneratorParallelism;
+    }
+
+    @Config("hudi.split-generator-parallelism")
+    @ConfigDescription("Number of threads to generate splits from partitions.")
+    public HudiConfig setSplitGeneratorParallelism(int splitGeneratorParallelism)
+    {
+        this.splitGeneratorParallelism = splitGeneratorParallelism;
+        return this;
+    }
+
+    @Min(1)
+    public int getSplitLoaderParallelism()
+    {
+        return splitLoaderParallelism;
+    }
+
+    @Config("hudi.split-loader-parallelism")
+    @ConfigDescription("Number of threads to run background split loader. A single background split loader is needed per query.")
+    public HudiConfig setSplitLoaderParallelism(int splitLoaderParallelism)
+    {
+        this.splitLoaderParallelism = splitLoaderParallelism;
+        return this;
+    }
+
+    @Min(1)
+    public long getPerTransactionMetastoreCacheMaximumSize()
+    {
+        return perTransactionMetastoreCacheMaximumSize;
+    }
+
+    @Config("hudi.per-transaction-metastore-cache-maximum-size")
+    public HudiConfig setPerTransactionMetastoreCacheMaximumSize(long perTransactionMetastoreCacheMaximumSize)
+    {
+        this.perTransactionMetastoreCacheMaximumSize = perTransactionMetastoreCacheMaximumSize;
+        return this;
+    }
+
+    @Config("hudi.query-partition-filter-required")
+    @ConfigDescription("Require a filter on at least one partition column")
+    public HudiConfig setQueryPartitionFilterRequired(boolean queryPartitionFilterRequired)
+    {
+        this.queryPartitionFilterRequired = queryPartitionFilterRequired;
+        return this;
+    }
+
+    public boolean isQueryPartitionFilterRequired()
+    {
+        return queryPartitionFilterRequired;
     }
 }

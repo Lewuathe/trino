@@ -16,6 +16,7 @@ package io.trino.plugin.hive;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.airlift.slice.SizeOf;
+import io.trino.metastore.HiveType;
 import io.trino.spi.type.Type;
 
 import java.util.List;
@@ -105,6 +106,12 @@ public class HiveColumnProjectionInfo
                 Objects.equals(this.dereferenceNames, other.dereferenceNames) &&
                 Objects.equals(this.hiveType, other.hiveType) &&
                 Objects.equals(this.type, other.type);
+    }
+
+    @Override
+    public String toString()
+    {
+        return partialName + ":" + type.getDisplayName();
     }
 
     public static String generatePartialName(List<String> dereferenceNames)

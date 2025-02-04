@@ -17,17 +17,16 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.errorprone.annotations.Immutable;
 import io.airlift.stats.Distribution;
 import io.airlift.stats.Distribution.DistributionSnapshot;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.trino.operator.BlockedReason;
 import io.trino.operator.OperatorStats;
-import io.trino.plugin.base.metrics.TDigestHistogram;
 import io.trino.spi.eventlistener.StageGcStatistics;
+import io.trino.spi.metrics.Metrics;
 import org.joda.time.DateTime;
-
-import javax.annotation.concurrent.Immutable;
 
 import java.util.List;
 import java.util.Optional;
@@ -36,6 +35,8 @@ import java.util.Set;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static io.airlift.units.DataSize.Unit.BYTE;
+import static io.airlift.units.DataSize.succinctBytes;
+import static io.trino.execution.DistributionSnapshot.pruneOperatorStats;
 import static io.trino.execution.StageState.RUNNING;
 import static java.lang.Math.min;
 import static java.util.Objects.requireNonNull;
@@ -101,11 +102,12 @@ public class StageStats
     private final Duration failedInputBlockedTime;
 
     private final DataSize bufferedDataSize;
-    private final Optional<TDigestHistogram> outputBufferUtilization;
+    private final Optional<io.trino.execution.DistributionSnapshot> outputBufferUtilization;
     private final DataSize outputDataSize;
     private final DataSize failedOutputDataSize;
     private final long outputPositions;
     private final long failedOutputPositions;
+    private final Metrics outputBufferMetrics;
 
     private final Duration outputBlockedTime;
     private final Duration failedOutputBlockedTime;
@@ -176,11 +178,12 @@ public class StageStats
             @JsonProperty("failedInputBlockedTime") Duration failedInputBlockedTime,
 
             @JsonProperty("bufferedDataSize") DataSize bufferedDataSize,
-            @JsonProperty("outputBufferUtilization") Optional<TDigestHistogram> outputBufferUtilization,
+            @JsonProperty("outputBufferUtilization") Optional<io.trino.execution.DistributionSnapshot> outputBufferUtilization,
             @JsonProperty("outputDataSize") DataSize outputDataSize,
             @JsonProperty("failedOutputDataSize") DataSize failedOutputDataSize,
             @JsonProperty("outputPositions") long outputPositions,
             @JsonProperty("failedOutputPositions") long failedOutputPositions,
+            @JsonProperty("outputBufferMetrics") Metrics outputBufferMetrics,
 
             @JsonProperty("outputBlockedTime") Duration outputBlockedTime,
             @JsonProperty("failedOutputBlockedTime") Duration failedOutputBlockedTime,
@@ -272,6 +275,7 @@ public class StageStats
         this.outputPositions = outputPositions;
         checkArgument(failedOutputPositions >= 0, "failedOutputPositions is negative");
         this.failedOutputPositions = failedOutputPositions;
+        this.outputBufferMetrics = requireNonNull(outputBufferMetrics, "outputBufferMetrics is null");
 
         this.outputBlockedTime = requireNonNull(outputBlockedTime, "outputBlockedTime is null");
         this.failedOutputBlockedTime = requireNonNull(failedOutputBlockedTime, "failedOutputBlockedTime is null");
@@ -281,7 +285,7 @@ public class StageStats
 
         this.gcInfo = requireNonNull(gcInfo, "gcInfo is null");
 
-        this.operatorSummaries = ImmutableList.copyOf(requireNonNull(operatorSummaries, "operatorSummaries is null"));
+        this.operatorSummaries = pruneOperatorStats(requireNonNull(operatorSummaries, "operatorSummaries is null"));
     }
 
     @JsonProperty
@@ -561,7 +565,7 @@ public class StageStats
     }
 
     @JsonProperty
-    public Optional<TDigestHistogram> getOutputBufferUtilization()
+    public Optional<io.trino.execution.DistributionSnapshot> getOutputBufferUtilization()
     {
         return outputBufferUtilization;
     }
@@ -588,6 +592,12 @@ public class StageStats
     public long getFailedOutputPositions()
     {
         return failedOutputPositions;
+    }
+
+    @JsonProperty
+    public Metrics getOutputBufferMetrics()
+    {
+        return outputBufferMetrics;
     }
 
     @JsonProperty
@@ -634,6 +644,10 @@ public class StageStats
         if (isScheduled && totalDrivers != 0) {
             progressPercentage = OptionalDouble.of(min(100, (completedDrivers * 100.0) / totalDrivers));
         }
+        OptionalDouble runningPercentage = OptionalDouble.empty();
+        if (isScheduled && totalDrivers != 0) {
+            progressPercentage = OptionalDouble.of(min(100, (runningDrivers * 100.0) / totalDrivers));
+        }
 
         return new BasicStageStats(
                 isScheduled,
@@ -642,13 +656,16 @@ public class StageStats
                 queuedDrivers,
                 runningDrivers,
                 completedDrivers,
+                blockedDrivers,
                 physicalInputDataSize,
                 physicalInputPositions,
                 physicalInputReadTime,
+                physicalWrittenDataSize,
                 internalNetworkInputDataSize,
                 internalNetworkInputPositions,
                 rawInputDataSize,
                 rawInputPositions,
+                succinctBytes(operatorSummaries.stream().mapToLong(operatorSummary -> operatorSummary.getSpilledDataSize().toBytes()).sum()),
                 (long) cumulativeUserMemory,
                 (long) failedCumulativeUserMemory,
                 userMemoryReservation,
@@ -659,7 +676,8 @@ public class StageStats
                 failedScheduledTime,
                 fullyBlocked,
                 blockedReasons,
-                progressPercentage);
+                progressPercentage,
+                runningPercentage);
     }
 
     public static StageStats createInitial()
@@ -718,6 +736,7 @@ public class StageStats
                 zeroBytes,
                 0,
                 0,
+                Metrics.EMPTY,
                 zeroSeconds,
                 zeroSeconds,
                 zeroBytes,

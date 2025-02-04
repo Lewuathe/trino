@@ -13,12 +13,11 @@
  */
 package io.trino.plugin.base.classloader;
 
+import com.google.inject.Inject;
 import io.airlift.slice.Slice;
 import io.trino.spi.Page;
 import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.connector.ConnectorMergeSink;
-
-import javax.inject.Inject;
 
 import java.util.Collection;
 import java.util.concurrent.CompletableFuture;
@@ -41,7 +40,7 @@ public class ClassLoaderSafeConnectorMergeSink
     @Override
     public void storeMergedRows(Page page)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.storeMergedRows(page);
         }
     }
@@ -49,7 +48,7 @@ public class ClassLoaderSafeConnectorMergeSink
     @Override
     public CompletableFuture<Collection<Slice>> finish()
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.finish();
         }
     }
@@ -57,7 +56,7 @@ public class ClassLoaderSafeConnectorMergeSink
     @Override
     public void abort()
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.abort();
         }
     }

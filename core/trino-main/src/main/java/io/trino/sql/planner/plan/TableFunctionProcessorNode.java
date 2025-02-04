@@ -19,7 +19,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.trino.metadata.TableFunctionHandle;
-import io.trino.spi.connector.CatalogHandle;
 import io.trino.sql.planner.OrderingScheme;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.plan.TableFunctionNode.PassThroughSpecification;
@@ -39,8 +38,6 @@ public class TableFunctionProcessorNode
         extends PlanNode
 {
     private final String name;
-
-    private final CatalogHandle functionCatalog;
 
     // symbols produced by the function
     private final List<Symbol> properOutputs;
@@ -77,7 +74,6 @@ public class TableFunctionProcessorNode
     public TableFunctionProcessorNode(
             @JsonProperty("id") PlanNodeId id,
             @JsonProperty("name") String name,
-            @JsonProperty("functionCatalog") CatalogHandle functionCatalog,
             @JsonProperty("properOutputs") List<Symbol> properOutputs,
             @JsonProperty("source") Optional<PlanNode> source,
             @JsonProperty("pruneWhenEmpty") boolean pruneWhenEmpty,
@@ -92,7 +88,6 @@ public class TableFunctionProcessorNode
     {
         super(id);
         this.name = requireNonNull(name, "name is null");
-        this.functionCatalog = requireNonNull(functionCatalog, "functionCatalog is null");
         this.properOutputs = ImmutableList.copyOf(properOutputs);
         this.source = requireNonNull(source, "source is null");
         this.pruneWhenEmpty = pruneWhenEmpty;
@@ -104,15 +99,15 @@ public class TableFunctionProcessorNode
         this.specification = requireNonNull(specification, "specification is null");
         this.prePartitioned = ImmutableSet.copyOf(prePartitioned);
         Set<Symbol> partitionBy = specification
-                .map(DataOrganizationSpecification::getPartitionBy)
+                .map(DataOrganizationSpecification::partitionBy)
                 .map(ImmutableSet::copyOf)
                 .orElse(ImmutableSet.of());
         checkArgument(partitionBy.containsAll(prePartitioned), "all pre-partitioned symbols must be contained in the partitioning list");
         this.preSorted = preSorted;
         checkArgument(
                 specification
-                        .flatMap(DataOrganizationSpecification::getOrderingScheme)
-                        .map(OrderingScheme::getOrderBy)
+                        .flatMap(DataOrganizationSpecification::orderingScheme)
+                        .map(OrderingScheme::orderBy)
                         .map(List::size)
                         .orElse(0) >= preSorted,
                 "the number of pre-sorted symbols cannot be greater than the number of all ordering symbols");
@@ -125,12 +120,6 @@ public class TableFunctionProcessorNode
     public String getName()
     {
         return name;
-    }
-
-    @JsonProperty
-    public CatalogHandle getFunctionCatalog()
-    {
-        return functionCatalog;
     }
 
     @JsonProperty
@@ -235,7 +224,6 @@ public class TableFunctionProcessorNode
         return new TableFunctionProcessorNode(
                 getId(),
                 name,
-                functionCatalog,
                 properOutputs,
                 newSource,
                 pruneWhenEmpty,

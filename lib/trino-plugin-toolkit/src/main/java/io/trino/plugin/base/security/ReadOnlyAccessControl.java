@@ -16,6 +16,7 @@ package io.trino.plugin.base.security;
 import io.trino.spi.connector.ConnectorAccessControl;
 import io.trino.spi.connector.ConnectorSecurityContext;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.function.SchemaFunctionName;
 import io.trino.spi.security.Privilege;
 import io.trino.spi.security.TrinoPrincipal;
 
@@ -51,9 +52,7 @@ public class ReadOnlyAccessControl
         implements ConnectorAccessControl
 {
     @Override
-    public void checkCanShowSchemas(ConnectorSecurityContext context)
-    {
-    }
+    public void checkCanShowSchemas(ConnectorSecurityContext context) {}
 
     @Override
     public Set<String> filterSchemas(ConnectorSecurityContext context, Set<String> schemaNames)
@@ -74,14 +73,10 @@ public class ReadOnlyAccessControl
     }
 
     @Override
-    public void checkCanShowCreateSchema(ConnectorSecurityContext context, String schemaName)
-    {
-    }
+    public void checkCanShowCreateSchema(ConnectorSecurityContext context, String schemaName) {}
 
     @Override
-    public void checkCanShowCreateTable(ConnectorSecurityContext context, SchemaTableName tableName)
-    {
-    }
+    public void checkCanShowCreateTable(ConnectorSecurityContext context, SchemaTableName tableName) {}
 
     @Override
     public void checkCanCreateTable(ConnectorSecurityContext context, SchemaTableName tableName, Map<String, Object> properties)
@@ -120,9 +115,7 @@ public class ReadOnlyAccessControl
     }
 
     @Override
-    public void checkCanShowTables(ConnectorSecurityContext context, String schemaName)
-    {
-    }
+    public void checkCanShowTables(ConnectorSecurityContext context, String schemaName) {}
 
     @Override
     public void checkCanSetColumnComment(ConnectorSecurityContext context, SchemaTableName tableName)
@@ -143,9 +136,9 @@ public class ReadOnlyAccessControl
     }
 
     @Override
-    public Set<String> filterColumns(ConnectorSecurityContext context, SchemaTableName tableName, Set<String> columns)
+    public Map<SchemaTableName, Set<String>> filterColumns(ConnectorSecurityContext context, Map<SchemaTableName, Set<String>> tableColumns)
     {
-        return columns;
+        return tableColumns;
     }
 
     @Override
@@ -251,12 +244,6 @@ public class ReadOnlyAccessControl
     }
 
     @Override
-    public void checkCanShowRoleAuthorizationDescriptors(ConnectorSecurityContext context)
-    {
-        // allow
-    }
-
-    @Override
     public void checkCanShowRoles(ConnectorSecurityContext context)
     {
         // allow
@@ -272,5 +259,17 @@ public class ReadOnlyAccessControl
     public void checkCanShowRoleGrants(ConnectorSecurityContext context)
     {
         // allow
+    }
+
+    @Override
+    public void checkCanShowFunctions(ConnectorSecurityContext context, String schemaName)
+    {
+        // allow
+    }
+
+    @Override
+    public Set<SchemaFunctionName> filterFunctions(ConnectorSecurityContext context, Set<SchemaFunctionName> functionNames)
+    {
+        return functionNames;
     }
 }

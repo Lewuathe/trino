@@ -15,7 +15,7 @@
 package io.trino.operator.aggregation.groupby;
 
 import com.google.common.primitives.Ints;
-import io.trino.operator.GroupByIdBlock;
+import io.trino.operator.AggregationMetrics;
 import io.trino.operator.aggregation.AggregationTestUtils;
 import io.trino.operator.aggregation.GroupedAggregator;
 import io.trino.operator.aggregation.TestingAggregationFunction;
@@ -25,6 +25,7 @@ import io.trino.spi.type.Type;
 import java.util.OptionalInt;
 import java.util.stream.IntStream;
 
+import static io.trino.operator.aggregation.AggregationTestUtils.createGroupByIdBlock;
 import static io.trino.sql.planner.plan.AggregationNode.Step.SINGLE;
 
 public class AggregationTestInput
@@ -43,18 +44,13 @@ public class AggregationTestInput
         this.offset = offset;
     }
 
-    public void runPagesOnAggregatorWithAssertion(long groupId, Type finalType, GroupedAggregator groupedAggregator, AggregationTestOutput expectedValue)
+    public void runPagesOnAggregatorWithAssertion(int groupId, Type finalType, GroupedAggregator groupedAggregator, AggregationTestOutput expectedValue)
     {
         for (Page page : getPages()) {
-            groupedAggregator.processPage(getGroupIdBlock(groupId, page), page);
+            groupedAggregator.processPage(groupId, createGroupByIdBlock(groupId, page.getPositionCount()), page);
         }
 
         expectedValue.validateAggregator(finalType, groupedAggregator, groupId);
-    }
-
-    private static GroupByIdBlock getGroupIdBlock(long groupId, Page page)
-    {
-        return AggregationTestUtils.createGroupByIdBlock((int) groupId, page.getPositionCount());
     }
 
     private Page[] getPages()
@@ -71,6 +67,6 @@ public class AggregationTestInput
     public GroupedAggregator createGroupedAggregator()
     {
         return function.createAggregatorFactory(SINGLE, Ints.asList(args), OptionalInt.empty())
-                .createGroupedAggregator();
+                .createGroupedAggregator(new AggregationMetrics());
     }
 }

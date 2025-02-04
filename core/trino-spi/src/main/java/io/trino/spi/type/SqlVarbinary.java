@@ -13,9 +13,8 @@
  */
 package io.trino.spi.type;
 
-import com.fasterxml.jackson.annotation.JsonValue;
-
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.HexFormat;
 
 import static java.lang.Math.min;
@@ -42,7 +41,6 @@ public final class SqlVarbinary
         return Arrays.compare(bytes, obj.bytes);
     }
 
-    @JsonValue
     public byte[] getBytes()
     {
         return bytes;
@@ -70,6 +68,11 @@ public final class SqlVarbinary
     @Override
     public String toString()
     {
+        return Base64.getEncoder().encodeToString(bytes);
+    }
+
+    public String toHexString()
+    {
         if (bytes.length == 0) {
             return "";
         }
@@ -77,13 +80,13 @@ public final class SqlVarbinary
         int lastLineBytes = bytes.length % 32;
 
         // 4 full words with 3 word separators and one line break per full line of output
-        long totalSize = fullLineCount * ((4 * OUTPUT_CHARS_PER_FULL_WORD) + (3 * WORD_SEPARATOR.length()) + 1);
+        long totalSize = (long) fullLineCount * ((4 * OUTPUT_CHARS_PER_FULL_WORD) + (3 * WORD_SEPARATOR.length()) + 1);
         if (lastLineBytes == 0) {
             totalSize--; // no final line separator
         }
         else {
             int lastLineWords = lastLineBytes / 8;
-            totalSize += (lastLineWords * (OUTPUT_CHARS_PER_FULL_WORD + WORD_SEPARATOR.length()));
+            totalSize += (long) lastLineWords * (OUTPUT_CHARS_PER_FULL_WORD + WORD_SEPARATOR.length());
             // whole words and separators on last line
             if (lastLineWords * 8 == lastLineBytes) {
                 totalSize -= WORD_SEPARATOR.length(); // last line ends on a word boundary, no separator

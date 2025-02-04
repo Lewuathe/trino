@@ -13,7 +13,6 @@
  */
 package io.trino.orc.reader;
 
-import com.google.common.base.VerifyException;
 import io.trino.memory.context.LocalMemoryContext;
 import io.trino.orc.OrcColumn;
 import io.trino.orc.OrcCorruptionException;
@@ -25,14 +24,13 @@ import io.trino.orc.stream.InputStreamSource;
 import io.trino.orc.stream.InputStreamSources;
 import io.trino.orc.stream.LongInputStream;
 import io.trino.spi.block.Block;
-import io.trino.spi.block.Int96ArrayBlock;
+import io.trino.spi.block.Fixed12Block;
 import io.trino.spi.block.LongArrayBlock;
 import io.trino.spi.block.RunLengthEncodedBlock;
 import io.trino.spi.type.TimeZoneKey;
 import io.trino.spi.type.Type;
+import jakarta.annotation.Nullable;
 import org.joda.time.DateTimeZone;
-
-import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
@@ -48,6 +46,7 @@ import static io.trino.orc.metadata.Stream.StreamKind.PRESENT;
 import static io.trino.orc.metadata.Stream.StreamKind.SECONDARY;
 import static io.trino.orc.reader.ReaderUtils.invalidStreamType;
 import static io.trino.orc.stream.MissingInputStreamSource.missingStreamSource;
+import static io.trino.spi.block.Fixed12Block.encodeFixed12;
 import static io.trino.spi.type.DateTimeEncoding.packDateTimeWithZone;
 import static io.trino.spi.type.TimestampType.TIMESTAMP_MICROS;
 import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
@@ -140,22 +139,23 @@ public class TimestampColumnReader
     private static TimestampKind getTimestampKind(Type type, OrcColumn column)
             throws OrcCorruptionException
     {
-        if (type.equals(TIMESTAMP_MILLIS) && (column.getColumnType() == OrcTypeKind.TIMESTAMP)) {
+        OrcTypeKind orcTypeKind = column.getColumnType().getOrcTypeKind();
+        if (type.equals(TIMESTAMP_MILLIS) && (orcTypeKind == OrcTypeKind.TIMESTAMP)) {
             return TimestampKind.TIMESTAMP_MILLIS;
         }
-        if (type.equals(TIMESTAMP_MICROS) && (column.getColumnType() == OrcTypeKind.TIMESTAMP)) {
+        if (type.equals(TIMESTAMP_MICROS) && (orcTypeKind == OrcTypeKind.TIMESTAMP)) {
             return TimestampKind.TIMESTAMP_MICROS;
         }
-        if (type.equals(TIMESTAMP_NANOS) && (column.getColumnType() == OrcTypeKind.TIMESTAMP)) {
+        if (type.equals(TIMESTAMP_NANOS) && (orcTypeKind == OrcTypeKind.TIMESTAMP)) {
             return TimestampKind.TIMESTAMP_NANOS;
         }
-        if (type.equals(TIMESTAMP_TZ_MILLIS) && (column.getColumnType() == OrcTypeKind.TIMESTAMP_INSTANT)) {
+        if (type.equals(TIMESTAMP_TZ_MILLIS) && (orcTypeKind == OrcTypeKind.TIMESTAMP_INSTANT)) {
             return TimestampKind.INSTANT_MILLIS;
         }
-        if (type.equals(TIMESTAMP_TZ_MICROS) && (column.getColumnType() == OrcTypeKind.TIMESTAMP_INSTANT)) {
+        if (type.equals(TIMESTAMP_TZ_MICROS) && (orcTypeKind == OrcTypeKind.TIMESTAMP_INSTANT)) {
             return TimestampKind.INSTANT_MICROS;
         }
-        if (type.equals(TIMESTAMP_TZ_NANOS) && (column.getColumnType() == OrcTypeKind.TIMESTAMP_INSTANT)) {
+        if (type.equals(TIMESTAMP_TZ_NANOS) && (orcTypeKind == OrcTypeKind.TIMESTAMP_INSTANT)) {
             return TimestampKind.INSTANT_NANOS;
         }
         throw invalidStreamType(column, type);
@@ -235,21 +235,14 @@ public class TimestampColumnReader
     {
         verifyStreamsPresent();
 
-        switch (timestampKind) {
-            case TIMESTAMP_MILLIS:
-                return readNonNullTimestampMillis();
-            case TIMESTAMP_MICROS:
-                return readNonNullTimestampMicros();
-            case TIMESTAMP_NANOS:
-                return readNonNullTimestampNanos();
-            case INSTANT_MILLIS:
-                return readNonNullInstantMillis();
-            case INSTANT_MICROS:
-                return readNonNullInstantMicros();
-            case INSTANT_NANOS:
-                return readNonNullInstantNanos();
-        }
-        throw new VerifyException("Unhandled timestmap kind: " + timestampKind);
+        return switch (timestampKind) {
+            case TIMESTAMP_MILLIS -> readNonNullTimestampMillis();
+            case TIMESTAMP_MICROS -> readNonNullTimestampMicros();
+            case TIMESTAMP_NANOS -> readNonNullTimestampNanos();
+            case INSTANT_MILLIS -> readNonNullInstantMillis();
+            case INSTANT_MICROS -> readNonNullInstantMicros();
+            case INSTANT_NANOS -> readNonNullInstantNanos();
+        };
     }
 
     private Block readNullBlock(boolean[] isNull)
@@ -257,21 +250,14 @@ public class TimestampColumnReader
     {
         verifyStreamsPresent();
 
-        switch (timestampKind) {
-            case TIMESTAMP_MILLIS:
-                return readNullTimestampMillis(isNull);
-            case TIMESTAMP_MICROS:
-                return readNullTimestampMicros(isNull);
-            case TIMESTAMP_NANOS:
-                return readNullTimestampNanos(isNull);
-            case INSTANT_MILLIS:
-                return readNullInstantMillis(isNull);
-            case INSTANT_MICROS:
-                return readNullInstantMicros(isNull);
-            case INSTANT_NANOS:
-                return readNullInstantNanos(isNull);
-        }
-        throw new VerifyException("Unhandled timestamp kind: " + timestampKind);
+        return switch (timestampKind) {
+            case TIMESTAMP_MILLIS -> readNullTimestampMillis(isNull);
+            case TIMESTAMP_MICROS -> readNullTimestampMicros(isNull);
+            case TIMESTAMP_NANOS -> readNullTimestampNanos(isNull);
+            case INSTANT_MILLIS -> readNullInstantMillis(isNull);
+            case INSTANT_MICROS -> readNullInstantMicros(isNull);
+            case INSTANT_NANOS -> readNullInstantNanos(isNull);
+        };
     }
 
     private void openRowGroup()
@@ -469,28 +455,26 @@ public class TimestampColumnReader
     private Block readNonNullTimestampNanos()
             throws IOException
     {
-        long[] microsValues = new long[nextBatchSize];
-        int[] picosFractionValues = new int[nextBatchSize];
+        int[] values = new int[nextBatchSize * 3];
         for (int i = 0; i < nextBatchSize; i++) {
-            readTimestampNanos(i, microsValues, picosFractionValues);
+            readTimestampNanos(i, values);
         }
-        return new Int96ArrayBlock(nextBatchSize, Optional.empty(), microsValues, picosFractionValues);
+        return new Fixed12Block(nextBatchSize, Optional.empty(), values);
     }
 
     private Block readNullTimestampNanos(boolean[] isNull)
             throws IOException
     {
-        long[] microsValues = new long[nextBatchSize];
-        int[] picosFractionValues = new int[nextBatchSize];
+        int[] values = new int[nextBatchSize * 3];
         for (int i = 0; i < nextBatchSize; i++) {
             if (!isNull[i]) {
-                readTimestampNanos(i, microsValues, picosFractionValues);
+                readTimestampNanos(i, values);
             }
         }
-        return new Int96ArrayBlock(nextBatchSize, Optional.of(isNull), microsValues, picosFractionValues);
+        return new Fixed12Block(nextBatchSize, Optional.of(isNull), values);
     }
 
-    private void readTimestampNanos(int i, long[] microsValues, int[] picosFractionValues)
+    private void readTimestampNanos(int i, int[] values)
             throws IOException
     {
         long seconds = secondsStream.next();
@@ -520,8 +504,7 @@ public class TimestampColumnReader
             micros = (millis * MICROSECONDS_PER_MILLISECOND) + microsFraction;
         }
 
-        microsValues[i] = micros;
-        picosFractionValues[i] = picosFraction;
+        encodeFixed12(micros, picosFraction, values, i);
     }
 
     // INSTANT MILLIS
@@ -574,28 +557,26 @@ public class TimestampColumnReader
     private Block readNonNullInstantMicros()
             throws IOException
     {
-        long[] millisValues = new long[nextBatchSize];
-        int[] picosFractionValues = new int[nextBatchSize];
+        int[] values = new int[nextBatchSize * 3];
         for (int i = 0; i < nextBatchSize; i++) {
-            readInstantMicros(i, millisValues, picosFractionValues);
+            readInstantMicros(i, values);
         }
-        return new Int96ArrayBlock(nextBatchSize, Optional.empty(), millisValues, picosFractionValues);
+        return new Fixed12Block(nextBatchSize, Optional.empty(), values);
     }
 
     private Block readNullInstantMicros(boolean[] isNull)
             throws IOException
     {
-        long[] millisValues = new long[nextBatchSize];
-        int[] picosFractionValues = new int[nextBatchSize];
+        int[] values = new int[nextBatchSize * 3];
         for (int i = 0; i < nextBatchSize; i++) {
             if (!isNull[i]) {
-                readInstantMicros(i, millisValues, picosFractionValues);
+                readInstantMicros(i, values);
             }
         }
-        return new Int96ArrayBlock(nextBatchSize, Optional.of(isNull), millisValues, picosFractionValues);
+        return new Fixed12Block(nextBatchSize, Optional.of(isNull), values);
     }
 
-    private void readInstantMicros(int i, long[] millisValues, int[] picosFractionValues)
+    private void readInstantMicros(int i, int[] values)
             throws IOException
     {
         long seconds = secondsStream.next();
@@ -624,8 +605,7 @@ public class TimestampColumnReader
             }
         }
 
-        millisValues[i] = packDateTimeWithZone(millis, TimeZoneKey.UTC_KEY);
-        picosFractionValues[i] = picosFraction;
+        encodeFixed12(packDateTimeWithZone(millis, TimeZoneKey.UTC_KEY), picosFraction, values, i);
     }
 
     // INSTANT NANOS
@@ -633,28 +613,26 @@ public class TimestampColumnReader
     private Block readNonNullInstantNanos()
             throws IOException
     {
-        long[] millisValues = new long[nextBatchSize];
-        int[] picosFractionValues = new int[nextBatchSize];
+        int[] values = new int[nextBatchSize * 3];
         for (int i = 0; i < nextBatchSize; i++) {
-            readInstantNanos(i, millisValues, picosFractionValues);
+            readInstantNanos(i, values);
         }
-        return new Int96ArrayBlock(nextBatchSize, Optional.empty(), millisValues, picosFractionValues);
+        return new Fixed12Block(nextBatchSize, Optional.empty(), values);
     }
 
     private Block readNullInstantNanos(boolean[] isNull)
             throws IOException
     {
-        long[] millisValues = new long[nextBatchSize];
-        int[] picosFractionValues = new int[nextBatchSize];
+        int[] values = new int[nextBatchSize * 3];
         for (int i = 0; i < nextBatchSize; i++) {
             if (!isNull[i]) {
-                readInstantNanos(i, millisValues, picosFractionValues);
+                readInstantNanos(i, values);
             }
         }
-        return new Int96ArrayBlock(nextBatchSize, Optional.of(isNull), millisValues, picosFractionValues);
+        return new Fixed12Block(nextBatchSize, Optional.of(isNull), values);
     }
 
-    private void readInstantNanos(int i, long[] millisValues, int[] picosFractionValues)
+    private void readInstantNanos(int i, int[] values)
             throws IOException
     {
         long seconds = secondsStream.next();
@@ -677,7 +655,6 @@ public class TimestampColumnReader
             picosFraction = toIntExact(nanos * PICOSECONDS_PER_NANOSECOND);
         }
 
-        millisValues[i] = packDateTimeWithZone(millis, TimeZoneKey.UTC_KEY);
-        picosFractionValues[i] = picosFraction;
+        encodeFixed12(packDateTimeWithZone(millis, TimeZoneKey.UTC_KEY), picosFraction, values, i);
     }
 }

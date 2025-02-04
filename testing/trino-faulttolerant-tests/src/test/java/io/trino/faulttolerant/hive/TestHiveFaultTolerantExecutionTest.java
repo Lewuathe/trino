@@ -20,7 +20,8 @@ import io.trino.plugin.exchange.filesystem.containers.MinioStorage;
 import io.trino.plugin.hive.HiveQueryRunner;
 import io.trino.testing.FaultTolerantExecutionConnectorTestHelper;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static io.trino.plugin.exchange.filesystem.containers.MinioStorage.getExchangeManagerProperties;
 import static io.trino.testing.TestingNames.randomNameSuffix;
@@ -58,30 +59,32 @@ public class TestHiveFaultTolerantExecutionTest
                 .build();
     }
 
-    @Test(timeOut = 120_000)
+    @Test
+    @Timeout(120)
     public void testPotentialDeadlocks()
     {
         // create a highly granular table to ensure the number of splits is high
-        assertUpdate("""
-                        CREATE TABLE lineitem_bucketed_partitioned
-                        WITH (format = 'TEXTFILE', partitioned_by = ARRAY['p'], bucketed_by=array['b'], bucket_count=3)
-                        AS
-                        SELECT *, partkey b, orderkey % 100 p
-                        FROM tpch.tiny.lineitem
-                        """,
+        assertUpdate(
+                """
+                CREATE TABLE lineitem_bucketed_partitioned
+                WITH (format = 'TEXTFILE', partitioned_by = ARRAY['p'], bucketed_by=array['b'], bucket_count=3)
+                AS
+                SELECT *, partkey b, orderkey % 100 p
+                FROM tpch.tiny.lineitem
+                """,
                 60175);
         // execute a query that schedules many concurrent stages in parallel to detect potential scheduler deadlocks
         try {
             assertQuery(
                     """
-                            SELECT
-                            (SELECT count(orderkey) FROM lineitem_bucketed_partitioned) +
-                            (SELECT count(linenumber) FROM lineitem_bucketed_partitioned) +
-                            (SELECT count(quantity) FROM lineitem_bucketed_partitioned) +
-                            (SELECT count(extendedprice) FROM lineitem_bucketed_partitioned) +
-                            (SELECT count(DISTINCT partkey) FROM lineitem_bucketed_partitioned) +
-                            (SELECT count(DISTINCT suppkey) FROM lineitem_bucketed_partitioned) c
-                            """,
+                    SELECT
+                    (SELECT count(orderkey) FROM lineitem_bucketed_partitioned) +
+                    (SELECT count(linenumber) FROM lineitem_bucketed_partitioned) +
+                    (SELECT count(quantity) FROM lineitem_bucketed_partitioned) +
+                    (SELECT count(extendedprice) FROM lineitem_bucketed_partitioned) +
+                    (SELECT count(DISTINCT partkey) FROM lineitem_bucketed_partitioned) +
+                    (SELECT count(DISTINCT suppkey) FROM lineitem_bucketed_partitioned) c
+                    """,
                     "SELECT 242800");
         }
         finally {

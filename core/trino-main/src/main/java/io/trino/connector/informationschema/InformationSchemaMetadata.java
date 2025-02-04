@@ -30,6 +30,7 @@ import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorTableProperties;
+import io.trino.spi.connector.ConnectorTableVersion;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
 import io.trino.spi.connector.LimitApplicationResult;
@@ -43,7 +44,6 @@ import io.trino.spi.predicate.SortedRangeSet;
 import io.trino.spi.predicate.TupleDomain;
 
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -64,7 +64,7 @@ import static io.trino.connector.informationschema.InformationSchemaTable.TABLES
 import static io.trino.connector.informationschema.InformationSchemaTable.TABLE_PRIVILEGES;
 import static io.trino.connector.informationschema.InformationSchemaTable.VIEWS;
 import static io.trino.metadata.MetadataUtil.findColumnMetadata;
-import static io.trino.spi.StandardErrorCode.TABLE_REDIRECTION_ERROR;
+import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
 import static java.util.Collections.emptyList;
 import static java.util.Locale.ENGLISH;
@@ -77,17 +77,16 @@ public class InformationSchemaMetadata
     private static final InformationSchemaColumnHandle CATALOG_COLUMN_HANDLE = new InformationSchemaColumnHandle("table_catalog");
     private static final InformationSchemaColumnHandle SCHEMA_COLUMN_HANDLE = new InformationSchemaColumnHandle("table_schema");
     private static final InformationSchemaColumnHandle TABLE_NAME_COLUMN_HANDLE = new InformationSchemaColumnHandle("table_name");
-    private static final InformationSchemaColumnHandle ROLE_NAME_COLUMN_HANDLE = new InformationSchemaColumnHandle("role_name");
-    private static final InformationSchemaColumnHandle GRANTEE_COLUMN_HANDLE = new InformationSchemaColumnHandle("grantee");
-    private static final int MAX_PREFIXES_COUNT = 100;
 
     private final String catalogName;
     private final Metadata metadata;
+    private final int maxPrefetchedInformationSchemaPrefixes;
 
-    public InformationSchemaMetadata(String catalogName, Metadata metadata)
+    public InformationSchemaMetadata(String catalogName, Metadata metadata, int maxPrefetchedInformationSchemaPrefixes)
     {
         this.catalogName = requireNonNull(catalogName, "catalogName is null");
         this.metadata = requireNonNull(metadata, "metadata is null");
+        this.maxPrefetchedInformationSchemaPrefixes = maxPrefetchedInformationSchemaPrefixes;
     }
 
     @Override
@@ -97,8 +96,12 @@ public class InformationSchemaMetadata
     }
 
     @Override
-    public ConnectorTableHandle getTableHandle(ConnectorSession connectorSession, SchemaTableName tableName)
+    public ConnectorTableHandle getTableHandle(ConnectorSession connectorSession, SchemaTableName tableName, Optional<ConnectorTableVersion> startVersion, Optional<ConnectorTableVersion> endVersion)
     {
+        if (startVersion.isPresent() || endVersion.isPresent()) {
+            throw new TrinoException(NOT_SUPPORTED, "This connector does not support versioned tables");
+        }
+
         return InformationSchemaTable.of(tableName)
                 .map(table -> new InformationSchemaTableHandle(catalogName, table, defaultPrefixes(catalogName), OptionalLong.empty()))
                 .orElse(null);
@@ -108,7 +111,7 @@ public class InformationSchemaMetadata
     public ConnectorTableMetadata getTableMetadata(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
         InformationSchemaTableHandle informationSchemaTableHandle = (InformationSchemaTableHandle) tableHandle;
-        return informationSchemaTableHandle.getTable().getTableMetadata();
+        return informationSchemaTableHandle.table().getTableMetadata();
     }
 
     @Override
@@ -126,9 +129,9 @@ public class InformationSchemaMetadata
     public ColumnMetadata getColumnMetadata(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle columnHandle)
     {
         InformationSchemaTableHandle informationSchemaTableHandle = (InformationSchemaTableHandle) tableHandle;
-        ConnectorTableMetadata tableMetadata = informationSchemaTableHandle.getTable().getTableMetadata();
+        ConnectorTableMetadata tableMetadata = informationSchemaTableHandle.table().getTableMetadata();
 
-        String columnName = ((InformationSchemaColumnHandle) columnHandle).getColumnName();
+        String columnName = ((InformationSchemaColumnHandle) columnHandle).columnName();
 
         ColumnMetadata columnMetadata = findColumnMetadata(tableMetadata, columnName);
         checkArgument(columnMetadata != null, "Column '%s' on table '%s' does not exist", columnName, tableMetadata.getTable());
@@ -140,7 +143,7 @@ public class InformationSchemaMetadata
     {
         InformationSchemaTableHandle informationSchemaTableHandle = (InformationSchemaTableHandle) tableHandle;
 
-        ConnectorTableMetadata tableMetadata = informationSchemaTableHandle.getTable().getTableMetadata();
+        ConnectorTableMetadata tableMetadata = informationSchemaTableHandle.table().getTableMetadata();
 
         return tableMetadata.getColumns().stream()
                 .map(ColumnMetadata::getName)
@@ -161,8 +164,7 @@ public class InformationSchemaMetadata
     {
         InformationSchemaTableHandle tableHandle = (InformationSchemaTableHandle) table;
         return new ConnectorTableProperties(
-                tableHandle.getPrefixes().isEmpty() ? TupleDomain.none() : TupleDomain.all(),
-                Optional.empty(),
+                tableHandle.prefixes().isEmpty() ? TupleDomain.none() : TupleDomain.all(),
                 Optional.empty(),
                 Optional.empty(),
                 emptyList());
@@ -173,12 +175,12 @@ public class InformationSchemaMetadata
     {
         InformationSchemaTableHandle table = (InformationSchemaTableHandle) handle;
 
-        if (table.getLimit().isPresent() && table.getLimit().getAsLong() <= limit) {
+        if (table.limit().isPresent() && table.limit().getAsLong() <= limit) {
             return Optional.empty();
         }
 
         return Optional.of(new LimitApplicationResult<>(
-                new InformationSchemaTableHandle(table.getCatalogName(), table.getTable(), table.getPrefixes(), OptionalLong.of(limit)),
+                new InformationSchemaTableHandle(table.catalogName(), table.table(), table.prefixes(), OptionalLong.of(limit)),
                 true,
                 false));
     }
@@ -188,17 +190,17 @@ public class InformationSchemaMetadata
     {
         InformationSchemaTableHandle table = (InformationSchemaTableHandle) handle;
 
-        Set<QualifiedTablePrefix> prefixes = table.getPrefixes();
-        if (isTablesEnumeratingTable(table.getTable()) && table.getPrefixes().equals(defaultPrefixes(catalogName))) {
+        Set<QualifiedTablePrefix> prefixes = table.prefixes();
+        if (isTablesEnumeratingTable(table.table()) && table.prefixes().equals(defaultPrefixes(catalogName))) {
             prefixes = getPrefixes(session, table, constraint);
         }
 
-        if (prefixes.equals(table.getPrefixes())) {
+        if (prefixes.equals(table.prefixes())) {
             return Optional.empty();
         }
 
-        table = new InformationSchemaTableHandle(table.getCatalogName(), table.getTable(), prefixes, table.getLimit());
-        return Optional.of(new ConstraintApplicationResult<>(table, constraint.getSummary(), false));
+        table = new InformationSchemaTableHandle(table.catalogName(), table.table(), prefixes, table.limit());
+        return Optional.of(new ConstraintApplicationResult<>(table, constraint.getSummary(), constraint.getExpression(), false));
     }
 
     public static Set<QualifiedTablePrefix> defaultPrefixes(String catalogName)
@@ -213,23 +215,15 @@ public class InformationSchemaMetadata
         }
 
         Optional<Set<String>> catalogs = filterString(constraint.getSummary(), CATALOG_COLUMN_HANDLE);
-        if (catalogs.isPresent() && !catalogs.get().contains(table.getCatalogName())) {
+        if (catalogs.isPresent() && !catalogs.get().contains(table.catalogName())) {
             return ImmutableSet.of();
         }
 
-        InformationSchemaTable informationSchemaTable = table.getTable();
-        Set<QualifiedTablePrefix> prefixes = calculatePrefixesWithSchemaName(session, constraint.getSummary(), constraint.predicate());
-        Set<QualifiedTablePrefix> tablePrefixes = calculatePrefixesWithTableName(informationSchemaTable, session, prefixes, constraint.getSummary(), constraint.predicate());
-
-        if (tablePrefixes.size() <= MAX_PREFIXES_COUNT) {
-            prefixes = tablePrefixes;
-        }
-        if (prefixes.size() > MAX_PREFIXES_COUNT) {
-            // in case of high number of prefixes it is better to populate all data and then filter
-            prefixes = defaultPrefixes(catalogName);
-        }
-
-        return prefixes;
+        InformationSchemaTable informationSchemaTable = table.table();
+        Set<QualifiedTablePrefix> schemaPrefixes = calculatePrefixesWithSchemaName(session, constraint.getSummary(), constraint.predicate());
+        Set<QualifiedTablePrefix> tablePrefixes = calculatePrefixesWithTableName(informationSchemaTable, session, schemaPrefixes, constraint.getSummary(), constraint.predicate());
+        verify(tablePrefixes.size() <= maxPrefetchedInformationSchemaPrefixes, "calculatePrefixesWithTableName returned too many prefixes: %s", tablePrefixes.size());
+        return tablePrefixes;
     }
 
     public static boolean isTablesEnumeratingTable(InformationSchemaTable table)
@@ -244,11 +238,15 @@ public class InformationSchemaMetadata
     {
         Optional<Set<String>> schemas = filterString(constraint, SCHEMA_COLUMN_HANDLE);
         if (schemas.isPresent()) {
-            return schemas.get().stream()
+            Set<QualifiedTablePrefix> schemasFromPredicate = schemas.get().stream()
                     .filter(this::isLowerCase)
                     .filter(schema -> predicate.isEmpty() || predicate.get().test(schemaAsFixedValues(schema)))
                     .map(schema -> new QualifiedTablePrefix(catalogName, schema))
                     .collect(toImmutableSet());
+            if (schemasFromPredicate.size() > maxPrefetchedInformationSchemaPrefixes) {
+                return ImmutableSet.of(new QualifiedTablePrefix(catalogName));
+            }
+            return schemasFromPredicate;
         }
 
         if (predicate.isEmpty()) {
@@ -256,9 +254,15 @@ public class InformationSchemaMetadata
         }
 
         Session session = ((FullConnectorSession) connectorSession).getSession();
-        return listSchemaNames(session)
+        Set<QualifiedTablePrefix> schemaPrefixes = listSchemaNames(session)
                 .filter(prefix -> predicate.get().test(schemaAsFixedValues(prefix.getSchemaName().get())))
                 .collect(toImmutableSet());
+        if (schemaPrefixes.size() > maxPrefetchedInformationSchemaPrefixes) {
+            // in case of high number of prefixes it is better to populate all data and then filter
+            // TODO this may cause re-running the above filtering upon next applyFilter
+            return defaultPrefixes(catalogName);
+        }
+        return schemaPrefixes;
     }
 
     private Set<QualifiedTablePrefix> calculatePrefixesWithTableName(
@@ -272,7 +276,7 @@ public class InformationSchemaMetadata
 
         Optional<Set<String>> tables = filterString(constraint, TABLE_NAME_COLUMN_HANDLE);
         if (tables.isPresent()) {
-            return prefixes.stream()
+            Set<QualifiedTablePrefix> tablePrefixes = prefixes.stream()
                     .peek(prefix -> verify(prefix.asQualifiedObjectName().isEmpty()))
                     .flatMap(prefix -> prefix.getSchemaName()
                             .map(schemaName -> Stream.of(prefix))
@@ -280,56 +284,37 @@ public class InformationSchemaMetadata
                     .flatMap(prefix -> tables.get().stream()
                             .filter(this::isLowerCase)
                             .map(table -> new QualifiedObjectName(catalogName, prefix.getSchemaName().get(), table)))
-                    .filter(objectName -> {
-                        if (!isColumnsEnumeratingTable(informationSchemaTable) ||
-                                metadata.isMaterializedView(session, objectName) ||
-                                metadata.isView(session, objectName)) {
-                            return true;
-                        }
-
-                        // This is a columns enumerating table and the object is not a view
-                        try {
-                            // Table redirection to enumerate columns from target table happens later in
-                            // MetadataListing#listTableColumns, but also applying it here to avoid incorrect
-                            // filtering in case the source table does not exist or there is a problem with redirection.
-                            return metadata.getRedirectionAwareTableHandle(session, objectName).getTableHandle().isPresent();
-                        }
-                        catch (TrinoException e) {
-                            if (e.getErrorCode().equals(TABLE_REDIRECTION_ERROR.toErrorCode())) {
-                                // Ignore redirection errors for listing, treat as if the table does not exist
-                                return false;
-                            }
-
-                            throw e;
-                        }
-                    })
                     .filter(objectName -> predicate.isEmpty() || predicate.get().test(asFixedValues(objectName)))
                     .map(QualifiedObjectName::asQualifiedTablePrefix)
-                    // In method #getPrefixes, if the prefix set returned by this method has size larger than MAX_PREFIXES_COUNT,
-                    // we will overwrite it with #defaultPrefixes. Limiting the stream at MAX_PREFIXES_COUNT + 1 elements helps
-                    // skip unnecessary computation because we know the resulting set will be discarded when more than MAX_PREFIXES_COUNT
-                    // elements are present. Since there may be duplicate prefixes, a distinct operator is applied to the stream,
-                    // otherwise the stream may be truncated incorrectly.
                     .distinct()
-                    .limit(MAX_PREFIXES_COUNT + 1)
+                    .limit(maxPrefetchedInformationSchemaPrefixes + 1)
                     .collect(toImmutableSet());
+
+            if (tablePrefixes.size() > maxPrefetchedInformationSchemaPrefixes) {
+                // in case of high number of prefixes it is better to populate all data and then filter
+                // TODO this may cause re-running the above filtering upon next applyFilter
+                return defaultPrefixes(catalogName);
+            }
+            return tablePrefixes;
         }
 
         if (predicate.isEmpty() || !isColumnsEnumeratingTable(informationSchemaTable)) {
             return prefixes;
         }
 
-        return prefixes.stream()
-                .flatMap(prefix -> Stream.concat(
-                        metadata.listTables(session, prefix).stream(),
-                        metadata.listViews(session, prefix).stream()))
+        Set<QualifiedTablePrefix> tablePrefixes = prefixes.stream()
+                .flatMap(prefix -> metadata.listTables(session, prefix).stream())
                 .filter(objectName -> predicate.get().test(asFixedValues(objectName)))
                 .map(QualifiedObjectName::asQualifiedTablePrefix)
-                // Same as the prefixes computed above; we use the distinct operator and limit the stream to MAX_PREFIXES_COUNT + 1
-                // elements to skip unnecessary computation.
                 .distinct()
-                .limit(MAX_PREFIXES_COUNT + 1)
+                .limit(maxPrefetchedInformationSchemaPrefixes + 1)
                 .collect(toImmutableSet());
+        if (tablePrefixes.size() > maxPrefetchedInformationSchemaPrefixes) {
+            // in case of high number of prefixes it is better to populate all data and then filter
+            // TODO this may cause re-running the above filtering upon next applyFilter
+            return defaultPrefixes(catalogName);
+        }
+        return tablePrefixes;
     }
 
     private boolean isColumnsEnumeratingTable(InformationSchemaTable table)
@@ -357,9 +342,8 @@ public class InformationSchemaMetadata
         if (domain.isSingleValue()) {
             return Optional.of(ImmutableSet.of(((Slice) domain.getSingleValue()).toStringUtf8()));
         }
-        if (domain.getValues() instanceof EquatableValueSet) {
-            Collection<Object> values = ((EquatableValueSet) domain.getValues()).getValues();
-            return Optional.of(values.stream()
+        if (domain.getValues() instanceof EquatableValueSet set) {
+            return Optional.of(set.getValues().stream()
                     .map(Slice.class::cast)
                     .map(Slice::toStringUtf8)
                     .collect(toImmutableSet()));
@@ -384,22 +368,12 @@ public class InformationSchemaMetadata
         return ImmutableMap.of(SCHEMA_COLUMN_HANDLE, new NullableValue(createUnboundedVarcharType(), utf8Slice(schema)));
     }
 
-    private Map<ColumnHandle, NullableValue> roleAsFixedValues(String schema)
-    {
-        return ImmutableMap.of(ROLE_NAME_COLUMN_HANDLE, new NullableValue(createUnboundedVarcharType(), utf8Slice(schema)));
-    }
-
-    private Map<ColumnHandle, NullableValue> granteeAsFixedValues(String schema)
-    {
-        return ImmutableMap.of(GRANTEE_COLUMN_HANDLE, new NullableValue(createUnboundedVarcharType(), utf8Slice(schema)));
-    }
-
     private Map<ColumnHandle, NullableValue> asFixedValues(QualifiedObjectName objectName)
     {
         return ImmutableMap.of(
-                CATALOG_COLUMN_HANDLE, new NullableValue(createUnboundedVarcharType(), utf8Slice(objectName.getCatalogName())),
-                SCHEMA_COLUMN_HANDLE, new NullableValue(createUnboundedVarcharType(), utf8Slice(objectName.getSchemaName())),
-                TABLE_NAME_COLUMN_HANDLE, new NullableValue(createUnboundedVarcharType(), utf8Slice(objectName.getObjectName())));
+                CATALOG_COLUMN_HANDLE, new NullableValue(createUnboundedVarcharType(), utf8Slice(objectName.catalogName())),
+                SCHEMA_COLUMN_HANDLE, new NullableValue(createUnboundedVarcharType(), utf8Slice(objectName.schemaName())),
+                TABLE_NAME_COLUMN_HANDLE, new NullableValue(createUnboundedVarcharType(), utf8Slice(objectName.objectName())));
     }
 
     private boolean isLowerCase(String value)

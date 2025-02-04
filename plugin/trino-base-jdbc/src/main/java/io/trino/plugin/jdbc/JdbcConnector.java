@@ -14,6 +14,7 @@
 package io.trino.plugin.jdbc;
 
 import com.google.common.collect.ImmutableSet;
+import com.google.inject.Inject;
 import io.airlift.bootstrap.LifeCycleManager;
 import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorMetadata;
 import io.trino.plugin.base.session.SessionPropertiesProvider;
@@ -22,16 +23,14 @@ import io.trino.spi.connector.ConnectorAccessControl;
 import io.trino.spi.connector.ConnectorCapabilities;
 import io.trino.spi.connector.ConnectorMetadata;
 import io.trino.spi.connector.ConnectorPageSinkProvider;
-import io.trino.spi.connector.ConnectorRecordSetProvider;
+import io.trino.spi.connector.ConnectorPageSourceProvider;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplitManager;
 import io.trino.spi.connector.ConnectorTransactionHandle;
+import io.trino.spi.function.table.ConnectorTableFunction;
 import io.trino.spi.procedure.Procedure;
-import io.trino.spi.ptf.ConnectorTableFunction;
 import io.trino.spi.session.PropertyMetadata;
 import io.trino.spi.transaction.IsolationLevel;
-
-import javax.inject.Inject;
 
 import java.util.List;
 import java.util.Optional;
@@ -47,7 +46,7 @@ public class JdbcConnector
 {
     private final LifeCycleManager lifeCycleManager;
     private final ConnectorSplitManager jdbcSplitManager;
-    private final ConnectorRecordSetProvider jdbcRecordSetProvider;
+    private final ConnectorPageSourceProvider jdbcPageSourceProvider;
     private final ConnectorPageSinkProvider jdbcPageSinkProvider;
     private final Optional<ConnectorAccessControl> accessControl;
     private final Set<Procedure> procedures;
@@ -60,7 +59,7 @@ public class JdbcConnector
     public JdbcConnector(
             LifeCycleManager lifeCycleManager,
             ConnectorSplitManager jdbcSplitManager,
-            ConnectorRecordSetProvider jdbcRecordSetProvider,
+            ConnectorPageSourceProvider jdbcPageSourceProvider,
             ConnectorPageSinkProvider jdbcPageSinkProvider,
             Optional<ConnectorAccessControl> accessControl,
             Set<Procedure> procedures,
@@ -71,7 +70,7 @@ public class JdbcConnector
     {
         this.lifeCycleManager = requireNonNull(lifeCycleManager, "lifeCycleManager is null");
         this.jdbcSplitManager = requireNonNull(jdbcSplitManager, "jdbcSplitManager is null");
-        this.jdbcRecordSetProvider = requireNonNull(jdbcRecordSetProvider, "jdbcRecordSetProvider is null");
+        this.jdbcPageSourceProvider = requireNonNull(jdbcPageSourceProvider, "jdbcPageSourceProvider is null");
         this.jdbcPageSinkProvider = requireNonNull(jdbcPageSinkProvider, "jdbcPageSinkProvider is null");
         this.accessControl = requireNonNull(accessControl, "accessControl is null");
         this.procedures = ImmutableSet.copyOf(requireNonNull(procedures, "procedures is null"));
@@ -116,9 +115,9 @@ public class JdbcConnector
     }
 
     @Override
-    public ConnectorRecordSetProvider getRecordSetProvider()
+    public ConnectorPageSourceProvider getPageSourceProvider()
     {
-        return jdbcRecordSetProvider;
+        return jdbcPageSourceProvider;
     }
 
     @Override

@@ -14,20 +14,21 @@
 package io.trino.tests.product.launcher.env.environment;
 
 import com.google.common.collect.ImmutableList;
+import com.google.inject.Inject;
 import io.trino.tests.product.launcher.docker.DockerFiles;
 import io.trino.tests.product.launcher.env.Debug;
 import io.trino.tests.product.launcher.env.DockerContainer;
 import io.trino.tests.product.launcher.env.Environment;
 import io.trino.tests.product.launcher.env.EnvironmentConfig;
 import io.trino.tests.product.launcher.env.EnvironmentProvider;
+import io.trino.tests.product.launcher.env.Ipv6;
 import io.trino.tests.product.launcher.env.ServerPackage;
-import io.trino.tests.product.launcher.env.SupportedTrinoJdk;
+import io.trino.tests.product.launcher.env.Tracing;
 import io.trino.tests.product.launcher.env.common.Hadoop;
 import io.trino.tests.product.launcher.env.common.Standard;
 import io.trino.tests.product.launcher.env.common.TestsEnvironment;
+import io.trino.tests.product.launcher.env.jdk.JdkProvider;
 import io.trino.tests.product.launcher.testcontainers.PortBinder;
-
-import javax.inject.Inject;
 
 import java.io.File;
 
@@ -52,7 +53,9 @@ public final class EnvMultinodeTls
     private final String imagesVersion;
     private final File serverPackage;
     private final boolean debug;
-    private final SupportedTrinoJdk jdkVersion;
+    private final boolean tracing;
+    private final boolean ipv6;
+    private final JdkProvider jdkProvider;
 
     @Inject
     public EnvMultinodeTls(
@@ -62,16 +65,20 @@ public final class EnvMultinodeTls
             Hadoop hadoop,
             EnvironmentConfig environmentConfig,
             @ServerPackage File serverPackage,
-            SupportedTrinoJdk jdkVersion,
-            @Debug boolean debug)
+            JdkProvider jdkProvider,
+            @Debug boolean debug,
+            @Tracing boolean tracing,
+            @Ipv6 boolean ipv6)
     {
         super(ImmutableList.of(standard, hadoop));
         this.dockerFiles = requireNonNull(dockerFiles, "dockerFiles is null");
         this.portBinder = requireNonNull(portBinder, "portBinder is null");
         this.imagesVersion = environmentConfig.getImagesVersion();
-        this.jdkVersion = requireNonNull(jdkVersion, "jdkVersion is null");
+        this.jdkProvider = requireNonNull(jdkProvider, "jdkProvider is null");
         this.serverPackage = requireNonNull(serverPackage, "serverPackage is null");
         this.debug = debug;
+        this.tracing = tracing;
+        this.ipv6 = ipv6;
     }
 
     @Override
@@ -94,7 +101,7 @@ public final class EnvMultinodeTls
 
     private DockerContainer createTrinoWorker(String workerName)
     {
-        return createTrinoContainer(dockerFiles, serverPackage, jdkVersion, debug, "ghcr.io/trinodb/testing/centos7-oj17:" + imagesVersion, workerName)
+        return createTrinoContainer(dockerFiles, serverPackage, jdkProvider, debug, tracing, ipv6, "ghcr.io/trinodb/testing/almalinux9-oj17:" + imagesVersion, workerName)
                 .withCreateContainerCmdModifier(createContainerCmd -> createContainerCmd.withDomainName("docker.cluster"))
                 .withCopyFileToContainer(forHostPath(dockerFiles.getDockerFilesHostPath("conf/environment/multinode-tls/config-worker.properties")), CONTAINER_TRINO_CONFIG_PROPERTIES)
                 .withCopyFileToContainer(forHostPath(dockerFiles.getDockerFilesHostPath("common/hadoop/hive.properties")), CONTAINER_TRINO_HIVE_PROPERTIES)

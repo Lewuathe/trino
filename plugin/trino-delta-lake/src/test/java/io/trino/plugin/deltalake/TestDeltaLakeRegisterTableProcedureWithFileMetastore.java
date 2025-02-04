@@ -13,18 +13,18 @@
  */
 package io.trino.plugin.deltalake;
 
-import io.trino.plugin.hive.metastore.HiveMetastore;
-
-import java.io.File;
-
-import static io.trino.plugin.hive.metastore.file.FileHiveMetastore.createTestingFileHiveMetastore;
+import io.trino.testing.QueryRunner;
 
 public class TestDeltaLakeRegisterTableProcedureWithFileMetastore
         extends BaseDeltaLakeRegisterTableProcedureTest
 {
     @Override
-    protected HiveMetastore createTestMetastore(String dataDirectory)
+    protected QueryRunner createQueryRunner()
+            throws Exception
     {
-        return createTestingFileHiveMetastore(new File(dataDirectory));
+        return DeltaLakeQueryRunner.builder()
+                .addDeltaProperty("delta.unique-table-location", "true")
+                .addDeltaProperty("delta.register-table-procedure.enabled", "true")
+                .build();
     }
 }

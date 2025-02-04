@@ -13,23 +13,38 @@
  */
 package io.trino.plugin.deltalake;
 
-import io.trino.plugin.hive.containers.HiveMinioDataLake;
+import io.trino.plugin.hive.containers.Hive3MinioDataLake;
+import io.trino.plugin.hive.containers.HiveHadoop;
 import io.trino.testing.QueryRunner;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.TestInstance;
 
 import java.util.List;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.lang.String.format;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public abstract class BaseDeltaLakeAwsConnectorSmokeTest
         extends BaseDeltaLakeConnectorSmokeTest
 {
+    protected Hive3MinioDataLake hiveMinioDataLake;
+
     @Override
-    protected HiveMinioDataLake createHiveMinioDataLake()
+    protected HiveHadoop createHiveHadoop()
     {
-        hiveMinioDataLake = new HiveMinioDataLake(bucketName);
+        hiveMinioDataLake = closeAfterClass(new Hive3MinioDataLake(bucketName));
         hiveMinioDataLake.start();
-        return hiveMinioDataLake;
+        return hiveMinioDataLake.getHiveHadoop();  // closed by superclass
+    }
+
+    @Override
+    @AfterAll
+    public void cleanUp()
+    {
+        hiveMinioDataLake = null; // closed by closeAfterClass
+        super.cleanUp();
     }
 
     @Override
@@ -37,8 +52,7 @@ public abstract class BaseDeltaLakeAwsConnectorSmokeTest
     {
         hiveMinioDataLake.copyResources(resourcePath, table);
         queryRunner.execute(format(
-                "CALL system.register_table('%s', '%s', '%s')",
-                SCHEMA,
+                "CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')",
                 table,
                 getLocationForTable(bucketName, table)));
     }
@@ -58,13 +72,19 @@ public abstract class BaseDeltaLakeAwsConnectorSmokeTest
     }
 
     @Override
-    protected List<String> listCheckpointFiles(String transactionLogDirectory)
+    protected List<String> listFiles(String directory)
     {
-        return hiveMinioDataLake.listFiles(transactionLogDirectory)
-                .stream()
-                .filter(path -> path.contains("checkpoint.parquet"))
+        return hiveMinioDataLake.listFiles(directory).stream()
                 .map(path -> format("s3://%s/%s", bucketName, path))
                 .collect(toImmutableList());
+    }
+
+    @Override
+    protected void deleteFile(String filePath)
+    {
+        String key = filePath.substring(bucketUrl().length());
+        hiveMinioDataLake.getMinioClient()
+                .removeObject(bucketName, key);
     }
 
     @Override

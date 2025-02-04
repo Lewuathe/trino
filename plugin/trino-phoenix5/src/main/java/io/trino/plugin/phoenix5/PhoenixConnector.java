@@ -13,6 +13,7 @@
  */
 package io.trino.plugin.phoenix5;
 
+import com.google.common.collect.ImmutableSet;
 import com.google.inject.Inject;
 import io.airlift.bootstrap.LifeCycleManager;
 import io.trino.plugin.base.session.SessionPropertiesProvider;
@@ -21,10 +22,11 @@ import io.trino.plugin.jdbc.TablePropertiesProvider;
 import io.trino.spi.connector.Connector;
 import io.trino.spi.connector.ConnectorMetadata;
 import io.trino.spi.connector.ConnectorPageSinkProvider;
-import io.trino.spi.connector.ConnectorRecordSetProvider;
+import io.trino.spi.connector.ConnectorPageSourceProvider;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplitManager;
 import io.trino.spi.connector.ConnectorTransactionHandle;
+import io.trino.spi.procedure.Procedure;
 import io.trino.spi.session.PropertyMetadata;
 import io.trino.spi.transaction.IsolationLevel;
 
@@ -40,8 +42,9 @@ public class PhoenixConnector
     private final LifeCycleManager lifeCycleManager;
     private final ConnectorMetadata metadata;
     private final ConnectorSplitManager splitManager;
-    private final ConnectorRecordSetProvider recordSetProvider;
     private final ConnectorPageSinkProvider pageSinkProvider;
+    private final ConnectorPageSourceProvider pageSourceProvider;
+    private final Set<Procedure> procedures;
     private final List<PropertyMetadata<?>> tableProperties;
     private final PhoenixColumnProperties columnProperties;
     private final List<PropertyMetadata<?>> sessionProperties;
@@ -51,8 +54,9 @@ public class PhoenixConnector
             LifeCycleManager lifeCycleManager,
             ConnectorMetadata metadata,
             ConnectorSplitManager splitManager,
-            ConnectorRecordSetProvider recordSetProvider,
             ConnectorPageSinkProvider pageSinkProvider,
+            ConnectorPageSourceProvider pageSourceProvider,
+            Set<Procedure> procedures,
             Set<TablePropertiesProvider> tableProperties,
             PhoenixColumnProperties columnProperties,
             Set<SessionPropertiesProvider> sessionProperties)
@@ -60,8 +64,9 @@ public class PhoenixConnector
         this.lifeCycleManager = requireNonNull(lifeCycleManager, "lifeCycleManager is null");
         this.metadata = requireNonNull(metadata, "metadata is null");
         this.splitManager = requireNonNull(splitManager, "splitManager is null");
-        this.recordSetProvider = requireNonNull(recordSetProvider, "recordSetProvider is null");
         this.pageSinkProvider = requireNonNull(pageSinkProvider, "pageSinkProvider is null");
+        this.pageSourceProvider = requireNonNull(pageSourceProvider, "pageSourceProvider is null");
+        this.procedures = ImmutableSet.copyOf(requireNonNull(procedures, "procedures is null"));
         this.tableProperties = tableProperties.stream()
                 .flatMap(tablePropertiesProvider -> tablePropertiesProvider.getTableProperties().stream())
                 .collect(toImmutableList());
@@ -90,15 +95,21 @@ public class PhoenixConnector
     }
 
     @Override
-    public ConnectorRecordSetProvider getRecordSetProvider()
-    {
-        return recordSetProvider;
-    }
-
-    @Override
     public ConnectorPageSinkProvider getPageSinkProvider()
     {
         return pageSinkProvider;
+    }
+
+    @Override
+    public ConnectorPageSourceProvider getPageSourceProvider()
+    {
+        return pageSourceProvider;
+    }
+
+    @Override
+    public Set<Procedure> getProcedures()
+    {
+        return procedures;
     }
 
     @Override

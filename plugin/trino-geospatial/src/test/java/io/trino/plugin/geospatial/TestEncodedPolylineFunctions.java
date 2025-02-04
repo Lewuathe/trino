@@ -18,6 +18,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import static io.trino.plugin.geospatial.GeometryType.GEOMETRY;
 import static io.trino.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
@@ -25,8 +26,10 @@ import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExceptionThrownBy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestEncodedPolylineFunctions
 {
     private QueryAssertions assertions;
@@ -92,10 +95,10 @@ public class TestEncodedPolylineFunctions
                 .hasType(VARCHAR)
                 .isEqualTo("_p~iF~ps|U_ulLnnqC_mqNvxq`@oskPfgkJ");
 
-        assertTrinoExceptionThrownBy(() -> assertions.expression("to_encoded_polyline(ST_GeometryFromText('POINT (-120.2 38.5)'))").evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression("to_encoded_polyline(ST_GeometryFromText('POINT (-120.2 38.5)'))")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
 
-        assertTrinoExceptionThrownBy(() -> assertions.expression("to_encoded_polyline(ST_GeometryFromText('MULTILINESTRING ((-122.39174 37.77701))'))").evaluate())
+        assertTrinoExceptionThrownBy(assertions.expression("to_encoded_polyline(ST_GeometryFromText('MULTILINESTRING ((-122.39174 37.77701))'))")::evaluate)
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT);
     }
 }

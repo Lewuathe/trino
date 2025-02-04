@@ -15,23 +15,26 @@ package io.trino.server;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Ordering;
+import com.google.inject.Inject;
 import io.airlift.resolver.ArtifactResolver;
 import io.airlift.resolver.DefaultArtifact;
 import io.trino.server.PluginManager.PluginsProvider;
 import org.sonatype.aether.artifact.Artifact;
 
-import javax.inject.Inject;
-
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.MalformedURLException;
 import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executor;
 import java.util.function.Function;
+import java.util.stream.Stream;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.server.PluginDiscovery.discoverPlugins;
@@ -84,7 +87,12 @@ public class DevelopmentPluginsProvider
         if (file.isFile() && (file.getName().equals("pom.xml") || file.getName().endsWith(".pom"))) {
             return buildClassLoaderFromPom(file, classLoaderFactory);
         }
-        return buildClassLoaderFromCoordinates(plugin, classLoaderFactory);
+        else if (file.isDirectory()) {
+            return buildClassLoaderFromDirectory(file, classLoaderFactory);
+        }
+        else {
+            return buildClassLoaderFromCoordinates(plugin, classLoaderFactory);
+        }
     }
 
     private PluginClassLoader buildClassLoaderFromPom(File pomFile, Function<List<URL>, PluginClassLoader> classLoaderFactory)
@@ -102,6 +110,24 @@ public class DevelopmentPluginsProvider
         }
 
         return classLoader;
+    }
+
+    private static PluginClassLoader buildClassLoaderFromDirectory(File pluginDirectory, Function<List<URL>, PluginClassLoader> classLoaderFactory)
+            throws IOException
+    {
+        Function<Path, URL> pathToUrl = path -> {
+            try {
+                return path.toUri().toURL();
+            }
+            catch (MalformedURLException e) {
+                throw new UncheckedIOException(e);
+            }
+        };
+        List<URL> jars;
+        try (Stream<Path> paths = Files.list(pluginDirectory.toPath())) {
+            jars = paths.map(pathToUrl).collect(toImmutableList());
+        }
+        return classLoaderFactory.apply(jars);
     }
 
     private PluginClassLoader buildClassLoaderFromCoordinates(String coordinates, Function<List<URL>, PluginClassLoader> classLoaderFactory)

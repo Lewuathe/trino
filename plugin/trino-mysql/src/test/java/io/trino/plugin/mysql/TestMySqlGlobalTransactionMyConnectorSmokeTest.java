@@ -13,12 +13,14 @@
  */
 package io.trino.plugin.mysql;
 
-import com.google.common.collect.ImmutableMap;
+import io.trino.Session;
 import io.trino.plugin.jdbc.BaseJdbcConnectorSmokeTest;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
+import io.trino.testing.sql.TestTable;
 
-import static io.trino.plugin.mysql.MySqlQueryRunner.createMySqlQueryRunner;
+import static io.trino.plugin.jdbc.JdbcWriteSessionProperties.NON_TRANSACTIONAL_MERGE;
+import static java.lang.String.format;
 
 public class TestMySqlGlobalTransactionMyConnectorSmokeTest
         extends BaseJdbcConnectorSmokeTest
@@ -30,18 +32,36 @@ public class TestMySqlGlobalTransactionMyConnectorSmokeTest
             throws Exception
     {
         mySqlServer = closeAfterClass(new TestingMySqlServer(true));
-        return createMySqlQueryRunner(mySqlServer, ImmutableMap.of(), ImmutableMap.of(), REQUIRED_TPCH_TABLES);
+        return MySqlQueryRunner.builder(mySqlServer)
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
+    }
+
+    @Override
+    protected Session getSession()
+    {
+        Session session = super.getSession();
+        return Session.builder(session)
+                .setCatalogSessionProperty(session.getCatalog().orElseThrow(), NON_TRANSACTIONAL_MERGE, "true")
+                .build();
     }
 
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
-        switch (connectorBehavior) {
-            case SUPPORTS_RENAME_SCHEMA:
-                return false;
+        return switch (connectorBehavior) {
+            case SUPPORTS_MERGE,
+                 SUPPORTS_ROW_LEVEL_UPDATE -> true;
+            case SUPPORTS_RENAME_SCHEMA -> false;
+            default -> super.hasBehavior(connectorBehavior);
+        };
+    }
 
-            default:
-                return super.hasBehavior(connectorBehavior);
-        }
+    @Override
+    protected TestTable createTestTableForWrites(String tablePrefix)
+    {
+        TestTable table = super.createTestTableForWrites(tablePrefix);
+        mySqlServer.execute(format("ALTER TABLE %s ADD PRIMARY KEY (a)", table.getName()));
+        return table;
     }
 }

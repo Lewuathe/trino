@@ -18,6 +18,8 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.AtomicDouble;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.stats.CounterStat;
 import io.airlift.stats.GcMonitor;
 import io.airlift.units.DataSize;
@@ -38,9 +40,6 @@ import io.trino.spi.predicate.Domain;
 import io.trino.sql.planner.LocalDynamicFiltersCollector;
 import io.trino.sql.planner.plan.DynamicFilterId;
 import org.joda.time.DateTime;
-
-import javax.annotation.concurrent.GuardedBy;
-import javax.annotation.concurrent.ThreadSafe;
 
 import java.util.List;
 import java.util.Map;
@@ -70,6 +69,7 @@ public class TaskContext
     private final GcMonitor gcMonitor;
     private final Executor notificationExecutor;
     private final ScheduledExecutorService yieldExecutor;
+    private final ScheduledExecutorService timeoutExecutor;
     private final Session session;
 
     private final long createNanos = System.nanoTime();
@@ -118,6 +118,7 @@ public class TaskContext
             GcMonitor gcMonitor,
             Executor notificationExecutor,
             ScheduledExecutorService yieldExecutor,
+            ScheduledExecutorService timeoutExecutor,
             Session session,
             MemoryTrackingContext taskMemoryContext,
             Runnable notifyStatusChanged,
@@ -130,6 +131,7 @@ public class TaskContext
                 gcMonitor,
                 notificationExecutor,
                 yieldExecutor,
+                timeoutExecutor,
                 session,
                 taskMemoryContext,
                 notifyStatusChanged,
@@ -145,6 +147,7 @@ public class TaskContext
             GcMonitor gcMonitor,
             Executor notificationExecutor,
             ScheduledExecutorService yieldExecutor,
+            ScheduledExecutorService timeoutExecutor,
             Session session,
             MemoryTrackingContext taskMemoryContext,
             Runnable notifyStatusChanged,
@@ -156,6 +159,7 @@ public class TaskContext
         this.queryContext = requireNonNull(queryContext, "queryContext is null");
         this.notificationExecutor = requireNonNull(notificationExecutor, "notificationExecutor is null");
         this.yieldExecutor = requireNonNull(yieldExecutor, "yieldExecutor is null");
+        this.timeoutExecutor = requireNonNull(timeoutExecutor, "timeoutExecutor is null");
         this.session = session;
         this.taskMemoryContext = requireNonNull(taskMemoryContext, "taskMemoryContext is null");
 
@@ -187,6 +191,7 @@ public class TaskContext
                 this,
                 notificationExecutor,
                 yieldExecutor,
+                timeoutExecutor,
                 taskMemoryContext.newMemoryTrackingContext(),
                 inputPipeline,
                 outputPipeline,
@@ -355,6 +360,16 @@ public class TaskContext
         return stat;
     }
 
+    public long getWriterInputDataSize()
+    {
+        // Avoid using stream api due to performance reasons
+        long writerInputDataSize = 0;
+        for (PipelineContext context : pipelineContexts) {
+            writerInputDataSize += context.getWriterInputDataSize();
+        }
+        return writerInputDataSize;
+    }
+
     public long getPhysicalWrittenDataSize()
     {
         // Avoid using stream api for performance reasons
@@ -370,7 +385,7 @@ public class TaskContext
         checkArgument(maxWriterCount > 0, "maxWriterCount must be > 0");
 
         int oldMaxWriterCount = this.maxWriterCount.getAndSet(maxWriterCount);
-        checkArgument(oldMaxWriterCount == -1 || oldMaxWriterCount == maxWriterCount, "maxWriterCount already set to " + oldMaxWriterCount);
+        checkArgument(oldMaxWriterCount == -1 || oldMaxWriterCount == maxWriterCount, "maxWriterCount already set to %s", oldMaxWriterCount);
     }
 
     public Optional<Integer> getMaxWriterCount()
@@ -550,9 +565,12 @@ public class TaskContext
 
         synchronized (cumulativeMemoryLock) {
             long currentTimeNanos = System.nanoTime();
-            double sinceLastPeriodMillis = (currentTimeNanos - lastTaskStatCallNanos) / 1_000_000.0;
-            long averageUserMemoryForLastPeriod = (userMemory + lastUserMemoryReservation) / 2;
-            cumulativeUserMemory.addAndGet(averageUserMemoryForLastPeriod * sinceLastPeriodMillis);
+
+            if (lastTaskStatCallNanos != 0) {
+                double sinceLastPeriodMillis = (currentTimeNanos - lastTaskStatCallNanos) / 1_000_000.0;
+                long averageUserMemoryForLastPeriod = (userMemory + lastUserMemoryReservation) / 2;
+                cumulativeUserMemory.addAndGet(averageUserMemoryForLastPeriod * sinceLastPeriodMillis);
+            }
 
             lastTaskStatCallNanos = currentTimeNanos;
             lastUserMemoryReservation = userMemory;
@@ -600,6 +618,7 @@ public class TaskContext
                 succinctBytes(outputDataSize),
                 outputPositions,
                 new Duration(outputBlockedTime, NANOSECONDS).convertToMostSuccinctTimeUnit(),
+                succinctBytes(getWriterInputDataSize()),
                 succinctBytes(physicalWrittenDataSize),
                 getMaxWriterCount(),
                 fullGcCount,
@@ -629,6 +648,11 @@ public class TaskContext
     public QueryContext getQueryContext()
     {
         return queryContext;
+    }
+
+    public DataSize getQueryMemoryReservation()
+    {
+        return DataSize.ofBytes(queryContext.getUserMemoryReservation());
     }
 
     public LocalDynamicFiltersCollector getLocalDynamicFiltersCollector()

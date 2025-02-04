@@ -14,6 +14,7 @@
 package io.trino.plugin.pinot;
 
 import com.google.common.collect.Iterables;
+import com.google.inject.Inject;
 import io.airlift.log.Logger;
 import io.trino.plugin.pinot.client.PinotClient;
 import io.trino.spi.ErrorCode;
@@ -30,8 +31,6 @@ import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.DynamicFilter;
 import io.trino.spi.connector.FixedSplitSource;
 import org.apache.pinot.spi.config.table.TableType;
-
-import javax.inject.Inject;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -63,7 +62,7 @@ public class PinotSplitManager
         this.pinotClient = requireNonNull(pinotClient, "pinotClient is null");
     }
 
-    protected ConnectorSplitSource generateSplitForBrokerBasedScan(PinotTableHandle pinotTableHandle)
+    protected ConnectorSplitSource generateSplitForBrokerBasedScan()
     {
         return new FixedSplitSource(createBrokerSplit());
     }
@@ -72,9 +71,9 @@ public class PinotSplitManager
             PinotTableHandle tableHandle,
             ConnectorSession session)
     {
-        String tableName = tableHandle.getTableName();
+        String tableName = tableHandle.tableName();
         Map<String, Map<String, List<String>>> routingTable = pinotClient.getRoutingTableForTable(tableName);
-        LOG.info("Got routing table for %s: %s", tableName, routingTable);
+        LOG.debug("Got routing table for %s: %s", tableName, routingTable);
         List<ConnectorSplit> splits = new ArrayList<>();
         if (!routingTable.isEmpty()) {
             PinotClient.TimeBoundary timeBoundary = new PinotClient.TimeBoundary(null, null);
@@ -173,12 +172,13 @@ public class PinotSplitManager
             }
             return generateSplitsForSegmentBasedScan(pinotTableHandle, session);
         }
-        return generateSplitForBrokerBasedScan(pinotTableHandle);
+        return generateSplitForBrokerBasedScan();
     }
 
     private static boolean isBrokerQuery(ConnectorSession session, PinotTableHandle tableHandle)
     {
-        return tableHandle.getQuery().isPresent() ||
-                (isPreferBrokerQueries(session) && tableHandle.getLimit().orElse(Integer.MAX_VALUE) < getNonAggregateLimitForBrokerQueries(session));
+        return tableHandle.query().isPresent() ||
+                tableHandle.limit().orElse(Integer.MAX_VALUE) < getNonAggregateLimitForBrokerQueries(session) ||
+                isPreferBrokerQueries(session);
     }
 }

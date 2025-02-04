@@ -20,6 +20,7 @@ import com.google.common.base.Splitter;
 import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableList;
 import com.google.common.io.RecursiveDeleteOption;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import dev.failsafe.Failsafe;
 import dev.failsafe.FailsafeExecutor;
 import dev.failsafe.Timeout;
@@ -36,8 +37,6 @@ import org.testcontainers.images.ImagePullPolicy;
 import org.testcontainers.images.builder.Transferable;
 import org.testcontainers.utility.DockerImageName;
 
-import javax.annotation.concurrent.GuardedBy;
-
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
@@ -47,7 +46,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -88,8 +86,8 @@ public class DockerContainer
     @GuardedBy("this")
     private OptionalLong lastStartFinishTimeNanos = OptionalLong.empty();
 
-    private List<String> logPaths = new ArrayList<>();
-    private Optional<EnvironmentListener> listener = Optional.empty();
+    private final List<String> logPaths = new ArrayList<>();
+    private final List<ContainerListener> listeners = new ArrayList<>();
     private boolean temporary;
     private static final ImagePullPolicy pullPolicy = new ConditionalPullPolicy();
 
@@ -117,9 +115,9 @@ public class DockerContainer
         return logicalName;
     }
 
-    public DockerContainer withEnvironmentListener(Optional<EnvironmentListener> listener)
+    public DockerContainer addContainerListener(ContainerListener listener)
     {
-        this.listener = requireNonNull(listener, "listener is null");
+        listeners.add(listener);
         return this;
     }
 
@@ -201,7 +199,10 @@ public class DockerContainer
             lastStartFinishTimeNanos = OptionalLong.empty();
         }
         super.containerIsStarting(containerInfo);
-        this.listener.ifPresent(listener -> listener.containerStarting(this, containerInfo));
+
+        for (ContainerListener listener : listeners) {
+            listener.containerStarting(this, containerInfo);
+        }
     }
 
     @Override
@@ -212,21 +213,27 @@ public class DockerContainer
             lastStartFinishTimeNanos = OptionalLong.of(System.nanoTime());
         }
         super.containerIsStarted(containerInfo);
-        this.listener.ifPresent(listener -> listener.containerStarted(this, containerInfo));
+        for (ContainerListener listener : listeners) {
+            listener.containerStarted(this, containerInfo);
+        }
     }
 
     @Override
     protected void containerIsStopping(InspectContainerResponse containerInfo)
     {
         super.containerIsStopping(containerInfo);
-        this.listener.ifPresent(listener -> listener.containerStopping(this, containerInfo));
+        for (ContainerListener listener : listeners) {
+            listener.containerStopping(this, containerInfo);
+        }
     }
 
     @Override
     protected void containerIsStopped(InspectContainerResponse containerInfo)
     {
         super.containerIsStopped(containerInfo);
-        this.listener.ifPresent(listener -> listener.containerStopped(this, containerInfo));
+        for (ContainerListener listener : listeners) {
+            listener.containerStopped(this, containerInfo);
+        }
     }
 
     private void copyFileToContainer(String containerPath, CheckedRunnable copy)
@@ -390,7 +397,7 @@ public class DockerContainer
         try {
             return super.isHealthy();
         }
-        catch (RuntimeException ignored) {
+        catch (RuntimeException _) {
             // Container without health checks will throw
             return true;
         }

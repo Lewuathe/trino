@@ -18,12 +18,13 @@ import dev.failsafe.Failsafe;
 import dev.failsafe.RetryPolicy;
 import io.airlift.log.Logger;
 import io.trino.plugin.base.aggregation.AggregateFunctionRewriter;
+import io.trino.plugin.base.mapping.DefaultIdentifierMapping;
+import io.trino.plugin.base.mapping.IdentifierMapping;
+import io.trino.plugin.jdbc.JdbcProcedureHandle.ProcedureQuery;
 import io.trino.plugin.jdbc.aggregation.ImplementCountAll;
 import io.trino.plugin.jdbc.expression.JdbcConnectorExpressionRewriterBuilder;
 import io.trino.plugin.jdbc.expression.RewriteVariable;
 import io.trino.plugin.jdbc.logging.RemoteQueryModifier;
-import io.trino.plugin.jdbc.mapping.DefaultIdentifierMapping;
-import io.trino.plugin.jdbc.mapping.IdentifierMapping;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.ColumnHandle;
@@ -34,14 +35,19 @@ import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
 
+import java.sql.CallableStatement;
 import java.sql.Connection;
 import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
 import java.sql.Types;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static com.google.common.base.MoreObjects.firstNonNull;
+import static io.trino.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
 import static io.trino.plugin.jdbc.StandardColumnMappings.bigintColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.bigintWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.booleanColumnMapping;
@@ -88,12 +94,12 @@ class TestingH2JdbcClient
 
     public TestingH2JdbcClient(BaseJdbcConfig config, ConnectionFactory connectionFactory)
     {
-        this(config, connectionFactory, new DefaultIdentifierMapping());
+        this(config, connectionFactory, new DefaultQueryBuilder(RemoteQueryModifier.NONE), new DefaultIdentifierMapping());
     }
 
-    public TestingH2JdbcClient(BaseJdbcConfig config, ConnectionFactory connectionFactory, IdentifierMapping identifierMapping)
+    public TestingH2JdbcClient(BaseJdbcConfig config, ConnectionFactory connectionFactory, QueryBuilder queryBuilder, IdentifierMapping identifierMapping)
     {
-        super("\"", connectionFactory, new DefaultQueryBuilder(RemoteQueryModifier.NONE), config.getJdbcTypesMappedToVarchar(), identifierMapping, RemoteQueryModifier.NONE, false);
+        super("\"", connectionFactory, queryBuilder, config.getJdbcTypesMappedToVarchar(), identifierMapping, RemoteQueryModifier.NONE, false);
     }
 
     @Override
@@ -150,7 +156,7 @@ class TestingH2JdbcClient
             return mapping;
         }
 
-        switch (typeHandle.getJdbcType()) {
+        switch (typeHandle.jdbcType()) {
             case Types.BOOLEAN:
                 return Optional.of(booleanColumnMapping());
 
@@ -174,14 +180,14 @@ class TestingH2JdbcClient
                 return Optional.of(doubleColumnMapping());
 
             case Types.CHAR:
-                return Optional.of(defaultCharColumnMapping(typeHandle.getRequiredColumnSize(), true));
+                return Optional.of(defaultCharColumnMapping(typeHandle.requiredColumnSize(), true));
 
             case Types.VARCHAR:
                 // varchar columns get created as varchar(max_length) in H2
-                if (typeHandle.getRequiredColumnSize() == MAXIMUM_VARCHAR_LENGTH) {
+                if (typeHandle.requiredColumnSize() == MAXIMUM_VARCHAR_LENGTH) {
                     return Optional.of(varcharColumnMapping(createUnboundedVarcharType(), true));
                 }
-                return Optional.of(defaultVarcharColumnMapping(typeHandle.getRequiredColumnSize(), true));
+                return Optional.of(defaultVarcharColumnMapping(typeHandle.requiredColumnSize(), true));
 
             case Types.DATE:
                 return Optional.of(dateColumnMappingUsingSqlDate());
@@ -190,7 +196,7 @@ class TestingH2JdbcClient
                 return Optional.of(timeColumnMapping(TIME_MILLIS));
 
             case Types.TIMESTAMP:
-                TimestampType timestampType = typeHandle.getDecimalDigits()
+                TimestampType timestampType = typeHandle.decimalDigits()
                         .map(TimestampType::createTimestampType)
                         .orElse(TIMESTAMP_MILLIS);
                 return Optional.of(timestampColumnMapping(timestampType));
@@ -249,5 +255,27 @@ class TestingH2JdbcClient
             throw new TrinoException(NOT_SUPPORTED, "This connector does not support renaming tables across schemas");
         }
         super.renameTable(session, catalogName, schemaName, tableName, newTable);
+    }
+
+    @Override
+    public JdbcProcedureHandle getProcedureHandle(ConnectorSession session, ProcedureQuery procedureQuery)
+
+    {
+        try (Connection connection = connectionFactory.openConnection(session);
+                CallableStatement statement = queryBuilder.callProcedure(this, session, connection, procedureQuery);
+                ResultSet resultSet = statement.executeQuery()) {
+            ResultSetMetaData metadata = resultSet.getMetaData();
+            if (metadata == null) {
+                throw new TrinoException(NOT_SUPPORTED, "Procedure not supported: ResultSetMetaData not available for query: " + procedureQuery.query());
+            }
+            JdbcProcedureHandle procedureHandle = new JdbcProcedureHandle(procedureQuery, getColumns(session, connection, metadata));
+            if (statement.getMoreResults()) {
+                throw new TrinoException(NOT_SUPPORTED, "Procedure has multiple ResultSets for query: " + procedureQuery.query());
+            }
+            return procedureHandle;
+        }
+        catch (SQLException e) {
+            throw new TrinoException(JDBC_ERROR, "Failed to get table handle for procedure query. " + firstNonNull(e.getMessage(), e), e);
+        }
     }
 }

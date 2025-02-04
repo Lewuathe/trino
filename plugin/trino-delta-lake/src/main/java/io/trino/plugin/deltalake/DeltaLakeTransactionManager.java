@@ -13,12 +13,11 @@
  */
 package io.trino.plugin.deltalake;
 
+import com.google.errorprone.annotations.concurrent.GuardedBy;
+import com.google.inject.Inject;
 import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.security.ConnectorIdentity;
-
-import javax.annotation.concurrent.GuardedBy;
-import javax.inject.Inject;
 
 import java.util.Map;
 import java.util.Optional;
@@ -54,6 +53,11 @@ public class DeltaLakeTransactionManager
     {
         MemoizedMetadata deltaLakeMetadata = transactions.remove(transaction);
         checkArgument(deltaLakeMetadata != null, "no such transaction: %s", transaction);
+        deltaLakeMetadata.optionalGet().ifPresent(metadata -> {
+            try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(getClass().getClassLoader())) {
+                metadata.commit();
+            }
+        });
     }
 
     public void rollback(ConnectorTransactionHandle transaction)
@@ -61,7 +65,7 @@ public class DeltaLakeTransactionManager
         MemoizedMetadata transactionalMetadata = transactions.remove(transaction);
         checkArgument(transactionalMetadata != null, "no such transaction: %s", transaction);
         transactionalMetadata.optionalGet().ifPresent(metadata -> {
-            try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(getClass().getClassLoader())) {
+            try (ThreadContextClassLoader _ = new ThreadContextClassLoader(getClass().getClassLoader())) {
                 metadata.rollback();
             }
         });
@@ -80,7 +84,7 @@ public class DeltaLakeTransactionManager
         public synchronized DeltaLakeMetadata get(ConnectorIdentity identity)
         {
             if (metadata == null) {
-                try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(getClass().getClassLoader())) {
+                try (ThreadContextClassLoader _ = new ThreadContextClassLoader(getClass().getClassLoader())) {
                     metadata = metadataFactory.create(identity);
                 }
             }

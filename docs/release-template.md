@@ -1,4 +1,4 @@
-# Release xyz (dd MMM 2023)
+# Release xyz (dd MMM 2025)
 
 ## General
 
@@ -14,10 +14,6 @@
 
 ## CLI
 
-## Accumulo connector
-
-## Atop connector
-
 ## BigQuery connector
 
 ## Blackhole connector
@@ -31,6 +27,10 @@
 ## Druid connector
 
 ## Elasticsearch connector
+
+## Exasol connector
+
+## Faker connector
 
 ## Google Sheets connector
 
@@ -46,11 +46,7 @@
 
 ## Kafka connector
 
-## Kinesis connector
-
 ## Kudu connector
-
-## Local file connector
 
 ## MariaDB connector
 
@@ -59,6 +55,8 @@
 ## MongoDB connector
 
 ## MySQL connector
+
+## OpenSearch connector
 
 ## Oracle connector
 
@@ -70,16 +68,20 @@
 
 ## Prometheus connector
 
-## Raptor connector
-
 ## Redis connector
 
 ## Redshift connector
 
 ## SingleStore connector
 
+## Snowflake connector
+
 ## SQL Server connector
 
 ## TPC-H connector
+
+## TPC-DS connector
+
+## Vertica connector
 
 ## SPI

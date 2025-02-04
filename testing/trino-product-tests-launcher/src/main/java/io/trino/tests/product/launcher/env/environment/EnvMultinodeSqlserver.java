@@ -15,6 +15,7 @@
 package io.trino.tests.product.launcher.env.environment;
 
 import com.google.common.collect.ImmutableList;
+import com.google.inject.Inject;
 import io.trino.tests.product.launcher.docker.DockerFiles;
 import io.trino.tests.product.launcher.env.DockerContainer;
 import io.trino.tests.product.launcher.env.Environment;
@@ -23,8 +24,6 @@ import io.trino.tests.product.launcher.env.common.StandardMultinode;
 import io.trino.tests.product.launcher.env.common.TestsEnvironment;
 import io.trino.tests.product.launcher.testcontainers.PortBinder;
 import org.testcontainers.containers.startupcheck.IsRunningStartupCheckStrategy;
-
-import javax.inject.Inject;
 
 import static io.trino.tests.product.launcher.docker.ContainerUtil.forSelectedPorts;
 import static java.util.Objects.requireNonNull;
@@ -57,7 +56,7 @@ public final class EnvMultinodeSqlserver
     @SuppressWarnings("resource")
     private DockerContainer createSqlServer()
     {
-        DockerContainer container = new DockerContainer("mcr.microsoft.com/mssql/server:2017-CU13", "sqlserver")
+        DockerContainer container = new DockerContainer("mcr.microsoft.com/mssql/server:2019-CU28-ubuntu-20.04", "sqlserver")
                 .withEnv("ACCEPT_EULA", "Y")
                 .withEnv("SA_PASSWORD", "SQLServerPass1")
                 .withStartupCheckStrategy(new IsRunningStartupCheckStrategy())

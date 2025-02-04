@@ -13,9 +13,10 @@
  */
 package io.trino.execution.scheduler;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.configuration.testing.ConfigAssertions;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.Map;
@@ -29,7 +30,7 @@ public class TestSubnetTopologyConfig
     public void testDefaults()
     {
         ConfigAssertions.assertRecordedDefaults(ConfigAssertions.recordDefaults(SubnetTopologyConfig.class)
-                .setCidrPrefixLengths("")
+                .setCidrPrefixLengths(ImmutableList.of())
                 .setAddressProtocol(IPv4));
     }
 
@@ -43,7 +44,7 @@ public class TestSubnetTopologyConfig
                 .buildOrThrow();
 
         SubnetTopologyConfig expected = new SubnetTopologyConfig()
-                .setCidrPrefixLengths("24,26")
+                .setCidrPrefixLengths(ImmutableList.of(24, 26))
                 .setAddressProtocol(IPv6);
 
         ConfigAssertions.assertFullMapping(properties, expected);

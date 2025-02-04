@@ -13,30 +13,21 @@
  */
 package io.trino.plugin.hive;
 
+import io.trino.plugin.hive.containers.Hive3MinioDataLake;
 import io.trino.plugin.hive.containers.HiveHadoop;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.TestInstance;
 
-public class TestHive3OnDataLake
+import static io.trino.testing.TestingNames.randomNameSuffix;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+
+@TestInstance(PER_CLASS)
+class TestHive3OnDataLake
         extends BaseTestHiveOnDataLake
 {
+    private static final String BUCKET_NAME = "test-hive-insert-overwrite-" + randomNameSuffix();
+
     public TestHive3OnDataLake()
     {
-        super(HiveHadoop.HIVE3_IMAGE);
-    }
-
-    @Test
-    public void testInsertOverwritePartitionedAndBucketedAcidTable()
-    {
-        String testTable = getFullyQualifiedTestTableName();
-        computeActual(getCreateTableStatement(
-                testTable,
-                "partitioned_by=ARRAY['regionkey']",
-                "bucketed_by = ARRAY['nationkey']",
-                "bucket_count = 3",
-                "format = 'ORC'",
-                "transactional = true"));
-        assertInsertFailure(
-                testTable,
-                "Overwriting existing partition in transactional tables doesn't support DIRECT_TO_TARGET_EXISTING_DIRECTORY write mode");
+        super(BUCKET_NAME, new Hive3MinioDataLake(BUCKET_NAME, HiveHadoop.HIVE3_IMAGE));
     }
 }
